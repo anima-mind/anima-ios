@@ -1,0 +1,9 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+# Secrets: la API key vive en Keychain, JAMÁS en el repo
+*.env
+Secrets.*

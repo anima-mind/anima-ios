@@ -10,7 +10,7 @@
 
 ## Mapa
 
-- **Blueprint (el contrato)**: [joshuamoreno1/anima](https://github.com/anima-mind/anima) — spec (doc 03) y plan de implementación iOS (doc 04, fases 0→4).
+- **Blueprint (el contrato)**: [anima-mind/anima](https://github.com/anima-mind/anima) — spec (doc 03) y plan de implementación iOS (doc 04, fases 0→4).
 - **Arquitectura objetivo**: `AnimaKit` (dominio puro, sin UI ni IO — testeable en CI de macOS) + app shell SwiftUI (Xcode, se agrega en Fase 0) + capa DAT humilde para gafas (track G).
 - **Runtime hermano**: [`animad`](https://github.com/anima-mind/animad) — perfil server en Go.
 

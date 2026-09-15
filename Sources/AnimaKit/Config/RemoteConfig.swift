@@ -81,19 +81,28 @@ public struct ProviderAPIConfig: Sendable, Equatable, Decodable {
     public let version: String?
     /// Betas comunes a todo modo de auth (`anthropic-beta`); rotables sin release.
     public let betas: [String]
-    /// Betas ADICIONALES por modo de auth. oauth lleva `oauth-2025-04-20`
-    /// (obligatoria con Bearer); en api_key NO debe enviarse.
+    /// Betas ADICIONALES por modo de auth. oauth lleva `oauth-2025-04-20` +
+    /// `claude-code-20250219` (obligatorias con Bearer); en api_key NO se envían.
     public let authBetas: [AuthMode: [String]]
+    /// Prefijo de system prompt REQUERIDO por modo de auth. En oauth el array
+    /// `system` debe abrir con el bloque "You are Claude Code, Anthropic's
+    /// official CLI for Claude." (con cache_control) ANTES del prompt base de
+    /// Anima; en api_key no hay prefijo. Vive en config, jamás en código.
+    public let authSystemPrefixes: [AuthMode: String]
 
     enum CodingKeys: String, CodingKey {
-        case baseURL = "base_url", version, betas, authBetas = "auth_betas"
+        case baseURL = "base_url", version, betas
+        case authBetas = "auth_betas", authSystemPrefixes = "auth_system_prefix"
     }
 
-    public init(baseURL: URL, version: String?, betas: [String], authBetas: [AuthMode: [String]] = [:]) {
+    public init(baseURL: URL, version: String?, betas: [String],
+                authBetas: [AuthMode: [String]] = [:],
+                authSystemPrefixes: [AuthMode: String] = [:]) {
         self.baseURL = baseURL
         self.version = version
         self.betas = betas
         self.authBetas = authBetas
+        self.authSystemPrefixes = authSystemPrefixes
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,11 +117,25 @@ public struct ProviderAPIConfig: Sendable, Equatable, Decodable {
             modes[mode] = v
         }
         self.authBetas = modes
+        let rawPrefixes = try c.decodeIfPresent([String: String].self, forKey: .authSystemPrefixes) ?? [:]
+        var prefixes: [AuthMode: String] = [:]
+        for (k, v) in rawPrefixes {
+            guard let mode = AuthMode(rawValue: k) else { continue }
+            prefixes[mode] = v
+        }
+        self.authSystemPrefixes = prefixes
     }
 
     /// Betas efectivas para el request: comunes + las del modo activo.
     public func effectiveBetas(for mode: AuthMode) -> [String] {
         betas + (authBetas[mode] ?? [])
+    }
+
+    /// Bloques de system prompt en orden: [prefijo del modo (si existe), base].
+    /// El RequestBuilder emite cada uno como bloque `text` con cache_control.
+    public func systemBlocks(for mode: AuthMode, base: String) -> [String] {
+        if let prefix = authSystemPrefixes[mode] { return [prefix, base] }
+        return [base]
     }
 }
 

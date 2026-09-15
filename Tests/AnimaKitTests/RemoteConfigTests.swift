@@ -13,8 +13,9 @@ import Testing
         "api": {
           "base_url": "https://api.anthropic.com",
           "version": "2023-06-01",
-          "betas": ["compact-2026-01-12", "context-management-2025-06-27"],
-          "auth_betas": { "oauth": ["oauth-2025-04-20"], "modo_futuro": ["x"] }
+          "betas": ["compact-2026-01-12", "context-management-2025-06-27", "interleaved-thinking-2025-05-14", "prompt-caching-scope-2026-01-05", "extended-cache-ttl-2025-04-11"],
+          "auth_betas": { "oauth": ["oauth-2025-04-20", "claude-code-20250219"], "modo_futuro": ["x"] },
+          "auth_system_prefix": { "oauth": "You are Claude Code, Anthropic's official CLI for Claude.", "modo_futuro": "x" }
         },
         "routes": {
           "interactive":     { "model": "claude-opus-4-8",  "effort": "medium", "max_tokens": 16000 },
@@ -55,8 +56,21 @@ import Testing
         // oauth suma su beta obligatoria; api_key jamás la lleva
         #expect(api.effectiveBetas(for: .oauth).contains("oauth-2025-04-20"))
         #expect(!api.effectiveBetas(for: .apiKey).contains("oauth-2025-04-20"))
+        #expect(api.effectiveBetas(for: .oauth).contains("claude-code-20250219"))
+        #expect(!api.effectiveBetas(for: .apiKey).contains("claude-code-20250219"))
         #expect(api.effectiveBetas(for: .apiKey).contains("compact-2026-01-12"))
         #expect(api.authBetas.count == 1)  // "modo_futuro" ignorado
+    }
+
+    @Test func authModeSystemPrefix() throws {
+        let parsed = try ProviderConfigParser.parse(Self.consoleJSON)
+        let api = try #require(parsed[.anthropic]).api
+        // oauth: el array system abre con el bloque de Claude Code y luego el base
+        #expect(api.systemBlocks(for: .oauth, base: "anima-base") ==
+                ["You are Claude Code, Anthropic's official CLI for Claude.", "anima-base"])
+        // api_key: solo el base, sin prefijo
+        #expect(api.systemBlocks(for: .apiKey, base: "anima-base") == ["anima-base"])
+        #expect(api.authSystemPrefixes.count == 1)  // "modo_futuro" ignorado
     }
 
     @Test func authModeDetectionFromToken() {

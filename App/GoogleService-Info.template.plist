@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PLANTILLA. El archivo real se descarga de Firebase Console
+	     (proyecto → app iOS → GoogleService-Info.plist) y se guarda en
+	     App/GoogleService-Info.plist — está GITIGNORED: no commitear
+	     (repo público; el plist real invita abuso de cuota). -->
+	<key>API_KEY</key>
+	<string>REEMPLAZAR</string>
+	<key>GCM_SENDER_ID</key>
+	<string>REEMPLAZAR</string>
+	<key>BUNDLE_ID</key>
+	<string>dev.joshua.anima</string>
+	<key>PROJECT_ID</key>
+	<string>REEMPLAZAR</string>
+	<key>STORAGE_BUCKET</key>
+	<string>REEMPLAZAR</string>
+	<key>GOOGLE_APP_ID</key>
+	<string>REEMPLAZAR</string>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false/>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+</dict>
+</plist>

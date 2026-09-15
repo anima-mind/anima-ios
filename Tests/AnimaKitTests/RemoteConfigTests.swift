@@ -13,7 +13,8 @@ import Testing
         "api": {
           "base_url": "https://api.anthropic.com",
           "version": "2023-06-01",
-          "betas": ["oauth-2025-04-20", "compact-2026-01-12", "context-management-2025-06-27"]
+          "betas": ["compact-2026-01-12", "context-management-2025-06-27"],
+          "auth_betas": { "oauth": ["oauth-2025-04-20"], "modo_futuro": ["x"] }
         },
         "routes": {
           "interactive":     { "model": "claude-opus-4-8",  "effort": "medium", "max_tokens": 16000 },
@@ -37,7 +38,7 @@ import Testing
 
         let anthropic = try #require(parsed[.anthropic])
         #expect(anthropic.api.version == "2023-06-01")
-        #expect(anthropic.api.betas.contains("oauth-2025-04-20"))
+        #expect(!anthropic.api.betas.contains("oauth-2025-04-20"))  // NO va en las comunes
         #expect(anthropic.routes[.interactive]?.model == "claude-opus-4-8")
         #expect(anthropic.routes[.interactive]?.effort == "medium")
         #expect(anthropic.routes[.consolidation]?.model == "claude-haiku-4-5")
@@ -46,6 +47,22 @@ import Testing
         let openai = try #require(parsed[.openai])
         #expect(openai.api.version == nil)
         #expect(openai.api.betas.isEmpty)
+    }
+
+    @Test func authModeBetas() throws {
+        let parsed = try ProviderConfigParser.parse(Self.consoleJSON)
+        let api = try #require(parsed[.anthropic]).api
+        // oauth suma su beta obligatoria; api_key jamás la lleva
+        #expect(api.effectiveBetas(for: .oauth).contains("oauth-2025-04-20"))
+        #expect(!api.effectiveBetas(for: .apiKey).contains("oauth-2025-04-20"))
+        #expect(api.effectiveBetas(for: .apiKey).contains("compact-2026-01-12"))
+        #expect(api.authBetas.count == 1)  // "modo_futuro" ignorado
+    }
+
+    @Test func authModeDetectionFromToken() {
+        #expect(AuthMode.detect(fromToken: "sk-ant-oat01-abc") == .oauth)
+        #expect(AuthMode.detect(fromToken: "sk-ant-api03-abc") == .apiKey)
+        #expect(AuthMode.detect(fromToken: "algo-raro") == nil)
     }
 
     @Test func unknownKeysAreIgnoredNotFatal() throws {

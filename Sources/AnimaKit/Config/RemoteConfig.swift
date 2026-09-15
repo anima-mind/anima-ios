@@ -35,6 +35,21 @@ public enum ModelProvider: String, Sendable, CaseIterable, Codable {
     case onDevice = "on_device"
 }
 
+/// Modo de autenticación contra Anthropic. Se detecta por el prefijo del
+/// token guardado en Keychain: `sk-ant-api03…` → apiKey (Console, pago por
+/// token, header x-api-key) · `sk-ant-oat01…` → oauth (suscripción Claude,
+/// header Authorization: Bearer + beta oauth-2025-04-20 obligatoria).
+public enum AuthMode: String, Sendable, CaseIterable, Codable {
+    case apiKey = "api_key"
+    case oauth
+
+    public static func detect(fromToken token: String) -> AuthMode? {
+        if token.hasPrefix("sk-ant-oat") { return .oauth }
+        if token.hasPrefix("sk-ant-api") { return .apiKey }
+        return nil
+    }
+}
+
 /// Clases de turno del dial (plan doc 04 §4.7).
 public enum TurnClass: String, Sendable, CaseIterable, Codable {
     case interactive
@@ -64,15 +79,21 @@ public struct ProviderAPIConfig: Sendable, Equatable, Decodable {
     public let baseURL: URL
     /// Header `anthropic-version` (solo Anthropic).
     public let version: String?
-    /// Lista de betas (`anthropic-beta`); actualizable sin release cuando roten.
+    /// Betas comunes a todo modo de auth (`anthropic-beta`); rotables sin release.
     public let betas: [String]
+    /// Betas ADICIONALES por modo de auth. oauth lleva `oauth-2025-04-20`
+    /// (obligatoria con Bearer); en api_key NO debe enviarse.
+    public let authBetas: [AuthMode: [String]]
 
-    enum CodingKeys: String, CodingKey { case baseURL = "base_url", version, betas }
+    enum CodingKeys: String, CodingKey {
+        case baseURL = "base_url", version, betas, authBetas = "auth_betas"
+    }
 
-    public init(baseURL: URL, version: String?, betas: [String]) {
+    public init(baseURL: URL, version: String?, betas: [String], authBetas: [AuthMode: [String]] = [:]) {
         self.baseURL = baseURL
         self.version = version
         self.betas = betas
+        self.authBetas = authBetas
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +101,18 @@ public struct ProviderAPIConfig: Sendable, Equatable, Decodable {
         self.baseURL = try c.decode(URL.self, forKey: .baseURL)
         self.version = try c.decodeIfPresent(String.self, forKey: .version)
         self.betas = try c.decodeIfPresent([String].self, forKey: .betas) ?? []
+        let raw = try c.decodeIfPresent([String: [String]].self, forKey: .authBetas) ?? [:]
+        var modes: [AuthMode: [String]] = [:]
+        for (k, v) in raw {
+            guard let mode = AuthMode(rawValue: k) else { continue }  // modo futuro: ignorar
+            modes[mode] = v
+        }
+        self.authBetas = modes
+    }
+
+    /// Betas efectivas para el request: comunes + las del modo activo.
+    public func effectiveBetas(for mode: AuthMode) -> [String] {
+        betas + (authBetas[mode] ?? [])
     }
 }
 

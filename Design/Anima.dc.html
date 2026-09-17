@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/styles.css">
+<script src="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/_ds_bundle.js"></script>
+<style>body{margin:0;background:#e6e6e8;color:#1d1f20;font-family:-apple-system,system-ui,sans-serif}a{color:#416180}a:hover{color:#2c455d}@keyframes an-breathe{0%,100%{transform:scaleY(.45)}50%{transform:scaleY(1)}}@keyframes an-glow{0%,100%{opacity:.35}50%{opacity:.9}}</style>
+</helmet>
+<div style="padding:44px 48px 60px;display:flex;flex-direction:column;gap:56px;max-width:2400px">
+
+<div style="display:flex;flex-direction:column;gap:6px;max-width:720px">
+  <div style="display:flex;align-items:center;gap:14px"><svg width="44" height="44" viewBox="0 0 96 96"><defs><radialGradient id="hBg" cx="50%" cy="60%" r="75%"><stop offset="0" stop-color="#2c455d"></stop><stop offset="1" stop-color="#101b26"></stop></radialGradient><linearGradient id="hSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient><radialGradient id="hGl"><stop offset="0" stop-color="#94bce3" stop-opacity=".55"></stop><stop offset="1" stop-color="#94bce3" stop-opacity="0"></stop></radialGradient></defs><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><ellipse cx="48" cy="50" rx="30" ry="14" fill="url(#hGl)"></ellipse><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" stroke-width="3"></path><path d="M18 50h60" stroke-width="1" opacity=".5"></path></g><circle cx="48" cy="50" r="3" fill="#f5f5f8"></circle></svg><div><div style="font-size:22px;font-weight:500;letter-spacing:-.01em">Anima · iOS</div><div style="font-size:12px;color:rgba(0,0,0,.55)">Definitive design · dark only · v1</div></div></div>
+  <div style="font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty;margin-top:8px">Ground #1d2d3d, text #f5f5f8, one accent #94bce3. SF Pro 400/500. Outlines, never fills; the accent is a line or a glow. Files: <a href="design-tokens.json">design-tokens.json</a> · <a href="components.md">components.md</a> · <a href="hud-projection.md">hud-projection.md</a></div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">01 · Interactive prototype</div>
+  <div style="display:flex;flex-wrap:wrap;gap:40px;align-items:flex-start">
+    <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px"><dc-import name="Anima Screen" scenario="intro" hint-size="402px,874px"></dc-import></x-import>
+    <div style="max-width:380px;font-size:12px;line-height:1.6;color:rgba(0,0,0,.62);display:flex;flex-direction:column;gap:10px;text-wrap:pretty;padding-top:8px">
+      <div><b>Full flow from launch.</b> Intro (the mark breathes) → tutorial → provider → API key → permissions → glasses → seed → newborn chat.</div>
+      <div><b>In the app:</b> send text; tap the thought line; chips trigger refusal, error, voice and the consolidation night. Inbox: approve the identity diff. Memory: open and invalidate. Settings: change permissions (revoking Calendar changes what the chat can answer), sleep one night, export, delete (type "delete").</div>
+      <div><b>Plasticity is real:</b> p(n) = 0.05 + 0.95·e^(−n/30). The badge, mind sheet and the mark's amplitude all follow it.</div>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">02 · Onboarding</div>
+  <div style="display:flex;flex-wrap:wrap;gap:22px">
+    <sc-for list="{{ obShots }}" as="s" hint-placeholder-count="7">
+    <div style="display:flex;flex-direction:column;gap:8px;width:402px">
+      <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px"><dc-import name="Anima Screen" scenario="{{ s.scenario }}" chips="{{ false }}" hint-size="402px,874px"></dc-import></x-import>
+      <div style="font-size:12px;color:rgba(0,0,0,.65);line-height:1.4"><b style="color:#1d1f20">{{ s.title }}</b> · {{ s.note }}</div>
+    </div>
+    </sc-for>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">02b · Conversation mode · voice first, the mark is the face</div>
+  <div style="max-width:760px;font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty">Tap the mic (or the chip) in Chat: the conversation goes full-screen and the Breath mark becomes Anima's face. Listening: the wave follows your voice and the live transcript appears under it. Thinking: the wave stills, the glow pulses. Speaking: the wave moves with the voice while the caption streams. Controls: keyboard (back to text), the big button (send now / interrupt / talk again), mute. On exit both turns land in Chat marked "voice" and "spoken". When glasses are connected the same audio plays there and the HUD shows the matching card (§07).</div>
+  <div style="display:flex;flex-wrap:wrap;gap:22px">
+    <sc-for list="{{ voiceShots }}" as="s" hint-placeholder-count="2">
+    <div style="display:flex;flex-direction:column;gap:8px;width:402px">
+      <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px"><dc-import name="Anima Screen" scenario="{{ s.scenario }}" chips="{{ false }}" hint-size="402px,874px"></dc-import></x-import>
+      <div style="font-size:12px;color:rgba(0,0,0,.65);line-height:1.4"><b style="color:#1d1f20">{{ s.title }}</b> · {{ s.note }}</div>
+    </div>
+    </sc-for>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">03 · Core surfaces</div>
+  <div style="display:flex;flex-wrap:wrap;gap:22px">
+    <sc-for list="{{ coreShots }}" as="s" hint-placeholder-count="5">
+    <div style="display:flex;flex-direction:column;gap:8px;width:402px">
+      <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px"><dc-import name="Anima Screen" scenario="{{ s.scenario }}" chips="{{ false }}" hint-size="402px,874px"></dc-import></x-import>
+      <div style="font-size:12px;color:rgba(0,0,0,.65);line-height:1.4"><b style="color:#1d1f20">{{ s.title }}</b> · {{ s.note }}</div>
+    </div>
+    </sc-for>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">04 · Edge cases and ages of the mind</div>
+  <div style="display:flex;flex-wrap:wrap;gap:22px">
+    <sc-for list="{{ edgeShots }}" as="s" hint-placeholder-count="6">
+    <div style="display:flex;flex-direction:column;gap:8px;width:402px">
+      <x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" hint-size="402px,874px"><dc-import name="Anima Screen" scenario="{{ s.scenario }}" chips="{{ false }}" hint-size="402px,874px"></dc-import></x-import>
+      <div style="font-size:12px;color:rgba(0,0,0,.65);line-height:1.4"><b style="color:#1d1f20">{{ s.title }}</b> · {{ s.note }}</div>
+    </div>
+    </sc-for>
+  </div>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:40px;align-items:flex-start">
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">05 · Mark and app icon</div>
+  <div style="background:#1d2d3d;border-radius:8px;padding:22px;display:flex;gap:26px;align-items:flex-end;width:fit-content">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><svg width="110" height="110" viewBox="0 0 96 96" style="overflow:visible"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><ellipse cx="48" cy="50" rx="30" ry="14" fill="url(#hGl)" style="animation:an-glow 4s ease-in-out infinite"></ellipse><g style="transform-origin:48px 50px;animation:an-breathe 4s ease-in-out infinite"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" fill="none" stroke="url(#hSt)" stroke-width="3" stroke-linecap="round"></path></g><path d="M18 50h60" stroke="#94bce3" stroke-width="1" opacity=".5"></path><circle cx="48" cy="50" r="3" fill="#f5f5f8"></circle></svg><span style="font-size:11px;color:#8aa0b6">launch · breathing</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><svg width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><ellipse cx="48" cy="50" rx="30" ry="14" fill="url(#hGl)"></ellipse><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" stroke-width="3"></path><path d="M18 50h60" stroke-width="1" opacity=".5"></path></g><circle cx="48" cy="50" r="3" fill="#f5f5f8"></circle></svg><span style="font-size:11px;color:#8aa0b6">p 1.0 · birth</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><svg width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><ellipse cx="48" cy="50" rx="30" ry="14" fill="url(#hGl)" opacity=".7"></ellipse><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 50c8 0 8 10 16 10s8-20 16-20 8 20 16 20 8-10 12-10" stroke-width="3"></path><path d="M18 50h60" stroke-width="1" opacity=".5"></path></g><circle cx="48" cy="50" r="3" fill="#f5f5f8"></circle></svg><span style="font-size:11px;color:#8aa0b6">p 0.42 · adolescence</span></div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px"><svg width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><ellipse cx="48" cy="50" rx="30" ry="14" fill="url(#hGl)" opacity=".4"></ellipse><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 50c8 0 8 4.7 16 4.7s8-9.4 16-9.4 8 9.4 16 9.4 8-4.7 12-4.7" stroke-width="3"></path><path d="M18 50h60" stroke-width="1" opacity=".5"></path></g><circle cx="48" cy="50" r="3" fill="#f5f5f8"></circle></svg><span style="font-size:11px;color:#8aa0b6">p 0.05 · maturity</span></div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:center"><svg width="60" height="60" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" stroke-width="4"></path><path d="M18 50h60" stroke-width="1.5" opacity=".5"></path></g><circle cx="48" cy="50" r="4" fill="#f5f5f8"></circle></svg><svg width="29" height="29" viewBox="0 0 96 96"><rect width="96" height="96" rx="22" fill="url(#hBg)"></rect><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" fill="none" stroke="#d6ebff" stroke-width="7" stroke-linecap="round"></path><circle cx="48" cy="50" r="6" fill="#f5f5f8"></circle></svg><span style="font-size:11px;color:#8aa0b6">60 · 29 px</span></div>
+  </div>
+  <div style="max-width:560px;font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty">"Breath": two waves rising into an A over a resting line, a lit point where they cross. Amplitude = 4 + 14·p, so the icon, the intro and the mind sheet are one drawing at different ages. Launch animation: the wave breathes on a 4 s cycle, the glow with it; it never spins or bounces.</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:16px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">06 · Home screen widget</div>
+  <div style="display:flex;gap:16px;align-items:flex-start">
+    <div style="width:170px;height:170px;border-radius:38px;background:radial-gradient(ellipse at 50% 60%,#2c455d,#101b26);padding:18px;display:flex;flex-direction:column;justify-content:space-between;color:#f5f5f8;font-family:-apple-system,system-ui,sans-serif">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#8aa0b6;letter-spacing:.04em"><span>ANIMA</span><span style="width:5px;height:5px;border-radius:50%;background:#94bce3;box-shadow:0 0 6px #94bce3"></span></div>
+      <svg width="134" height="56" viewBox="0 0 96 40" style="overflow:visible"><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 20c8 0 8 10 16 10s8-20 16-20 8 20 16 20 8-10 12-10" stroke-width="2.2"></path><path d="M14 20h68" stroke-width=".8" opacity=".5"></path></g><circle cx="48" cy="20" r="2.4" fill="#f5f5f8"></circle></svg>
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.01em">0.42</span><span style="font-size:10px;color:#b7c4d2">26 nights · 1 to decide</span></div>
+    </div>
+    <div style="width:356px;height:170px;border-radius:38px;background:radial-gradient(ellipse at 30% 60%,#2c455d,#101b26);padding:18px 20px;display:flex;gap:18px;color:#f5f5f8;font-family:-apple-system,system-ui,sans-serif">
+      <div style="display:flex;flex-direction:column;justify-content:space-between;flex:none;width:100px"><div style="font-size:10px;color:#8aa0b6;letter-spacing:.04em">ANIMA · adolescence</div><svg width="100" height="42" viewBox="0 0 96 40"><g fill="none" stroke="url(#hSt)" stroke-linecap="round"><path d="M18 20c8 0 8 10 16 10s8-20 16-20 8 20 16 20 8-10 12-10" stroke-width="2.2"></path><path d="M14 20h68" stroke-width=".8" opacity=".5"></path></g><circle cx="48" cy="20" r="2.4" fill="#f5f5f8"></circle></svg><span style="font-size:22px;font-weight:500;font-variant-numeric:tabular-nums">p 0.42</span></div>
+      <div style="flex:1;border-left:1px solid #2c455d;padding-left:18px;display:flex;flex-direction:column;justify-content:center;gap:6px"><div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#d6ebff">Proposal</div><div style="font-size:14px;font-weight:500;line-height:1.3;text-wrap:pretty">Schedule the bank call and prescription at 3 pm?</div><div style="font-size:11px;color:#8aa0b6">Expires in 6 days · open to decide</div></div>
+    </div>
+  </div>
+  <div style="max-width:540px;font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty">Small: plasticity and the count of undecided proposals. Medium: adds the oldest proposal, tap opens Inbox. Widgets never show memory text; that stays in the app.</div>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:18px">
+  <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">07 · Glasses · Meta Ray-Ban Display, DAT SDK 0.9 vocabulary</div>
+  <div style="max-width:820px;font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty;display:flex;flex-direction:column;gap:6px">
+    <div>The HUD is not a screen; it is a closed set of components the glasses runtime renders: <b>FlexBox · Text (heading/body/meta × primary/secondary) · Icon (catalog) · Button (primary/secondary/outline) · ButtonGroup · Image</b>. No colors, fonts, animation, streaming, gestures or inputs. Every view is a full swap, the system paints focus, and the system back gesture ends the session, so every non-root view carries its own Back button.</div>
+    <div>Deliverable per view is its <b>component tree</b> (right column); the dark panel is only an illustration of that tree. Click buttons to walk the state machine. All views pass the guide's checklist: root FlexBox, catalog icons only, ≤4 interactive, ≤3 buttons, reconstructible from app state, long content hands off to the phone.</div>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:rgba(0,0,0,.65);max-width:980px;line-height:1.6"><b style="color:#1d1f20">State machine</b><span>Home → Proposal → Confirmed → Home</span><span>·</span><span>Home → Inbox → {Proposal, Inferred goal, Handoff (identity → phone)}</span><span>·</span><span>Talk → Listening → Heard → Thinking → Reply (spoken + card) → Reply again | Proposal | On phone</span><span>·</span><span>voice note → Heard (note) → Kept for tonight</span><span>·</span><span>Conversation list → turn | handoff</span><span>·</span><span>camera capture → Remembered → Home</span><span>·</span><span>display sleeps → app re-sends the current view</span></div>
+  <div style="display:flex;flex-direction:column;gap:10px;max-width:820px;font-size:12px;line-height:1.55;color:rgba(0,0,0,.62);text-wrap:pretty"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:rgba(0,0,0,.5)">Conversation on glass</div><div>Voice is the input and the output: the phone captures the glasses' mic, Anima answers <b>out loud</b> through the speakers, and the HUD shows the gist as a card. Turn detection is the phone's (pause to send); the SDK never sees audio, so each stage is a view swap: Listening → Heard (transcript, Again/Send) → Thinking → Reply (speaking, first sentence + one line, Reply/Proposal/On phone). A voice note ("remember that…") is recognized by the phone and lands as Heard · note → Kept for tonight, so what goes into memory is always shown before it is kept.</div></div>
+  <div style="display:flex;flex-direction:column;gap:26px">
+    <sc-for list="{{ glassViews }}" as="g" hint-placeholder-count="6">
+    <div style="display:flex;flex-direction:column;gap:8px;max-width:1040px">
+      <div style="font-size:12px;color:rgba(0,0,0,.65);line-height:1.4"><b style="color:#1d1f20">{{ g.title }}</b> · {{ g.note }}</div>
+      <dc-import name="Anima Glasses" view="{{ g.view }}" focus="{{ g.focus }}" hint-size="1040px,300px"></dc-import>
+    </div>
+    </sc-for>
+  </div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals(){
+    return {
+      obShots:[
+        {scenario:'intro',title:'Intro',note:'the mark breathes; one action'},
+        {scenario:'tutorial',title:'Tutorial',note:'three things to know, no carousel'},
+        {scenario:'provider',title:'Provider',note:'Anthropic, OpenAI, Google, on-device'},
+        {scenario:'apikey',title:'API key',note:'checked with one request, stored in Keychain, budget chosen here'},
+        {scenario:'permissions',title:'Permissions',note:'each with a why-line; revocable later'},
+        {scenario:'pairing',title:'Glasses',note:'optional; radar while searching'},
+        {scenario:'seed',title:'Birth',note:'Anima asks three questions; answer by chip, text or voice'}
+      ],
+      voiceShots:[
+        {scenario:'voice',title:'Listening → thinking → speaking',note:'the full loop runs on load; the mark reacts to each phase. Tap the big button to send or interrupt.'},
+        {scenario:'voiceSpeaking',title:'Speaking',note:'caption streams under the mark while Anima talks; mute keeps the caption, drops the audio.'}
+      ],
+      coreShots:[
+        {scenario:'default',title:'Chat',note:'thought line, streaming, proposal handoff'},
+        {scenario:'inbox',title:'Inbox',note:'proposal, identity diff, inferred goal'},
+        {scenario:'memory',title:'Memory',note:'importance dots, revisions, invalidated'},
+        {scenario:'mind',title:'Mind sheet',note:'the mark at the current age, regime, body'},
+        {scenario:'settings',title:'Settings',note:'model, cost by turn type, permissions, body, mind'}
+      ],
+      edgeShots:[
+        {scenario:'newborn',title:'Day one',note:'p 1.0, empty memory, honest "I don\u2019t know yet"'},
+        {scenario:'mature',title:'Mature mind',note:'p 0.07; identity locked, a value change asks first'},
+        {scenario:'night',title:'Consolidation night',note:'charging at 02:14; four steps, one night older'},
+        {scenario:'budget',title:'Budget reached',note:'turns pause, messages kept, Memory and Inbox still work'},
+        {scenario:'revoked',title:'Permission revoked',note:'Calendar off: answers from memory and says so'},
+        {scenario:'delete',title:'Delete / export',note:'typed confirmation; export offered first'}
+      ],
+      glassViews:[
+        {view:'home',focus:0,title:'Home (root)',note:'what the wearer sees on wake: state of the mind in one meta line, the one thing waiting, Talk as the primary way in. No Back on the root.'},
+        {view:'listen',focus:2,title:'Listening',note:'the mark appears as a static Image (one PNG per state, sent once) above the meta line; no waveform exists. Cancel, or the phone ends the turn on pause.'},
+        {view:'heard',focus:2,title:'Heard',note:'the transcript is shown before it is sent, in quotes as body text. Again re-records; Send goes to Thinking.'},
+        {view:'reply',focus:1,title:'Reply · spoken',note:'the mark at full amplitude (static Image) while Anima speaks through the speakers; the card carries heading ≤40 + one body line. Reply keeps the conversation going; Proposal jumps to what it created; On phone hands off.'},
+        {view:'noteHeard',focus:2,title:'Voice note · heard',note:'"remember that…" is detected by the phone. Nothing is stored until Keep.'},
+        {view:'noteKept',focus:1,title:'Voice note · kept',note:'what will settle into memory tonight, in one heading; Forget undoes it. Same eye glyph as Remembered.'},
+        {view:'thread',focus:1,title:'Conversation · today',note:'the last turns as tappable cards (You / Anima · spoken), third card is the handoff. 4 interactive, the ceiling.'},
+        {view:'proposal',focus:2,title:'Proposal',note:'one idea, one question, two buttons; "Not now" leaves it in the phone Inbox untouched. Focus shown on Confirm (system-painted).'},
+        {view:'confirmed',focus:1,title:'Confirmed',note:'the result as a full new view (no transition exists), one exit.'},
+        {view:'inbox',focus:1,title:'Inbox list',note:'3 tappable cards + Back = 4 interactive, the ceiling. Identity changes are listed but hand off to the phone.'},
+        {view:'handoff',focus:0,title:'Handoff',note:'the pattern for anything long or sensitive: say why, send to the phone, one Back.'},
+        {view:'thinking',focus:1,title:'Thinking',note:'no spinner exists: static circle8RaysLarge + meta text + the heard question, Cancel. Replaced by Answer when complete (no streaming).'},
+        {view:'answer',focus:1,title:'Answer',note:'heading ≤40 chars, body ≤200; "On phone" for the rest.'},
+        {view:'remembered',focus:2,title:'Remembered',note:'after a capture: what will be kept tonight; Forget is one tap.'},
+        {view:'declined',focus:0,title:'Declined',note:'a refusal is a card like any other: speechBubbleOff, one sentence, the alternative, Back.'},
+        {view:'offline',focus:0,title:'Offline',note:'exclamationTriangle is the only alert glyph; message kept, no red exists anyway.'},
+        {view:'empty',focus:0,title:'Inbox · empty',note:'empty states are cards from the same vocabulary.'}
+      ],
+      hud:[
+        {scene:'linear-gradient(180deg,#5a6b7a 0%,#2f3a44 55%,#1a2128 100%)',where:'STREET · 15:02',label:'Proposal',text:'Schedule bank call + prescription at 3 pm?',hint:'Nod to confirm · look away to dismiss',caret:'none',note:'Proposal on a walk. Hint names the two gestures; timeout 8 s, then it waits in Inbox.'},
+        {scene:'linear-gradient(180deg,#8a7a66 0%,#4a4038 55%,#2a241f 100%)',where:'KITCHEN · 08:12',label:'Remembered',text:'Panadería Lucero · breakfast, $18.40',hint:'Fades in 4 s',caret:'none',note:'After showing a receipt to the camera. Confirms what was seen, then leaves.'},
+        {scene:'linear-gradient(180deg,#3a4652 0%,#222a32 55%,#141a20 100%)',where:'MEETING · 11:40',label:'Answer',text:'Free 3:00–4:30. Two reminders overdue.',hint:'Full answer on phone',caret:'inline-block',note:'Whispered question in a meeting. Streams one line; the third line never appears on glass.'}
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

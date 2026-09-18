@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var chatModel: ChatViewModel?
     @Published private(set) var settingsModel: SettingsViewModel?
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
+    @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
     let confirmation = ConfirmationCenter()
 
     private let keychain = KeychainStore()
@@ -53,6 +54,9 @@ final class AppModel: ObservableObject {
     private var inbox: ConsolidationInbox?
     private var consolidator: Consolidator?
     private let sleepScheduler = SleepScheduler()
+    // Fase 3: la identidad viva y el registro de lo Real.
+    private var selfModel: SelfModel?
+    private var realRegister: RealRegister?
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -74,6 +78,12 @@ final class AppModel: ObservableObject {
             self.telemetry = telemetry
             self.brain = Brain(queue: queue)
             self.inbox = ConsolidationInbox(queue: queue)
+            // Fase 3 (§5.5, §5.6): identidad viva + registro de lo Real.
+            let selfModel = SelfModel(queue: queue, notifier: UserNotificationApprovalNotifier())
+            self.selfModel = selfModel
+            self.realRegister = RealRegister(queue: queue)
+            self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel)
+            _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             self.settingsModel = SettingsViewModel(keychain: keychain, telemetry: telemetry)
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -113,12 +123,15 @@ final class AppModel: ObservableObject {
             clientTools: Self.tools(),
             confirmation: confirmation,
             brain: brain,
-            inbox: inbox)
+            inbox: inbox,
+            selfModel: selfModel,
+            realRegister: realRegister)
 
         // El Consolidator (§5.4) para el sueño: Haiku por el mismo dial.
         if let brain {
             let consolidator = Consolidator(brain: brain, queue: store.database, provider: ClaudeProvider(),
-                                            router: router, authMode: authMode, token: token, telemetry: telemetry)
+                                            router: router, authMode: authMode, token: token, telemetry: telemetry,
+                                            selfModel: selfModel, realRegister: realRegister)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
             await runForegroundFallbackIfNeeded(consolidator)
@@ -213,6 +226,11 @@ struct RootView: View {
                     if let memory = app.memoryModel {
                         MemoryBrowserView(model: memory)
                             .tabItem { Label("Memoria", systemImage: "brain") }
+                    }
+                    if let approvals = app.approvalsModel {
+                        ApprovalsInboxView(model: approvals)
+                            .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal") }
+                            .badge(approvals.badgeCount)
                     }
                     if let settings = app.settingsModel {
                         SettingsView(model: settings)

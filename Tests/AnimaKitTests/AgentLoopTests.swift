@@ -94,6 +94,57 @@ import Testing
         #expect(!events.contains { if case .turnFinished = $0 { return true } else { return false } })
     }
 
+    /// La misma tool+input repetida dispara loop detection y detiene el turno.
+    @Test func loopDetectionStopsTurn() async throws {
+        let notesRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: notesRoot) }
+
+        let round: [ProviderEvent] = [
+            .messageStart(id: "m", model: "claude-opus-4-8"),
+            .toolUseStart(id: "toolu", name: "notes"),
+            .toolUseInputDelta(#"{"action":"list"}"#),
+            .blockStop(index: 0),
+            .messageDelta(stopReason: .toolUse, usage: Usage(inputTokens: 10, outputTokens: 5)),
+            .messageStop,
+        ]
+        // Tres rondas idénticas → la 3ª repetición detiene.
+        let provider = ScriptedProvider([round, round, round, round])
+        let (loop, _, sid) = try makeLoop(provider: provider, notesRoot: notesRoot)
+
+        var events: [LoopEvent] = []
+        for await event in await loop.run(sessionId: sid, userText: "lista mis notas") {
+            events.append(event)
+        }
+        #expect(events.contains(.stopped(.loopDetected)))
+    }
+
+    /// Turno multimodal: un image block en el content del turno fluye sin crash.
+    @Test func multimodalImageTurn() async throws {
+        let notesRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: notesRoot) }
+
+        let round: [ProviderEvent] = [
+            .messageStart(id: "m", model: "claude-opus-4-8"),
+            .textDelta("Veo una foto azul."),
+            .blockStop(index: 0),
+            .messageDelta(stopReason: .endTurn, usage: Usage(inputTokens: 100, outputTokens: 8)),
+            .messageStop,
+        ]
+        let provider = ScriptedProvider([round])
+        let (loop, store, sid) = try makeLoop(provider: provider, notesRoot: notesRoot)
+
+        let content: [ContentBlock] = [.text("¿qué ves?"), .image(mediaType: "image/jpeg", base64: "AQID")]
+        var events: [LoopEvent] = []
+        for await event in await loop.run(sessionId: sid, content: content) {
+            events.append(event)
+        }
+        #expect(events.contains(.turnFinished(stopReason: .endTurn)))
+
+        // El turno multimodal se persistió con texto + imagen.
+        let window = try store.window(sessionId: sid)
+        #expect(window.first?.content.contains(.image(mediaType: "image/jpeg", base64: "AQID")) == true)
+    }
+
     @Test func pauseTurnResumesUntilEndTurn() async throws {
         let notesRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: notesRoot) }

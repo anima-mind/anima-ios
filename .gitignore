@@ -4,6 +4,8 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+# Proyecto Xcode: generado por XcodeGen (App/project.yml es la fuente), no se versiona
+*.xcodeproj
 # Secrets: la API key vive en Keychain, JAMÁS en el repo
 *.env
 Secrets.*

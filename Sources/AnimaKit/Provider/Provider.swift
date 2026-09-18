@@ -204,14 +204,17 @@ public struct CallOpts: Sendable {
     public var authMode: AuthMode
     public var token: String
     public var systemPromptBase: String
+    /// Gestión de contexto server-side del turno (§5.1). Default: sin alivio.
+    public var relief: ReliefControls
 
     public init(route: ModelRoute, api: ProviderAPIConfig, authMode: AuthMode,
-                token: String, systemPromptBase: String) {
+                token: String, systemPromptBase: String, relief: ReliefControls = .init()) {
         self.route = route
         self.api = api
         self.authMode = authMode
         self.token = token
         self.systemPromptBase = systemPromptBase
+        self.relief = relief
     }
 }
 

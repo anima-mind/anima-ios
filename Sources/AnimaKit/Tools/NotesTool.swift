@@ -127,6 +127,15 @@ public struct NotesTool: HarnessTool {
     }
 }
 
+// NotesTool es la propia libreta del asistente (sandbox, ningún recurso del
+// dueño): allow sin ask, aun en operaciones escribientes (§5.7).
+extension NotesTool: SensorimotorTool {
+    public func kind(for input: JSONValue) -> ToolKind { .afferent }
+    public func operation(for input: JSONValue) -> String {
+        input["action"]?.stringValue ?? "default"
+    }
+}
+
 /// Spec de la tool server-side web_search (§5.7). Variante Opus 4.8 con dynamic
 /// filtering: cero código cliente, el loop maneja pause_turn.
 public enum WebSearchTool {

@@ -10,9 +10,11 @@ import FirebaseCore
 @main
 struct AnimaApp: App {
     @StateObject private var app = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         FirebaseApp.configure()
+        AppModel.registerConsolidationTask()
     }
 
     var body: some Scene {
@@ -20,6 +22,9 @@ struct AnimaApp: App {
             RootView(app: app)
                 .task { await app.bootstrap() }
                 .preferredColorScheme(.dark)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { app.scheduleConsolidation() }
         }
     }
 }
@@ -36,12 +41,22 @@ final class AppModel: ObservableObject {
     @Published var phase: Phase = .loading
     @Published private(set) var chatModel: ChatViewModel?
     @Published private(set) var settingsModel: SettingsViewModel?
+    @Published private(set) var memoryModel: MemoryBrowserViewModel?
     let confirmation = ConfirmationCenter()
 
     private let keychain = KeychainStore()
     private var store: SymbolicStore?
     private var telemetry: Telemetry?
     private var configProvider: FirebaseConfigProvider?
+    // Fase 2: el brain, la cola de candidatos y el sueño.
+    private var brain: Brain?
+    private var inbox: ConsolidationInbox?
+    private var consolidator: Consolidator?
+    private let sleepScheduler = SleepScheduler()
+
+    /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
+    /// (registrado en app launch) lo alcance cuando ya esté cableado.
+    static let shared = ConsolidatorHolder()
 
     func bootstrap() async {
         // Config congelada por sesión (fetch+activate una vez).
@@ -57,7 +72,10 @@ final class AppModel: ObservableObject {
             let telemetry = Telemetry(queue: queue)
             self.store = store
             self.telemetry = telemetry
+            self.brain = Brain(queue: queue)
+            self.inbox = ConsolidationInbox(queue: queue)
             self.settingsModel = SettingsViewModel(keychain: keychain, telemetry: telemetry)
+            if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
             phase = .misconfigured("No se pudo abrir la base de datos: \(error.localizedDescription)")
             return
@@ -93,11 +111,56 @@ final class AppModel: ObservableObject {
             authMode: authMode,
             token: token,
             clientTools: Self.tools(),
-            confirmation: confirmation)
+            confirmation: confirmation,
+            brain: brain,
+            inbox: inbox)
+
+        // El Consolidator (§5.4) para el sueño: Haiku por el mismo dial.
+        if let brain {
+            let consolidator = Consolidator(brain: brain, queue: store.database, provider: ClaudeProvider(),
+                                            router: router, authMode: authMode, token: token, telemetry: telemetry)
+            self.consolidator = consolidator
+            Self.shared.set(consolidator, scheduler: sleepScheduler)
+            await runForegroundFallbackIfNeeded(consolidator)
+        }
 
         let sessionId = (try? store.startSession()) ?? UUID().uuidString
         chatModel = ChatViewModel(loop: loop, sessionId: sessionId)
         phase = .ready
+    }
+
+    /// Fallback foreground (§5.4): si pasaron >48h sin ciclo completo, se corre al
+    /// abrir la app (best-effort, no bloqueante).
+    private func runForegroundFallbackIfNeeded(_ consolidator: Consolidator) async {
+        let last = await consolidator.lastCycleAt()
+        guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else { return }
+        let scheduler = sleepScheduler
+        Task.detached { await scheduler.runResumable(consolidator) }
+    }
+
+    /// Registro del BGProcessingTask (§5.4). Se llama en app launch; el runner
+    /// alcanza el Consolidator vía el holder compartido cuando ya esté cableado.
+    static func registerConsolidationTask() {
+        #if os(iOS)
+        SleepScheduler().register { task in
+            // BGProcessingTask no es Sendable; se cruza al Task deliberadamente
+            // (patrón sancionado de Apple para el expirationHandler + trabajo async).
+            nonisolated(unsafe) let task = task
+            let expired = ExpirationFlag()
+            task.expirationHandler = { expired.mark() }
+            Task {
+                let success = await AppModel.shared.run(isExpired: { expired.value })
+                task.setTaskCompleted(success: success)
+            }
+        }
+        #endif
+    }
+
+    /// Encola el próximo ciclo al ir a background (el sueño corre al cargar).
+    func scheduleConsolidation() {
+        #if os(iOS)
+        sleepScheduler.submit()
+        #endif
     }
 
     /// Registro v1 de tools client-side (§5.7). Camera/audio: la captura la inicia
@@ -143,8 +206,20 @@ struct RootView: View {
             Text(reason).padding()
         case .ready:
             if let chat = app.chatModel {
-                ChatView(model: chat)
-                    .confirmationOverlay(app.confirmation)
+                TabView {
+                    ChatView(model: chat)
+                        .confirmationOverlay(app.confirmation)
+                        .tabItem { Label("Chat", systemImage: "bubble.left") }
+                    if let memory = app.memoryModel {
+                        MemoryBrowserView(model: memory)
+                            .tabItem { Label("Memoria", systemImage: "brain") }
+                    }
+                    if let settings = app.settingsModel {
+                        SettingsView(model: settings)
+                            .tabItem { Label("Ajustes", systemImage: "gearshape") }
+                    }
+                }
+                .tint(Theme.Colors.accent)
             }
         }
     }

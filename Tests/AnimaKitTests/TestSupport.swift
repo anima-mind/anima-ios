@@ -72,6 +72,29 @@ enum TestConfig {
     }
 }
 
+// MARK: - Helpers de eventos y router para el Consolidator (Fase 2)
+
+extension Array where Element == ProviderEvent {
+    /// Un turno de solo texto (respuesta del Consolidator vía Haiku mockeado).
+    static func text(_ s: String) -> [ProviderEvent] {
+        [.messageStart(id: "m", model: "claude-haiku-4-5"),
+         .textDelta(s),
+         .messageDelta(stopReason: .endTurn, usage: Usage()),
+         .messageStop]
+    }
+}
+
+extension ModelRouter {
+    /// Router que rutea TODA clase de turno a Haiku (para tests del ciclo).
+    static func haikuAll(base: String = "system") throws -> ModelRouter {
+        let api = try TestConfig.providerConfig().api
+        let haiku = ModelRoute(model: "claude-haiku-4-5", effort: nil, maxTokens: 4000)
+        var routes: [TurnClass: ModelRoute] = [:]
+        for turn in TurnClass.allCases { routes[turn] = haiku }
+        return ModelRouter(config: ProviderConfig(systemPromptBase: base, api: api, routes: routes))
+    }
+}
+
 // MARK: - Walk de JSONValue (para asserts sobre el body del request)
 
 extension JSONValue {

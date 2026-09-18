@@ -57,6 +57,11 @@ public enum AnimaDatabase {
         // Consolidator (inbox, ciclos reanudables, cycle_log).
         BrainSchema.register(&m)
 
+        // Fase 3 (§5.5, §5.6): SelfModel (identidad + plasticidad + approvals) y
+        // RealRegister (fallos por PatternKey + restructure queue).
+        SelfModelSchema.register(&m)
+        RealSchema.register(&m)
+
         return m
     }
 

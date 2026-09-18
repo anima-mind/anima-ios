@@ -79,4 +79,38 @@ import Testing
         #expect(block.contains("Joshua vive en Bogota"))
         #expect(messages[turnIndex].content == [.text("¿dónde vivo?")])
     }
+
+    /// Golden Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView
+    /// estático en el mid-conversation system, misma posición del orden estable.
+    @Test func liveSelfRenderReplacesProvisionalView() async throws {
+        let (store, sid) = try makeStore()
+        let wm = WorkingMemory(store: store)
+        await wm.updateSelfRender("[SELF] Eres Anima. (identidad v3, plasticidad 0.42)")
+        let messages = try await wm.assemble(.text("hola", sessionId: sid))
+
+        #expect(messages.map(\.role) == [.system, .user])
+        guard case .text(let render)? = messages[0].content.first else {
+            Issue.record("bloque self ausente"); return
+        }
+        #expect(render == "[SELF] Eres Anima. (identidad v3, plasticidad 0.42)")
+        // Ya no es el render provisional estático de Fase 1.
+        #expect(render != ProvisionalSelfView.provisional.render())
+    }
+
+    /// Golden Fase 3 (§5.6): el banner de restructure entra como segundo
+    /// mid-conversation system, DESPUÉS del self y ANTES del turn input.
+    @Test func restructureBannerAppearsAfterSelfBeforeTurn() async throws {
+        let (store, sid) = try makeStore()
+        let wm = WorkingMemory(store: store)
+        await wm.updateRestructureBanner("[RESTRUCTURE] esta estrategia ha fallado 3 veces — cambia de aproximación")
+        let messages = try await wm.assemble(.text("intenta de nuevo", sessionId: sid))
+
+        // [system(self), system(restructure), user(turn)].
+        #expect(messages.map(\.role) == [.system, .system, .user])
+        guard case .text(let banner)? = messages[1].content.first else {
+            Issue.record("banner ausente"); return
+        }
+        #expect(banner.hasPrefix("[RESTRUCTURE]"))
+        #expect(messages.last?.content == [.text("intenta de nuevo")])
+    }
 }

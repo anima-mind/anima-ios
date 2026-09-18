@@ -33,6 +33,29 @@ final class ScriptedProvider: Provider, @unchecked Sendable {
     }
 }
 
+/// Provider con guion por llamada que además CAPTURA los messages ensamblados y
+/// la ruta (modelo/effort) de cada invocación — para asserts sobre inyección de
+/// system messages y ruteo por TurnClass (Fase 3).
+final class CapturingProvider: Provider, @unchecked Sendable {
+    struct Capture: Sendable { let messages: [Message]; let route: ModelRoute }
+    private let scripts: [[ProviderEvent]]
+    private let index = Locked(0)
+    let captures = Locked<[Capture]>([])
+
+    init(_ scripts: [[ProviderEvent]]) { self.scripts = scripts }
+
+    func complete(_ ctx: AssembledContext, tools: [ToolSpec], opts: CallOpts)
+        -> AsyncThrowingStream<ProviderEvent, Error> {
+        let i = index.mutate { current -> Int in let c = current; current += 1; return c }
+        captures.mutate { $0.append(Capture(messages: ctx.messages, route: opts.route)) }
+        let events = i < scripts.count ? scripts[i] : []
+        return AsyncThrowingStream { continuation in
+            for event in events { continuation.yield(event) }
+            continuation.finish()
+        }
+    }
+}
+
 // MARK: - Config de Anthropic para tests (mismo JSON de consola que RemoteConfigTests)
 
 enum TestConfig {
@@ -49,6 +72,7 @@ enum TestConfig {
         "routes": {
           "interactive":     { "model": "claude-opus-4-8",  "effort": "medium", "max_tokens": 16000 },
           "interactiveHard": { "model": "claude-opus-4-8",  "effort": "high",   "max_tokens": 32000 },
+          "restructure":     { "model": "claude-opus-4-8",  "effort": "high",   "max_tokens": 32000 },
           "consolidation":   { "model": "claude-haiku-4-5", "max_tokens": 4000 }
         }
       }

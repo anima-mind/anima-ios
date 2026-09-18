@@ -28,7 +28,7 @@ public actor Consolidator {
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
     enum Stage: String, Codable {
-        case pending, salient, distilled, written, reconsolidated, reflected, done
+        case pending, salient, distilled, written, reconsolidated, reflected, restructured, done
         var order: Int {
             switch self {
             case .pending: return 0
@@ -37,7 +37,8 @@ public actor Consolidator {
             case .written: return 3
             case .reconsolidated: return 4
             case .reflected: return 5
-            case .done: return 6
+            case .restructured: return 6
+            case .done: return 7
             }
         }
     }
@@ -50,10 +51,15 @@ public actor Consolidator {
     private let token: String
     private let telemetry: Telemetry?
     private let cycleTokenBudget: Int
+    // Fase 3: el reflection propone cambios al self (§5.5); la restructure queue del
+    // RealRegister (§5.6) se procesa a lecciones y los patrones quedan resueltos.
+    private let selfModel: SelfModel?
+    private let realRegister: RealRegister?
 
     public init(brain: Brain, queue: DatabaseQueue, provider: Provider, router: ModelRouter,
                 authMode: AuthMode, token: String, telemetry: Telemetry? = nil,
-                cycleTokenBudget: Int = 8000) {
+                cycleTokenBudget: Int = 8000,
+                selfModel: SelfModel? = nil, realRegister: RealRegister? = nil) {
         self.brain = brain
         self.queue = queue
         self.provider = provider
@@ -62,6 +68,8 @@ public actor Consolidator {
         self.token = token
         self.telemetry = telemetry
         self.cycleTokenBudget = cycleTokenBudget
+        self.selfModel = selfModel
+        self.realRegister = realRegister
     }
 
     // MARK: - Ciclo
@@ -72,6 +80,8 @@ public actor Consolidator {
     /// próximo `cycle()` retoma donde iba.
     @discardableResult
     public func cycle(interrupting shouldStop: (@Sendable (String) -> Bool)? = nil) async throws -> CycleReport {
+        // Fail-closed (§5.5): las aprobaciones vencidas expiran a Rejected antes de nada.
+        _ = await selfModel?.expireStale()
         let (n, startStage) = try currentCycle()
         var stage = startStage
 
@@ -101,7 +111,13 @@ public actor Consolidator {
             try await reflectStage(cycle: n)
             if try advance(to: .reflected) { return try report(cycle: n, completed: false) }
         }
+        if stage.order < Stage.restructured.order {
+            try await restructureStage(cycle: n)
+            if try advance(to: .restructured) { return try report(cycle: n, completed: false) }
+        }
         try finish(cycle: n)
+        // El ciclo exitoso madura la plasticidad del self (§5.5): n += 1.
+        await selfModel?.recordSuccessfulCycle()
         return try report(cycle: n, completed: true)
     }
 
@@ -280,7 +296,35 @@ public actor Consolidator {
             _ = try await brain.add(MemoryCandidate(content: insight, kind: .reflection, importance: 6,
                                                     source: "cycle:\(cycle)"), cycle: cycle)
         }
+        // Propuestas al SelfModel (§5.5): cada una pasa por el gate de plasticidad;
+        // las identitarias en adolescencia/madurez caen a PendingOtherApproval.
+        if let selfModel {
+            let proposals = (dto?.self_proposals ?? []).compactMap { p -> SelfProposal? in
+                guard let field = SelfProposal.Field(rawValue: p.field),
+                      !p.value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return SelfProposal(field: field, value: p.value,
+                                    rationale: p.rationale ?? "propuesta del reflection del ciclo",
+                                    origin: .reflection)
+            }
+            if !proposals.isEmpty { _ = await selfModel.reflect(proposals) }
+        }
         try persistReflection(cycle: cycle, summary: summary, insights: insights)
+    }
+
+    // MARK: - f. Restructures (§5.6): la restructure queue → lecciones en el brain
+
+    private func restructureStage(cycle: Int) async throws {
+        guard let realRegister else { return }
+        let requests = await realRegister.demand()
+        guard !requests.isEmpty else { return }
+        for req in requests {
+            let onTarget = req.target.map { " sobre '\($0)'" } ?? ""
+            let content = "Lección: la tool '\(req.toolName)' falla de forma repetida con '\(req.errorClass)'\(onTarget) "
+                + "(insistió \(req.count) veces). Cambiar de aproximación en lugar de repetir la misma llamada."
+            _ = try await brain.write(.add(MemoryCandidate(content: content, kind: .lesson, importance: 7,
+                                                           source: "real:\(req.patternKey)")), cycle: cycle)
+            await realRegister.resolve(patternKey: req.patternKey)
+        }
     }
 
     // MARK: - Housekeeping final
@@ -401,7 +445,7 @@ public actor Consolidator {
     }
 
     private func persistReflection(cycle: Int, summary: String, insights: [String]) throws {
-        let dto = ReflectionDTO(summary: summary, insights: insights)
+        let dto = ReflectionDTO(summary: summary, insights: insights, self_proposals: nil)
         let json = String(data: (try? JSONEncoder().encode(dto)) ?? Data(), encoding: .utf8) ?? "{}"
         let now = Date().timeIntervalSince1970
         try queue.write { db in
@@ -506,6 +550,13 @@ private struct RevisionDTO: Decodable {
 private struct ReflectionDTO: Codable {
     let summary: String
     let insights: [String]?
+    let self_proposals: [SelfProposalDTO]?
+}
+
+private struct SelfProposalDTO: Codable {
+    let field: String       // identity | values | capabilities | style | historySummary
+    let value: String
+    let rationale: String?
 }
 
 // MARK: - Prompts (salida JSON estricta)
@@ -530,6 +581,7 @@ extension Consolidator {
 
     static let reflectionPrompt = """
     Resume el ciclo de consolidación. Devuelve SOLO un objeto JSON:
-    {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."]}
+    {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}]}
+    Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente; si no, omítelo o déjalo vacío. Los cambios identitarios (identity, values) pueden requerir aprobación del dueño según la madurez.
     """
 }

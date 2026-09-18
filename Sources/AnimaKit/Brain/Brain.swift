@@ -10,6 +10,7 @@ public typealias MemoryID = String
 
 public enum MemoryKind: String, Sendable, Codable, Equatable {
     case episodic, semantic, procedural, reflection
+    case lesson   // Fase 3 (§5.6): lección destilada de un patrón de fallo del RealRegister.
 }
 
 /// Resultado de una recuperación con outcome, para el usage_log (§5.3).

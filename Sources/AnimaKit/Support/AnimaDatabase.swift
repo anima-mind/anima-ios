@@ -53,6 +53,10 @@ public enum AnimaDatabase {
                 """)
         }
 
+        // Fase 2 (§5.3, §5.4): Brain bi-temporal + FTS5 + embeddings +
+        // Consolidator (inbox, ciclos reanudables, cycle_log).
+        BrainSchema.register(&m)
+
         return m
     }
 

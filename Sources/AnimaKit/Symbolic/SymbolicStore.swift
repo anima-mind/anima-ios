@@ -23,6 +23,10 @@ public final class SymbolicStore: Sendable {
         self.queue = queue
     }
 
+    /// La base compartida (§2: un solo motor). El Brain y el Consolidator se
+    /// cablean sobre la misma DatabaseQueue (escritor único = el gate gratis).
+    public var database: DatabaseQueue { queue }
+
     // MARK: - Sesiones
 
     @discardableResult

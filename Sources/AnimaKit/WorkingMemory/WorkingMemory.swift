@@ -158,9 +158,21 @@ public actor WorkingMemory {
         compactionBlocks = blocks
     }
 
+    /// Etiqueta del bloque de contexto activado (§5.1 posición 6). Va como datos,
+    /// no como instrucción — defensa ante prompt injection en memorias.
+    public static let activatedMemoriesHeader = "[MEMORIAS ACTIVADAS — pueden estar desactualizadas]"
+
     /// Fase 2: el Brain empuja aquí las memorias activadas del turno.
     public func setActivatedMemories(_ blocks: [ContentBlock]) {
         activatedMemories = blocks
+    }
+
+    /// Fase 2: formatea las memorias recuperadas del Brain como un único bloque
+    /// etiquetado (role:user, posición 6 del §5.1). Vacío ⇒ no anexa nada.
+    public func setActivatedMemories(_ memories: [ActivatedMemory]) {
+        guard !memories.isEmpty else { activatedMemories = []; return }
+        let body = memories.map { "- \($0.content)" }.joined(separator: "\n")
+        activatedMemories = [.text(Self.activatedMemoriesHeader + "\n" + body)]
     }
 
     /// Fase 3: el SelfModel vivo reemplaza al SelfView estático provisional.

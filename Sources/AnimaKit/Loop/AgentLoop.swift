@@ -32,6 +32,11 @@ public actor AgentLoop {
     private let stopConditions: StopConditions
     private let retryPolicy: RetryPolicy
     private let sleep: @Sendable (TimeInterval) async throws -> Void
+    // Fase 2 (§5.10): el Brain inyecta memorias activadas y recibe el usage_log;
+    // el inbox recibe los hechos declarados por el dueño para el Consolidator.
+    private let brain: Brain?
+    private let inbox: ConsolidationInbox?
+    private let memoryBudget: Int
 
     public init(
         provider: Provider,
@@ -48,6 +53,9 @@ public actor AgentLoop {
         toolTimeout: TimeInterval = 30,
         stopConditions: StopConditions = .init(),
         retryPolicy: RetryPolicy = .init(),
+        brain: Brain? = nil,
+        inbox: ConsolidationInbox? = nil,
+        memoryBudget: Int = 8,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -64,6 +72,9 @@ public actor AgentLoop {
         self.token = token
         self.stopConditions = stopConditions
         self.retryPolicy = retryPolicy
+        self.brain = brain
+        self.inbox = inbox
+        self.memoryBudget = memoryBudget
         self.sleep = sleep
     }
 
@@ -92,11 +103,24 @@ public actor AgentLoop {
             let clientSpecs = await sensorimotor.toolSpecs()
             let allSpecs = clientSpecs + serverTools
 
+            // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno
+            // y las memorias entran como bloque etiquetado antes del turn input.
+            let userText = Self.plainText(content)
+            var activatedIds: [MemoryID] = []
+            if let brain {
+                let activated = (try? await brain.retrieve(
+                    MemoryQuery(text: userText, turnRef: sessionId, limit: memoryBudget))) ?? []
+                activatedIds = activated.map(\.id)
+                await workingMemory.setActivatedMemories(activated)
+            }
+
             // Assemble con orden estable (§5.1). El turno del usuario se persiste
             // aparte; los bloques ephemeral (system, activado) no van al transcript.
             let turn = TurnInput(sessionId: sessionId, content: content)
             var messages = try await workingMemory.assemble(turn)
             try store.append(sessionId: sessionId, message: Message(role: .user, content: content))
+            // No se escribe al brain en caliente: se encola para el Consolidator (§5.4 a).
+            try? inbox?.enqueue(sessionId: sessionId, text: userText, source: "turn")
 
             var iteration = 1
             var tokensUsed = 0
@@ -153,6 +177,7 @@ public actor AgentLoop {
                 // refusal: chequear ANTES de usar el content; mostrar sin crash, NO reintentar.
                 if response.stopReason == .refusal {
                     try store.append(sessionId: sessionId, message: .assistant(response.content), usage: response.usage)
+                    await logMemoryUsage(activatedIds, sessionId: sessionId)
                     emit(.refused)
                     try? telemetry.record(sessionId: sessionId, turnClass: .interactive, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
@@ -190,6 +215,7 @@ public actor AgentLoop {
                     continue
 
                 case .maxTokens, .endTurn, .stopSequence, .refusal, .none:
+                    await logMemoryUsage(activatedIds, sessionId: sessionId)
                     try? telemetry.record(sessionId: sessionId, turnClass: .interactive, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
                     emit(.turnFinished(stopReason: response.stopReason))
@@ -228,6 +254,22 @@ public actor AgentLoop {
                 throw error
             }
         }
+    }
+
+    /// usage_log del turno (§5.3 hook del régimen): cada memoria activada se
+    /// registra como usada. La heurística de `contradicted` la aplica el ciclo.
+    private func logMemoryUsage(_ ids: [MemoryID], sessionId: SessionID) async {
+        guard let brain, !ids.isEmpty else { return }
+        for id in ids {
+            try? await brain.usageLog(memoryId: id, sessionId: sessionId, outcome: .success)
+        }
+    }
+
+    /// Texto plano del turno del dueño (concatena los bloques de texto).
+    static func plainText(_ content: [ContentBlock]) -> String {
+        content.compactMap { block in
+            if case .text(let t) = block { return t } else { return nil }
+        }.joined(separator: "\n")
     }
 
     static func describe(_ error: ClassifiedError) -> String {

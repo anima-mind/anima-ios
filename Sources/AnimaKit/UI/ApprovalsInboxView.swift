@@ -10,17 +10,24 @@ import SwiftUI
 @MainActor
 public final class ApprovalsInboxViewModel: ObservableObject {
     @Published public private(set) var pending: [PendingApproval] = []
+    // Fase 4 (§5.8): el confirmation gate de Goals inferred usa el MISMO inbox —
+    // un tipo de item nuevo, no una cola nueva.
+    @Published public private(set) var pendingGoals: [Goal] = []
     private let selfModel: SelfModel
+    private let otherModel: OtherModel?
 
-    public init(selfModel: SelfModel) {
+    public init(selfModel: SelfModel, otherModel: OtherModel? = nil) {
         self.selfModel = selfModel
+        self.otherModel = otherModel
     }
 
-    public var badgeCount: Int { pending.count }
+    public var badgeCount: Int { pending.count + pendingGoals.count }
+    public var isEmpty: Bool { pending.isEmpty && pendingGoals.isEmpty }
 
     public func refresh() async {
         _ = await selfModel.expireStale()
         pending = await selfModel.pendingApprovals()
+        pendingGoals = await otherModel?.pendingConfirmations() ?? []
     }
 
     public func approve(_ approval: PendingApproval) async {
@@ -30,6 +37,18 @@ public final class ApprovalsInboxViewModel: ObservableObject {
 
     public func reject(_ approval: PendingApproval) async {
         await selfModel.reject(id: approval.id)
+        await refresh()
+    }
+
+    /// El dueño confirma una meta inferida → active (recién ahí puede motivar).
+    public func confirmGoal(_ goal: Goal) async {
+        await otherModel?.confirm(id: goal.id)
+        await refresh()
+    }
+
+    /// El dueño la rechaza → abandoned (deja de existir para el deseo).
+    public func abandonGoal(_ goal: Goal) async {
+        await otherModel?.abandon(id: goal.id)
         await refresh()
     }
 }
@@ -44,11 +63,14 @@ public struct ApprovalsInboxView: View {
     public var body: some View {
         NavigationStack {
             Group {
-                if model.pending.isEmpty {
+                if model.isEmpty {
                     emptyState
                 } else {
                     ScrollView {
                         VStack(spacing: Theme.Space.stack) {
+                            ForEach(model.pendingGoals) { goal in
+                                goalCard(goal)
+                            }
                             ForEach(model.pending) { approval in
                                 card(approval)
                             }
@@ -108,6 +130,45 @@ public struct ApprovalsInboxView: View {
         .padding(Theme.Space.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.Colors.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+    }
+
+    private func goalCard(_ goal: Goal) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            Text("META INFERIDA — ¿LA CONFIRMAS?")
+                .font(Theme.Type_.label)
+                .kerning(0.66)
+                .foregroundStyle(Theme.Colors.textMuted)
+
+            Text(goal.statement)
+                .font(Theme.Type_.body)
+                .foregroundStyle(Theme.Colors.text)
+
+            Text(goal.desiredState.label)
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+
+            if !goal.evidence.isEmpty {
+                Text("Por qué: \(goal.evidence)")
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.textFaint)
+            }
+
+            HStack(spacing: Theme.Space.stack) {
+                Button("Descartar") { Task { await model.abandonGoal(goal) } }
+                    .foregroundStyle(Theme.Colors.textMuted)
+                Spacer()
+                Button("Confirmar") { Task { await model.confirmGoal(goal) } }
+                    .foregroundStyle(Theme.Colors.accent)
+            }
+            .font(Theme.Type_.body)
+        }
+        .padding(Theme.Space.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card)
+                .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
     }
 

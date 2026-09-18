@@ -44,6 +44,12 @@ public actor WorkingMemory {
     private let store: SymbolicStore
     private let budgetTokens: Int
     private var selfView: ProvisionalSelfView
+    // Fase 3: el render vivo del SelfModel (§5.5) reemplaza al SelfView estático
+    // cuando el loop lo empuja cada turno. nil ⇒ se usa selfView.render().
+    private var selfRenderOverride: String?
+    // Fase 3 (§5.6): banner de restructure inyectado cuando el turno matchea un
+    // patrón demanding del RealRegister. Va como segundo mid-conversation system.
+    private var restructureBanner: String?
 
     // Bloques compaction emitidos por el server; se re-anexan cada turno (contrato beta).
     private var compactionBlocks: [ContentBlock] = []
@@ -77,9 +83,16 @@ public actor WorkingMemory {
         let history = try store.window(sessionId: turn.sessionId)
         messages.append(contentsOf: history)
 
-        // 3. mid-conversation system message — SelfView estático provisional (§4.5).
+        // 3. mid-conversation system message — SelfModel view vivo (§4.5, §5.5) o,
+        //    sin SelfModel cableado, el SelfView estático provisional (Fase 1).
         //    Va DESPUÉS del history y ANTES del turn input.
-        messages.append(Message(role: .system, content: [.text(selfView.render())]))
+        messages.append(Message(role: .system, content: [.text(selfRenderOverride ?? selfView.render())]))
+
+        // 3b. banner de restructure (§5.6): autoridad de operador para que el
+        //     turno cambie de aproximación ante un patrón que insiste en fallar.
+        if let restructureBanner, !restructureBanner.isEmpty {
+            messages.append(Message(role: .system, content: [.text(restructureBanner)]))
+        }
 
         // 4. contexto activado — memorias del Brain (Fase 2: vacío por ahora).
         let activated = assembleActivatedContext()
@@ -178,5 +191,15 @@ public actor WorkingMemory {
     /// Fase 3: el SelfModel vivo reemplaza al SelfView estático provisional.
     public func updateSelfView(_ view: ProvisionalSelfView) {
         selfView = view
+    }
+
+    /// Fase 3 (§5.5): el loop empuja el render vivo del SelfModel cada turno.
+    public func updateSelfRender(_ render: String) {
+        selfRenderOverride = render
+    }
+
+    /// Fase 3 (§5.6): fija (o limpia con nil) el banner de restructure del turno.
+    public func updateRestructureBanner(_ banner: String?) {
+        restructureBanner = banner
     }
 }

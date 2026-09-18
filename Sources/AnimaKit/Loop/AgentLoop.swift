@@ -37,6 +37,10 @@ public actor AgentLoop {
     private let brain: Brain?
     private let inbox: ConsolidationInbox?
     private let memoryBudget: Int
+    // Fase 3 (§5.5, §5.6): el SelfModel vivo se renderiza al system del turno; el
+    // RealRegister recibe los fallos y demanda restructures (rutea a .restructure).
+    private let selfModel: SelfModel?
+    private let realRegister: RealRegister?
 
     public init(
         provider: Provider,
@@ -56,6 +60,8 @@ public actor AgentLoop {
         brain: Brain? = nil,
         inbox: ConsolidationInbox? = nil,
         memoryBudget: Int = 8,
+        selfModel: SelfModel? = nil,
+        realRegister: RealRegister? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -75,6 +81,8 @@ public actor AgentLoop {
         self.brain = brain
         self.inbox = inbox
         self.memoryBudget = memoryBudget
+        self.selfModel = selfModel
+        self.realRegister = realRegister
         self.sleep = sleep
     }
 
@@ -99,9 +107,28 @@ public actor AgentLoop {
     private func runTurn(sessionId: SessionID, content: [ContentBlock], emit: @escaping @Sendable (LoopEvent) -> Void) async {
         let turnStart = Date()
         do {
-            let route = router.route(.interactive)
             let clientSpecs = await sensorimotor.toolSpecs()
             let allSpecs = clientSpecs + serverTools
+
+            // Restructure (§5.6): si un patrón demanding matchea una tool disponible,
+            // el turno se rutea a .restructure (Opus effort high) y se inyecta un
+            // banner de autoridad con el historial del patrón.
+            var turnClass: TurnClass = .interactive
+            var restructureBanner: String?
+            if let realRegister {
+                let demanding = await realRegister.demand()
+                if let match = demanding.first(where: { req in allSpecs.contains { $0.name == req.toolName } }) {
+                    restructureBanner = "[RESTRUCTURE] " + match.summary
+                    turnClass = .restructure
+                }
+            }
+            let route = router.route(turnClass)
+            await workingMemory.updateRestructureBanner(restructureBanner)
+
+            // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
+            if let selfModel {
+                await workingMemory.updateSelfRender(await selfModel.render())
+            }
 
             // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno
             // y las memorias entran como bloque etiquetado antes del turn input.
@@ -163,6 +190,11 @@ public actor AgentLoop {
                     emit(.error("Contexto excedido aún tras aliviar la presión."))
                     return
                 } catch let error as ClassifiedError {
+                    // Fatal del provider: lo Real lo registra (§5.6) antes de rendirse.
+                    if case .fatal = error {
+                        await realRegister?.record(.classified(toolName: "provider", error: error,
+                                                               sessionId: sessionId, now: Date()))
+                    }
                     emit(.error(Self.describe(error)))
                     return
                 } catch {
@@ -179,7 +211,7 @@ public actor AgentLoop {
                     try store.append(sessionId: sessionId, message: .assistant(response.content), usage: response.usage)
                     await logMemoryUsage(activatedIds, sessionId: sessionId)
                     emit(.refused)
-                    try? telemetry.record(sessionId: sessionId, turnClass: .interactive, model: route.model,
+                    try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
                     return
                 }
@@ -199,6 +231,9 @@ public actor AgentLoop {
                     for call in response.toolCalls {
                         // Loop detection: misma tool + mismo input N veces seguidas.
                         if loopDetector.record(tool: call.name, input: call.input) {
+                            // Lo Real insiste: el bucle es un fallo determinístico (§5.6).
+                            await realRegister?.record(.loop(name: call.name, input: call.input,
+                                                             sessionId: sessionId, now: Date()))
                             emit(.stopped(.loopDetected))
                             return
                         }
@@ -206,6 +241,11 @@ public actor AgentLoop {
                         toolCallCount += 1
                         let result = await sensorimotor.execute(name: call.name, input: call.input)
                         emit(.toolFinished(name: call.name, isError: result.isError))
+                        // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
+                        if result.isError {
+                            await realRegister?.record(.tool(name: call.name, input: call.input,
+                                                             result: result, sessionId: sessionId, now: Date()))
+                        }
                         results.append(.toolResult(toolUseId: call.id, content: result.content, isError: result.isError))
                     }
                     let toolMessage = Message.user(results)
@@ -216,7 +256,7 @@ public actor AgentLoop {
 
                 case .maxTokens, .endTurn, .stopSequence, .refusal, .none:
                     await logMemoryUsage(activatedIds, sessionId: sessionId)
-                    try? telemetry.record(sessionId: sessionId, turnClass: .interactive, model: route.model,
+                    try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
                     emit(.turnFinished(stopReason: response.stopReason))
                     return

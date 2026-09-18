@@ -40,6 +40,10 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: Anima
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        # Sueño (§5.4): el ciclo de consolidación corre como BGProcessingTask al cargar.
+        # NOTA device-pending: BGTaskSchedulerPermittedIdentifiers requiere un Info.plist
+        # explícito (array); pendiente de verificación en device real.
+        INFOPLIST_KEY_UIBackgroundModes: processing
         INFOPLIST_KEY_NSCameraUsageDescription: "Anima usa la cámara solo cuando tú se lo pides o confirmas, para ver y comentar una foto que le muestras."
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Anima usa el micrófono para grabar notas de voz que tú inicias; el audio se transcribe en el teléfono."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "La transcripción de tus notas de voz ocurre en el dispositivo (es-CO); el audio no sale del teléfono."

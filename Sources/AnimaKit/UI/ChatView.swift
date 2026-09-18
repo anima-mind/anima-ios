@@ -15,6 +15,10 @@ public final class ChatViewModel: ObservableObject {
         public var isError: Bool = false
         public var isStreaming: Bool = false
         public var isRefusal: Bool = false
+        // Fase 4 (§5.8): propuesta proactiva del deseo. resolved oculta las acciones.
+        public var isProactive: Bool = false
+        public var intentionId: String?
+        public var resolved: Bool = false
     }
 
     @Published public var messages: [DisplayMessage] = []
@@ -24,10 +28,41 @@ public final class ChatViewModel: ObservableObject {
 
     private let loop: AgentLoop
     private let sessionId: SessionID
+    private let desireEngine: DesireEngine?
+    private var shownIntentionIds: Set<String> = []
 
-    public init(loop: AgentLoop, sessionId: SessionID) {
+    public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil) {
         self.loop = loop
         self.sessionId = sessionId
+        self.desireEngine = desireEngine
+    }
+
+    /// Trae las Intentions pendientes del deseo y las inserta como mensajes
+    /// proactivos del agente (§5.8). Idempotente: no re-muestra una ya pintada.
+    public func loadProactiveIntentions() async {
+        guard let desireEngine else { return }
+        let pending = await desireEngine.pendingIntentions()
+        for intention in pending where !shownIntentionIds.contains(intention.id) {
+            shownIntentionIds.insert(intention.id)
+            messages.append(DisplayMessage(role: .assistant, text: intention.proposedText,
+                                           isProactive: true, intentionId: intention.id))
+        }
+    }
+
+    public func accept(_ message: DisplayMessage) async {
+        await resolve(message, outcome: .accepted)
+    }
+
+    public func dismiss(_ message: DisplayMessage) async {
+        await resolve(message, outcome: .dismissed)
+    }
+
+    private func resolve(_ message: DisplayMessage, outcome: Intention.Outcome) async {
+        guard let id = message.intentionId else { return }
+        await desireEngine?.recordOutcome(id: id, outcome: outcome)
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[index].resolved = true
+        }
     }
 
     public func send() async {
@@ -93,10 +128,17 @@ public struct ChatView: View {
                 composer
             }
         }
+        .task { await model.loadProactiveIntentions() }
     }
 
     private func bubble(_ message: ChatViewModel.DisplayMessage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if message.isProactive {
+                Text("PROPUESTA DE ANIMA")
+                    .font(Theme.Type_.label)
+                    .kerning(0.66)
+                    .foregroundStyle(Theme.Colors.accentText)
+            }
             if !message.thinking.isEmpty {
                 DisclosureGroup {
                     Text(message.thinking)
@@ -114,6 +156,17 @@ public struct ChatView: View {
             Text(message.text)
                 .font(Theme.Type_.body)
                 .foregroundStyle(message.isError ? Theme.Colors.textMuted : Theme.Colors.text)
+            if message.isProactive, !message.resolved {
+                HStack(spacing: Theme.Space.stack) {
+                    Button("Descartar") { Task { await model.dismiss(message) } }
+                        .foregroundStyle(Theme.Colors.textMuted)
+                    Spacer()
+                    Button("Aceptar") { Task { await model.accept(message) } }
+                        .foregroundStyle(Theme.Colors.accent)
+                }
+                .font(Theme.Type_.body)
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
         .padding(Theme.Space.cardPad)
@@ -122,10 +175,18 @@ public struct ChatView: View {
                 .fill(Theme.Colors.surface)
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
-                        .strokeBorder(message.isStreaming ? Theme.Colors.accent : Theme.Colors.border,
-                                      lineWidth: Theme.Stroke.hairline)
+                        .strokeBorder(proactiveOrStreamingBorder(message),
+                                      lineWidth: message.isProactive ? Theme.Stroke.icon : Theme.Stroke.hairline)
                 )
+                // Glow accent en las propuestas proactivas (nunca fill, §Theme).
+                .shadow(color: message.isProactive ? Theme.Colors.accent.opacity(0.35) : .clear,
+                        radius: message.isProactive ? 10 : 0)
         )
+    }
+
+    private func proactiveOrStreamingBorder(_ message: ChatViewModel.DisplayMessage) -> Color {
+        if message.isProactive { return Theme.Colors.accent }
+        return message.isStreaming ? Theme.Colors.accent : Theme.Colors.border
     }
 
     private func errorBanner(_ text: String) -> some View {

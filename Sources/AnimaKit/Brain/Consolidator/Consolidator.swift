@@ -28,7 +28,7 @@ public actor Consolidator {
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
     enum Stage: String, Codable {
-        case pending, salient, distilled, written, reconsolidated, reflected, restructured, done
+        case pending, salient, distilled, written, reconsolidated, reflected, restructured, goalsExtracted, done
         var order: Int {
             switch self {
             case .pending: return 0
@@ -38,7 +38,8 @@ public actor Consolidator {
             case .reconsolidated: return 4
             case .reflected: return 5
             case .restructured: return 6
-            case .done: return 7
+            case .goalsExtracted: return 7
+            case .done: return 8
             }
         }
     }
@@ -55,11 +56,15 @@ public actor Consolidator {
     // RealRegister (§5.6) se procesa a lecciones y los patrones quedan resueltos.
     private let selfModel: SelfModel?
     private let realRegister: RealRegister?
+    // Fase 4 (§5.8): la extracción de Stated Goals es una etapa nueva del ciclo; el
+    // reflection también puede proponer metas inferred (siempre pending_confirmation).
+    private let otherModel: OtherModel?
 
     public init(brain: Brain, queue: DatabaseQueue, provider: Provider, router: ModelRouter,
                 authMode: AuthMode, token: String, telemetry: Telemetry? = nil,
                 cycleTokenBudget: Int = 8000,
-                selfModel: SelfModel? = nil, realRegister: RealRegister? = nil) {
+                selfModel: SelfModel? = nil, realRegister: RealRegister? = nil,
+                otherModel: OtherModel? = nil) {
         self.brain = brain
         self.queue = queue
         self.provider = provider
@@ -70,6 +75,7 @@ public actor Consolidator {
         self.cycleTokenBudget = cycleTokenBudget
         self.selfModel = selfModel
         self.realRegister = realRegister
+        self.otherModel = otherModel
     }
 
     // MARK: - Ciclo
@@ -114,6 +120,10 @@ public actor Consolidator {
         if stage.order < Stage.restructured.order {
             try await restructureStage(cycle: n)
             if try advance(to: .restructured) { return try report(cycle: n, completed: false) }
+        }
+        if stage.order < Stage.goalsExtracted.order {
+            try await extractGoalsStage(cycle: n)
+            if try advance(to: .goalsExtracted) { return try report(cycle: n, completed: false) }
         }
         try finish(cycle: n)
         // El ciclo exitoso madura la plasticidad del self (§5.5): n += 1.
@@ -308,6 +318,18 @@ public actor Consolidator {
             }
             if !proposals.isEmpty { _ = await selfModel.reflect(proposals) }
         }
+        // Metas inferred (§5.8): nacen SIEMPRE pending_confirmation → no motivan
+        // nada hasta que el dueño las confirme en el inbox.
+        if let otherModel {
+            for inferred in dto?.inferred_goals ?? [] {
+                guard !inferred.statement.trimmingCharacters(in: .whitespaces).isEmpty,
+                      let predicate = inferred.predicate?.toPredicate() else { continue }
+                _ = await otherModel.infer(statement: inferred.statement,
+                                           desiredState: predicate,
+                                           evidence: inferred.rationale ?? "inferida por el reflection del ciclo",
+                                           priority: inferred.priority ?? 5)
+            }
+        }
         try persistReflection(cycle: cycle, summary: summary, insights: insights)
     }
 
@@ -324,6 +346,29 @@ public actor Consolidator {
             _ = try await brain.write(.add(MemoryCandidate(content: content, kind: .lesson, importance: 7,
                                                            source: "real:\(req.patternKey)")), cycle: cycle)
             await realRegister.resolve(patternKey: req.patternKey)
+        }
+    }
+
+    // MARK: - g. Extracción de Stated Goals (§5.8, Haiku)
+
+    /// Detecta declaraciones de meta del dueño en las sesiones del ciclo ("quiero
+    /// X", "mi meta es Y") → goals stated (motivan de inmediato) con evidencia. El
+    /// upsert por statement de OtherModel hace la etapa idempotente al reanudar.
+    private func extractGoalsStage(cycle: Int) async throws {
+        guard let otherModel else { return }
+        let texts = try inboxTexts(cycle: cycle)
+        guard !texts.isEmpty else { return }
+        let joined = texts.enumerated().map { "(\($0.offset + 1)) \($0.element)" }.joined(separator: "\n")
+        let user = "Mensajes del dueño en el ciclo:\n\(joined)\n\nDevuelve SOLO el arreglo JSON de metas declaradas."
+        let text = try await complete(.consolidation, system: Self.goalsPrompt, user: user, maxOutputTokens: 1024)
+        let goals = Self.decode([StatedGoalDTO].self, from: text) ?? []
+        for goal in goals {
+            guard !goal.statement.trimmingCharacters(in: .whitespaces).isEmpty,
+                  let predicate = goal.predicate?.toPredicate() else { continue }
+            _ = await otherModel.ingestStated(statement: goal.statement,
+                                              desiredState: predicate,
+                                              evidence: goal.evidence ?? "",
+                                              priority: goal.priority ?? 5)
         }
     }
 
@@ -445,7 +490,7 @@ public actor Consolidator {
     }
 
     private func persistReflection(cycle: Int, summary: String, insights: [String]) throws {
-        let dto = ReflectionDTO(summary: summary, insights: insights, self_proposals: nil)
+        let dto = ReflectionDTO(summary: summary, insights: insights, self_proposals: nil, inferred_goals: nil)
         let json = String(data: (try? JSONEncoder().encode(dto)) ?? Data(), encoding: .utf8) ?? "{}"
         let now = Date().timeIntervalSince1970
         try queue.write { db in
@@ -551,12 +596,51 @@ private struct ReflectionDTO: Codable {
     let summary: String
     let insights: [String]?
     let self_proposals: [SelfProposalDTO]?
+    let inferred_goals: [InferredGoalDTO]?
 }
 
 private struct SelfProposalDTO: Codable {
     let field: String       // identity | values | capabilities | style | historySummary
     let value: String
     let rationale: String?
+}
+
+/// Predicado observable emitido por Haiku (§5.8). Lenient: un `kind` desconocido
+/// o parámetros faltantes ⇒ toPredicate() nil, sin romper el parseo del arreglo.
+private struct PredicateDTO: Codable {
+    let kind: String
+    let value: Int?
+    let hours: Double?
+    let last_days: Int?
+    let min_minutes: Int?
+    let within_days: Int?
+    let topic: String?
+    let days: Int?
+
+    func toPredicate() -> ObservablePredicate? {
+        switch kind {
+        case "workouts_per_week": return value.map { .workoutsPerWeek(atLeast: $0) }
+        case "reminders_overdue_at_most": return value.map { .remindersOverdue(atMost: $0) }
+        case "sleep_hours_at_least": return hours.map { .sleepHours(atLeast: $0, lastDays: last_days ?? 7) }
+        case "calendar_has_free_slot": return min_minutes.map { .calendarFreeSlot(minMinutes: $0, withinDays: within_days ?? 7) }
+        case "days_since_last_mention_at_most": return topic.map { .daysSinceLastMention(topic: $0, atMost: days ?? 7) }
+        default: return nil
+        }
+    }
+}
+
+private struct StatedGoalDTO: Codable {
+    let statement: String
+    let evidence: String?
+    let priority: Int?
+    let predicate: PredicateDTO?
+}
+
+private struct InferredGoalDTO: Codable {
+    let statement: String
+    let rationale: String?
+    let priority: Int?
+    let predicate: PredicateDTO?
 }
 
 // MARK: - Prompts (salida JSON estricta)
@@ -581,7 +665,15 @@ extension Consolidator {
 
     static let reflectionPrompt = """
     Resume el ciclo de consolidación. Devuelve SOLO un objeto JSON:
-    {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}]}
-    Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente; si no, omítelo o déjalo vacío. Los cambios identitarios (identity, values) pueden requerir aprobación del dueño según la madurez.
+    {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}],"inferred_goals":[{"statement":"meta inferida del dueño","rationale":"por qué","priority":1-10,"predicate":{"kind":"...","value":N}}]}
+    Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente. Usa inferred_goals SOLO si infieres una meta que el dueño NO declaró explícitamente (requerirá su confirmación). Si no aplica, omite el campo o déjalo vacío.
+    Predicados observables válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}.
+    """
+
+    static let goalsPrompt = """
+    Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente"). Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta en tercera persona), evidence (cita textual del mensaje), priority (1-10) y un predicate observable de la lista cerrada. Devuelve SOLO un arreglo JSON:
+    [{"statement":"...","evidence":"cita","priority":1-10,"predicate":{"kind":"...","value":N}}]
+    Predicados válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}.
+    Si no hay metas declaradas, devuelve [].
     """
 }

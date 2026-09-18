@@ -62,6 +62,11 @@ public enum AnimaDatabase {
         SelfModelSchema.register(&m)
         RealSchema.register(&m)
 
+        // Fase 4 (§5.8, §5.7): OtherModel + log de Intentions (deseo) y la práctica
+        // del SkillEngine.
+        DesireSchema.register(&m)
+        SkillSchema.register(&m)
+
         return m
     }
 

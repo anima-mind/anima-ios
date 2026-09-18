@@ -43,6 +43,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var settingsModel: SettingsViewModel?
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
     @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
+    @Published private(set) var goalsModel: GoalsViewModel?
     let confirmation = ConfirmationCenter()
 
     private let keychain = KeychainStore()
@@ -57,6 +58,9 @@ final class AppModel: ObservableObject {
     // Fase 3: la identidad viva y el registro de lo Real.
     private var selfModel: SelfModel?
     private var realRegister: RealRegister?
+    // Fase 4: el deseo del Otro y el motor del pulso.
+    private var otherModel: OtherModel?
+    private var desireEngine: DesireEngine?
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -82,7 +86,11 @@ final class AppModel: ObservableObject {
             let selfModel = SelfModel(queue: queue, notifier: UserNotificationApprovalNotifier())
             self.selfModel = selfModel
             self.realRegister = RealRegister(queue: queue)
-            self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel)
+            // Fase 4 (§5.8): el modelo del deseo del Otro y su vista de metas.
+            let otherModel = OtherModel(queue: queue)
+            self.otherModel = otherModel
+            self.goalsModel = GoalsViewModel(otherModel: otherModel)
+            self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             self.settingsModel = SettingsViewModel(keychain: keychain, telemetry: telemetry)
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
@@ -127,18 +135,32 @@ final class AppModel: ObservableObject {
             selfModel: selfModel,
             realRegister: realRegister)
 
-        // El Consolidator (§5.4) para el sueño: Haiku por el mismo dial.
+        // El Consolidator (§5.4) para el sueño: Haiku por el mismo dial. Fase 4: la
+        // extracción de Stated Goals es una etapa nueva del ciclo (§5.8).
         if let brain {
             let consolidator = Consolidator(brain: brain, queue: store.database, provider: ClaudeProvider(),
                                             router: router, authMode: authMode, token: token, telemetry: telemetry,
-                                            selfModel: selfModel, realRegister: realRegister)
+                                            selfModel: selfModel, realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
             await runForegroundFallbackIfNeeded(consolidator)
         }
 
+        // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
         let sessionId = (try? store.startSession()) ?? UUID().uuidString
-        chatModel = ChatViewModel(loop: loop, sessionId: sessionId)
+        var desireEngine: DesireEngine?
+        if let otherModel {
+            let engine = DesireEngine(otherModel: otherModel, environment: SystemObservableEnvironment(),
+                                      queue: store.database, provider: ClaudeProvider(), router: router,
+                                      authMode: authMode, token: token, store: store, telemetry: telemetry)
+            self.desireEngine = engine
+            desireEngine = engine
+            // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.
+            let sid = sessionId
+            Task.detached { _ = try? await engine.pulse(sessionId: sid) }
+        }
+
+        chatModel = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
         phase = .ready
     }
 
@@ -226,6 +248,10 @@ struct RootView: View {
                     if let memory = app.memoryModel {
                         MemoryBrowserView(model: memory)
                             .tabItem { Label("Memoria", systemImage: "brain") }
+                    }
+                    if let goals = app.goalsModel {
+                        GoalsView(model: goals)
+                            .tabItem { Label("Metas", systemImage: "target") }
                     }
                     if let approvals = app.approvalsModel {
                         ApprovalsInboxView(model: approvals)

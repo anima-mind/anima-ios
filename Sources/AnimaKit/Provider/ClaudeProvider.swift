@@ -53,6 +53,12 @@ public enum ClaudeRequestBuilder {
         // messages: se omiten los bloques thinking al reenviar (Fase 0).
         body["messages"] = .array(context.messages.map(encodeMessage))
 
+        // context_management: alivio de presión server-side (§5.1). Solo cuando
+        // hay algo que enviar — mantiene el prefijo cacheado intacto si no se usa.
+        if let cm = PressureRelief.contextManagementBody(opts.relief) {
+            body["context_management"] = cm
+        }
+
         let data = try JSONEncoder().encode(JSONValue.object(body))
 
         // --- Request + headers ---

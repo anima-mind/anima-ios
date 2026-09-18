@@ -1,6 +1,8 @@
-// AgentLoop.swift — el turno integrado (§4.4, §5.10): assemble mínimo → stream →
-// tool loop → persist. Fase 0 sin WorkingMemory completo: el prefijo son los
-// system blocks del config + el historial de la sesión desde el SymbolicStore.
+// AgentLoop.swift — el turno integrado (§4.4, §5.10). Fase 1: el ensamblado usa
+// WorkingMemory (orden estable §5.1), la ejecución de tools pasa por el
+// Sensorimotor (permisos 2-capas §5.7), y el turno respeta las stop conditions
+// completas (maxIter, cancel, presupuesto de tokens, latencia y loop) + relieve
+// de presión ante overflow.
 
 import Foundation
 
@@ -20,8 +22,9 @@ public enum LoopEvent: Sendable, Equatable {
 public actor AgentLoop {
     private let provider: Provider
     private let store: SymbolicStore
+    private let workingMemory: WorkingMemory
+    private let sensorimotor: Sensorimotor
     private let telemetry: Telemetry
-    private let tools: [HarnessTool]
     private let serverTools: [ToolSpec]
     private let router: ModelRouter
     private let authMode: AuthMode
@@ -37,8 +40,12 @@ public actor AgentLoop {
         router: ModelRouter,
         authMode: AuthMode,
         token: String,
-        clientTools: [HarnessTool],
+        clientTools: [any SensorimotorTool],
         serverTools: [ToolSpec] = [WebSearchTool.spec],
+        workingMemory: WorkingMemory? = nil,
+        permissionPolicy: PermissionPolicy = .init(),
+        confirmation: ConfirmationProvider = FailClosedConfirmation(),
+        toolTimeout: TimeInterval = 30,
         stopConditions: StopConditions = .init(),
         retryPolicy: RetryPolicy = .init(),
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
@@ -47,64 +54,90 @@ public actor AgentLoop {
     ) {
         self.provider = provider
         self.store = store
+        self.workingMemory = workingMemory ?? WorkingMemory(store: store)
+        self.sensorimotor = Sensorimotor(tools: clientTools, policy: permissionPolicy,
+                                         confirmation: confirmation, timeout: toolTimeout)
         self.telemetry = telemetry
+        self.serverTools = serverTools
         self.router = router
         self.authMode = authMode
         self.token = token
-        self.tools = clientTools
-        self.serverTools = serverTools
         self.stopConditions = stopConditions
         self.retryPolicy = retryPolicy
         self.sleep = sleep
     }
 
-    private var allToolSpecs: [ToolSpec] { tools.map(\.spec) + serverTools }
-
-    /// Ejecuta un turno. Persiste el mensaje del usuario, corre el tool loop y
-    /// devuelve un stream de LoopEvent para la UI.
+    /// Ejecuta un turno de solo texto. Persiste, corre el tool loop y devuelve un
+    /// stream de LoopEvent para la UI.
     public func run(sessionId: SessionID, userText: String) -> AsyncStream<LoopEvent> {
+        run(sessionId: sessionId, content: [.text(userText)])
+    }
+
+    /// Turno multimodal: los content blocks (texto + image blocks de una foto, o
+    /// texto de un transcript de audio) forman el mensaje user del turno.
+    public func run(sessionId: SessionID, content: [ContentBlock]) -> AsyncStream<LoopEvent> {
         AsyncStream { continuation in
-            let task = Task { await self.runTurn(sessionId: sessionId, userText: userText, emit: { continuation.yield($0) }); continuation.finish() }
+            let task = Task {
+                await self.runTurn(sessionId: sessionId, content: content, emit: { continuation.yield($0) })
+                continuation.finish()
+            }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    private func runTurn(sessionId: SessionID, userText: String, emit: @escaping @Sendable (LoopEvent) -> Void) async {
+    private func runTurn(sessionId: SessionID, content: [ContentBlock], emit: @escaping @Sendable (LoopEvent) -> Void) async {
+        let turnStart = Date()
         do {
             let route = router.route(.interactive)
-            let opts = CallOpts(route: route, api: router.api, authMode: authMode,
-                                token: token, systemPromptBase: router.systemPromptBase)
+            let clientSpecs = await sensorimotor.toolSpecs()
+            let allSpecs = clientSpecs + serverTools
 
-            // Assemble: historial + turno del usuario.
-            var messages = try store.window(sessionId: sessionId)
-            let userMessage = Message.user(userText)
-            try store.append(sessionId: sessionId, message: userMessage)
-            messages.append(userMessage)
+            // Assemble con orden estable (§5.1). El turno del usuario se persiste
+            // aparte; los bloques ephemeral (system, activado) no van al transcript.
+            let turn = TurnInput(sessionId: sessionId, content: content)
+            var messages = try await workingMemory.assemble(turn)
+            try store.append(sessionId: sessionId, message: Message(role: .user, content: content))
 
             var iteration = 1
             var tokensUsed = 0
             var toolCallCount = 0
             var retryCount = 0
             var lastUsage = Usage()
+            var loopDetector = LoopDetector(threshold: stopConditions.loopRepeatThreshold)
+            var reliefRetried = false
 
             while true {
-                switch stopConditions.evaluate(iteration: iteration, tokensUsed: tokensUsed, isCancelled: Task.isCancelled) {
+                let elapsed = Date().timeIntervalSince(turnStart)
+                switch stopConditions.evaluate(iteration: iteration, tokensUsed: tokensUsed, elapsed: elapsed, isCancelled: Task.isCancelled) {
                 case .none: break
                 case .cancelled: emit(.stopped(.cancelled)); return
                 case .maxIterations: emit(.stopped(.maxIterations)); return
                 case .budgetExceeded: emit(.stopped(.budgetExceeded)); return
+                case .latencyExceeded: emit(.stopped(.latencyExceeded)); return
+                case .loopDetected: emit(.stopped(.loopDetected)); return
                 }
 
-                // Un intento de streaming, con retry ante errores previos a cualquier delta.
+                // Controles de gestión de contexto para este request (escalera por presión).
+                let controls = await workingMemory.consumeRelief()
+                let opts = CallOpts(route: route, api: router.api, authMode: authMode,
+                                    token: token, systemPromptBase: router.systemPromptBase, relief: controls)
+
                 let response: ProviderResponse
                 do {
                     let attempts = Counter()
                     response = try await streamOnce(
-                        ctx: AssembledContext(messages: messages),
-                        opts: opts,
-                        attempts: attempts,
-                        emit: emit)
+                        ctx: AssembledContext(messages: messages), tools: allSpecs, opts: opts, attempts: attempts, emit: emit)
                     retryCount += max(0, attempts.value - 1)
+                } catch ClassifiedError.contextOverflow {
+                    // Sobrevive el overflow vía relieve: aliviar y reintentar UNA vez.
+                    if !reliefRetried {
+                        reliefRetried = true
+                        _ = await workingMemory.relieve(.clearStaleToolResults)
+                        _ = await workingMemory.relieve(.compact)
+                        continue
+                    }
+                    emit(.error("Contexto excedido aún tras aliviar la presión."))
+                    return
                 } catch let error as ClassifiedError {
                     emit(.error(Self.describe(error)))
                     return
@@ -115,6 +148,7 @@ public actor AgentLoop {
 
                 lastUsage = response.usage
                 tokensUsed += response.usage.inputTokens + response.usage.outputTokens
+                await workingMemory.recordTurnUsage(response.usage)
 
                 // refusal: chequear ANTES de usar el content; mostrar sin crash, NO reintentar.
                 if response.stopReason == .refusal {
@@ -125,7 +159,6 @@ public actor AgentLoop {
                     return
                 }
 
-                // Persistir + reflejar el mensaje del assistant.
                 let assistantMessage = Message.assistant(response.content)
                 try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage)
                 messages.append(assistantMessage)
@@ -133,20 +166,23 @@ public actor AgentLoop {
 
                 switch response.stopReason {
                 case .pauseTurn:
-                    // Server tools (web_search): reenviar el content tal cual para continuar.
                     iteration += 1
                     continue
 
                 case .toolUse:
                     var results: [ContentBlock] = []
                     for call in response.toolCalls {
+                        // Loop detection: misma tool + mismo input N veces seguidas.
+                        if loopDetector.record(tool: call.name, input: call.input) {
+                            emit(.stopped(.loopDetected))
+                            return
+                        }
                         emit(.toolStarted(name: call.name))
                         toolCallCount += 1
-                        let result = await execute(call: call)
+                        let result = await sensorimotor.execute(name: call.name, input: call.input)
                         emit(.toolFinished(name: call.name, isError: result.isError))
                         results.append(.toolResult(toolUseId: call.id, content: result.content, isError: result.isError))
                     }
-                    // TODOS los tool_results de la ronda en UN mensaje user.
                     let toolMessage = Message.user(results)
                     try store.append(sessionId: sessionId, message: toolMessage)
                     messages.append(toolMessage)
@@ -169,6 +205,7 @@ public actor AgentLoop {
     /// Si ya se emitieron deltas y falla, se propaga sin reintentar (evita doble stream).
     private func streamOnce(
         ctx: AssembledContext,
+        tools: [ToolSpec],
         opts: CallOpts,
         attempts: Counter,
         emit: @Sendable @escaping (LoopEvent) -> Void
@@ -177,7 +214,7 @@ public actor AgentLoop {
             attempts.set(attempt)
             let forwarded = ForwardedFlag()
             do {
-                return try await self.provider.completeCollecting(ctx, tools: self.allToolSpecs, opts: opts) { event in
+                return try await self.provider.completeCollecting(ctx, tools: tools, opts: opts) { event in
                     switch event {
                     case .textDelta(let t): forwarded.mark(); emit(.textDelta(t))
                     case .thinkingDelta(let t): forwarded.mark(); emit(.thinkingDelta(t))
@@ -185,20 +222,12 @@ public actor AgentLoop {
                     }
                 }
             } catch let error as ClassifiedError {
-                // Si ya hubo deltas, no reintentar (el turno se re-persistiría duplicado).
                 if forwarded.value {
                     throw ClassifiedError.fatal(status: -1, message: Self.describe(error))
                 }
                 throw error
             }
         }
-    }
-
-    private func execute(call: (id: String, name: String, input: JSONValue)) async -> ToolResult {
-        guard let tool = tools.first(where: { $0.spec.name == call.name }) else {
-            return ToolResult(content: "Tool desconocida: \(call.name)", isError: true)
-        }
-        return await tool.execute(call.input)
     }
 
     static func describe(_ error: ClassifiedError) -> String {

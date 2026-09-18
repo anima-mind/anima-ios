@@ -50,11 +50,33 @@ import Testing
 
     /// El contexto activado (Fase 2) está vacío por ahora: no aparece ningún
     /// mensaje extra entre el system y el turn input.
-    @Test func activatedContextIsEmptyInPhase1() async throws {
+    @Test func activatedContextIsEmptyWithoutBrain() async throws {
         let (store, sid) = try makeStore()
         let wm = WorkingMemory(store: store)
         let messages = try await wm.assemble(.text("hola", sessionId: sid))
         // Solo [system, user(turn)] — sin history, sin activado.
         #expect(messages.map(\.role) == [.system, .user])
+    }
+
+    /// Golden §5.1 posición 6: las memorias activadas del Brain entran como bloque
+    /// etiquetado role:user DESPUÉS del mid-conversation system y ANTES del turn input.
+    @Test func activatedMemoriesAppearInStablePosition() async throws {
+        let (store, sid) = try makeStore()
+        let wm = WorkingMemory(store: store)
+        await wm.setActivatedMemories([
+            ActivatedMemory(id: "m1", content: "Joshua vive en Bogota", kind: .semantic, confidence: 0.8, score: 0.1)
+        ])
+        let messages = try await wm.assemble(.text("¿dónde vivo?", sessionId: sid))
+
+        // [system(selfView), user(activadas), user(turn)].
+        #expect(messages.map(\.role) == [.system, .user, .user])
+        let activatedIndex = messages.count - 2
+        let turnIndex = messages.count - 1
+        guard case .text(let block)? = messages[activatedIndex].content.first else {
+            Issue.record("bloque activado ausente"); return
+        }
+        #expect(block.hasPrefix(WorkingMemory.activatedMemoriesHeader))
+        #expect(block.contains("Joshua vive en Bogota"))
+        #expect(messages[turnIndex].content == [.text("¿dónde vivo?")])
     }
 }

@@ -85,14 +85,16 @@ enum TestConfig {
         return ProviderConfig(systemPromptBase: base, api: entry.api, routes: entry.routes)
     }
 
-    static func callOpts(authMode: AuthMode, base: String = "Eres Anima.") throws -> CallOpts {
+    static func callOpts(authMode: AuthMode, base: String = "Eres Anima.",
+                         enableThinking: Bool = true) throws -> CallOpts {
         let config = try providerConfig(base: base)
         return CallOpts(
             route: config.routes[.interactive]!,
             api: config.api,
             authMode: authMode,
             token: authMode == .oauth ? "sk-ant-oat01-xyz" : "sk-ant-api03-xyz",
-            systemPromptBase: base)
+            systemPromptBase: base,
+            enableThinking: enableThinking)
     }
 }
 

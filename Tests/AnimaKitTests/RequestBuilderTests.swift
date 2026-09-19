@@ -40,6 +40,13 @@ import Testing
         // thinking adaptive, sin budget_tokens
         #expect(body.at("thinking", "type") == .string("adaptive"))
         #expect(body.at("thinking", "display") == .string("summarized"))
+        // default de producción: thinking OFF hasta verificar replay con firma en device
+        let defaultOpts = try TestConfig.callOpts(authMode: .apiKey, enableThinking: false)
+        let defaultReq = try ClaudeRequestBuilder.build(
+            context: AssembledContext(messages: [.user("hola")]),
+            tools: [], opts: defaultOpts)
+        let defaultBody = try decodedBody(defaultReq)
+        #expect(defaultBody["thinking"] == nil)
         // effort en output_config, NUNCA top-level
         #expect(body.at("output_config", "effort") == .string("medium"))
         #expect(body["effort"] == nil)

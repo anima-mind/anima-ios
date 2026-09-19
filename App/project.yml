@@ -1,6 +1,6 @@
 name: Anima
 options:
-  bundleIdPrefix: mind.anima
+  bundleIdPrefix: com.joshuamoreno1
   deploymentTarget:
     iOS: "18.0"
   createIntermediateGroups: true
@@ -54,7 +54,7 @@ targets:
         NSContactsUsageDescription: "Anima busca en tus contactos cuando necesitas datos de alguien; la información se queda en tu teléfono."
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: mind.anima.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.joshuamoreno1.anima
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"

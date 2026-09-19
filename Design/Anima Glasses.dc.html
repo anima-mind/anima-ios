@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/styles.css">
+<script src="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/_ds_bundle.js"></script>
+<style>body{margin:0;background:transparent}</style>
+</helmet>
+<div style="display:flex;gap:16px;align-items:flex-start;font-family:-apple-system,'SF Pro Text',system-ui,sans-serif">
+<div style="width:440px;flex:none;display:flex;flex-direction:column;gap:6px">
+  <div style="width:440px;min-height:250px;box-sizing:border-box;background:#0b0e12;border-radius:14px;padding:22px 24px;display:flex;flex-direction:column;gap:12px;color:#f2f4f7;-webkit-font-smoothing:antialiased" data-screen-label="{{ label }}">
+    <sc-if value="{{ hasBack }}" hint-placeholder-val="{{ false }}"><div onClick="{{ goBack }}" style="display:flex;align-items:center;gap:8px;align-self:flex-start;padding:6px 10px 6px 8px;border-radius:8px;border:1px solid rgba(242,244,247,.35);font-size:13px;cursor:pointer;outline:{{ focusBack }};outline-offset:2px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"></path></svg>Back</div></sc-if>
+    <div style="display:flex;flex-direction:column;gap:10px;padding:{{ cardPad }};background:{{ cardBg }};border-radius:12px">
+      <sc-if value="{{ hasMark }}" hint-placeholder-val="{{ false }}"><svg width="56" height="56" viewBox="0 0 96 96" style="display:block"><path d="{{ markPath }}" fill="none" stroke="#f2f4f7" stroke-width="3" stroke-linecap="round"></path><path d="M14 50h68" stroke="#f2f4f7" stroke-width="1" opacity=".45"></path><circle cx="48" cy="50" r="3" fill="#f2f4f7"></circle></svg></sc-if>
+      <sc-if value="{{ hasMeta }}" hint-placeholder-val="{{ true }}"><div style="display:flex;align-items:center;gap:8px;font-size:12px;color:rgba(242,244,247,.6)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ iconPath }}"></path></svg>{{ meta }}</div></sc-if>
+      <sc-if value="{{ hasHeading }}" hint-placeholder-val="{{ true }}"><div style="font-size:20px;font-weight:600;line-height:1.25;text-wrap:pretty">{{ heading }}</div></sc-if>
+      <sc-if value="{{ hasBody }}" hint-placeholder-val="{{ true }}"><div style="font-size:15px;line-height:1.4;color:{{ bodyColor }};text-wrap:pretty">{{ body }}</div></sc-if>
+      <sc-if value="{{ hasItems }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:8px">
+        <sc-for list="{{ items }}" as="it" hint-placeholder-count="3"><div onClick="{{ it.go }}" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(242,244,247,.08);border-radius:10px;cursor:pointer;outline:{{ it.focus }};outline-offset:2px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;opacity:.7"><path d="{{ it.iconPath }}"></path></svg><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><div style="font-size:15px;line-height:1.3">{{ it.heading }}</div><div style="font-size:12px;color:rgba(242,244,247,.6)">{{ it.meta }}</div></div></div></sc-for>
+      </div></sc-if>
+      <sc-if value="{{ hasFoot }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:rgba(242,244,247,.6)">{{ foot }}</div></sc-if>
+      <sc-if value="{{ hasButtons }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:10px;justify-content:{{ btnAlign }};flex-wrap:wrap;padding-top:2px">
+        <sc-for list="{{ buttons }}" as="b" hint-placeholder-count="2"><div onClick="{{ b.go }}" style="display:flex;align-items:center;gap:7px;padding:9px 14px;border-radius:999px;font-size:14px;font-weight:500;cursor:pointer;background:{{ b.bg }};color:{{ b.color }};border:1px solid {{ b.border }};outline:{{ b.focus }};outline-offset:2px"><sc-if value="{{ b.hasIcon }}" hint-placeholder-val="{{ true }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{ b.iconPath }}"></path></svg></sc-if>{{ b.label }}</div></sc-for>
+      </div></sc-if>
+    </div>
+  </div>
+  <div style="font-size:11px;color:rgba(0,0,0,.5);line-height:1.4">Illustration of the tree, not pixels: the glasses runtime decides size, type and focus ring. Click a button to follow the state machine.</div>
+</div>
+<sc-if value="{{ showTree }}" hint-placeholder-val="{{ true }}"><pre style="margin:0;flex:1;min-width:0;font:11.5px/1.5 ui-monospace,Menlo,monospace;color:#1d1f20;background:#fff;border:1px solid rgba(0,0,0,.1);border-radius:8px;padding:12px 14px;white-space:pre-wrap;word-break:break-word">{{ tree }}</pre></sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:980,&quot;height&quot;:320},&quot;view&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;listen&quot;,&quot;heard&quot;,&quot;thinking&quot;,&quot;reply&quot;,&quot;noteHeard&quot;,&quot;noteKept&quot;,&quot;thread&quot;,&quot;proposal&quot;,&quot;confirmed&quot;,&quot;inbox&quot;,&quot;goal&quot;,&quot;handoff&quot;,&quot;answer&quot;,&quot;remembered&quot;,&quot;declined&quot;,&quot;offline&quot;,&quot;empty&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;showTree&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;focus&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:0,&quot;min&quot;:0,&quot;max&quot;:4,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;System focus ring (illustrative)&quot;}}">
+const ICONS = {
+  bell:'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0',
+  checkmarkCircle:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM8 12l3 3 5-6',
+  checkmark:'M5 12l5 5L20 7',
+  x:'M6 6l12 12M18 6 6 18',
+  exclamationTriangle:'M12 3 2 21h20L12 3zM12 10v5M12 18h.01',
+  calendar:'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+  speechBubble:'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  speechBubbleOff:'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM3 3l18 18',
+  circle8RaysLarge:'M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1',
+  arrowLeft:'M19 12H5M12 5l-7 7 7 7',
+  smartGlasses:'M2 13.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0zM15 13.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0zM9 13.5h6M2 13.5 4 8h3M22 13.5 20 8h-3',
+  eye:'M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+  phone:'M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.8 2z',
+  clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2',
+  person:'M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 21a8 8 0 0 1 16 0',
+  speakerWithTwoArcs:'M11 5 6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13',
+  speakerOff:'M11 5 6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6',
+  threeDotSpeechBubble:'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 10h.01M12 10h.01M16 10h.01',
+  metaAi:'M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z'
+};
+// Every view is a valid DAT 0.9 tree: root FlexBox(column) [+ Back button on non-root] + FlexBox(.card) with Text/Icon/ButtonGroup.
+const VIEWS = {
+  home:      { root:true, name:'Home', icon:'smartGlasses', meta:'Anima · adolescence', heading:'1 proposal waiting', body:'Free 3:00–4:30 today. Two reminders overdue.', align:'start',
+               buttons:[ {label:'Talk',style:'primary',icon:'speechBubble',to:'listen'}, {label:'Proposal',style:'outline',icon:'bell',to:'proposal'}, {label:'Inbox',style:'outline',icon:'calendar',to:'inbox'} ] },
+  // Conversation. Audio is captured and played by the phone through the glasses' mic/speakers (standard Bluetooth audio); the SDK only sees buttons, so every turn is a full view swap.
+  listen:    { back:'home', name:'Listening', mark:'listening', icon:'speechBubble', meta:'Listening · pause to send', body:'Say it. Anima answers out loud and shows the gist here.', bodySecondary:true, align:'end',
+               buttons:[ {label:'Cancel',style:'outline',icon:'x',to:'home'}, {label:'Heard it',style:'secondary',icon:'checkmark',to:'heard'} ] },
+  heard:     { back:'home', name:'Heard', icon:'speechBubble', meta:'Heard · 0:04', body:'\u201cWhat do I have this afternoon?\u201d', align:'end',
+               buttons:[ {label:'Again',style:'outline',icon:'speechBubble',to:'listen'}, {label:'Send',style:'primary',icon:'checkmarkCircle',to:'thinking'} ] },
+  reply:     { back:'home', name:'Reply (spoken)', mark:'speaking', icon:'speakerWithTwoArcs', meta:'Speaking · 0:06', heading:'Free 3:00–4:30.', body:'Two reminders overdue. I put a proposal in your Inbox to schedule both.', align:'end',
+               buttons:[ {label:'Reply',style:'primary',icon:'speechBubble',to:'listen'}, {label:'Proposal',style:'outline',icon:'bell',to:'proposal'}, {label:'On phone',style:'secondary',icon:'phone',to:'home'} ] },
+  noteHeard: { back:'home', name:'Voice note · heard', icon:'threeDotSpeechBubble', meta:'Heard · 0:09 · note', body:'\u201cRemember that Rosa\u2019s birthday is October 3rd and she wants the blue scarf.\u201d', align:'end',
+               buttons:[ {label:'Again',style:'outline',icon:'speechBubble',to:'listen'}, {label:'Keep',style:'primary',icon:'checkmarkCircle',to:'noteKept'} ] },
+  noteKept:  { back:'home', name:'Voice note · kept', icon:'eye', meta:'Kept for tonight', heading:'Rosa\u2019s birthday · Oct 3 · blue scarf', body:'Settles into memory during tonight\u2019s consolidation. I\u2019ll propose a reminder a week before.', align:'end',
+               buttons:[ {label:'Forget',style:'outline',icon:'x',to:'home'}, {label:'Done',style:'secondary',icon:'checkmark',to:'home'} ] },
+  thread:    { back:'home', name:'Conversation · today', icon:'threeDotSpeechBubble', meta:'Today · 3 turns', items:[
+                 {icon:'speechBubble',heading:'\u201cWhat do I have this afternoon?\u201d',meta:'You · 15:02',to:'reply'},
+                 {icon:'speakerWithTwoArcs',heading:'Free 3:00–4:30. Two reminders overdue.',meta:'Anima · spoken',to:'reply'},
+                 {icon:'phone',heading:'Full conversation on phone',meta:'Handoff',to:'handoff'} ] },
+  proposal:  { back:'home', name:'Proposal', icon:'bell', meta:'Proposal · expires in 6 days', heading:'Schedule bank call + prescription at 3 pm?', body:'Two 15-minute events. Nothing is booked until you confirm.', align:'end',
+               buttons:[ {label:'Not now',style:'outline',icon:'x',to:'home'}, {label:'Confirm',style:'primary',icon:'checkmarkCircle',to:'confirmed'} ] },
+  confirmed: { back:'home', name:'Confirmed', icon:'checkmarkCircle', meta:'Booked', heading:'3:00 Call the bank · 3:15 Renew prescription', body:'Added to your calendar. Anima will remember tonight that you close pending items in the afternoon.', align:'end',
+               buttons:[ {label:'Done',style:'secondary',icon:'checkmark',to:'home'} ] },
+  inbox:     { back:'home', name:'Inbox', icon:'bell', meta:'Inbox · 3 to decide', items:[
+                 {icon:'bell',heading:'Schedule two reminders at 3 pm?',meta:'Proposal · 6 days',to:'proposal'},
+                 {icon:'person',heading:'Anima wants to change how it speaks to you',meta:'Identity change · on phone',to:'handoff'},
+                 {icon:'calendar',heading:'Train three times a week?',meta:'Inferred goal · confirm',to:'goal'} ] },
+  goal:      { back:'inbox', name:'Inferred goal', icon:'calendar', meta:'Inferred goal · from 4 conversations', heading:'You want to train three times a week?', body:'If confirmed, workout proposals stay within this.', align:'end',
+               buttons:[ {label:'Not quite',style:'outline',icon:'x',to:'inbox'}, {label:'Confirm',style:'primary',icon:'checkmarkCircle',to:'inbox'} ] },
+  handoff:   { back:'inbox', name:'Handoff', icon:'phone', meta:'Identity change', heading:'This one needs the phone.', body:'Identity diffs are never decided on glass. Open Anima on your phone to read both versions.', align:'end',
+               buttons:[ {label:'Back',style:'outline',icon:'arrowLeft',to:'inbox'} ] },
+  thinking:  { back:'home', name:'Thinking', mark:'thinking', icon:'circle8RaysLarge', meta:'thinking…', body:'\u201cWhat do I have this afternoon?\u201d', bodySecondary:true, align:'end',
+               buttons:[ {label:'Cancel',style:'outline',icon:'x',to:'home'}, {label:'Result',style:'secondary',icon:'speakerWithTwoArcs',to:'reply'} ] },
+  answer:    { back:'home', name:'Answer', icon:'speechBubble', meta:'Answer', heading:'Free 3:00–4:30.', body:'Two reminders overdue: call the bank, renew the prescription.', align:'end',
+               buttons:[ {label:'Back',style:'outline',icon:'arrowLeft',to:'home'}, {label:'On phone',style:'secondary',icon:'phone',to:'home'} ] },
+  remembered:{ back:'home', name:'Remembered', icon:'eye', meta:'Remembered · for tonight', heading:'Panadería Lucero', body:'Breakfast · $18.40 · 08:12', align:'end',
+               buttons:[ {label:'Forget',style:'outline',icon:'x',to:'home'}, {label:'Keep',style:'primary',icon:'checkmark',to:'home'} ] },
+  declined:  { back:'home', name:'Declined', icon:'speechBubbleOff', meta:'Declined', heading:'I won\u2019t read Camila\u2019s messages.', body:'That\u2019s hers to share. Tell me what worries you and I can help with that.', align:'end',
+               buttons:[ {label:'Back',style:'outline',icon:'arrowLeft',to:'home'} ] },
+  offline:   { back:'home', name:'Offline', icon:'exclamationTriangle', meta:'Attention', heading:'Phone unreachable.', body:'Your message is kept. Anima retries on its own; nothing was lost.', align:'end',
+               buttons:[ {label:'Back',style:'outline',icon:'arrowLeft',to:'home'} ] },
+  empty:     { back:'home', name:'Inbox · empty', icon:'checkmarkCircle', meta:'Inbox', heading:'Nothing to decide.', body:'Anima only asks when a proposal touches something you said you want.', align:'end',
+               buttons:[ {label:'Back',style:'outline',icon:'arrowLeft',to:'home'} ] }
+};
+const BTN = {
+  primary:  { bg:'#f2f4f7', color:'#0b0e12', border:'#f2f4f7' },
+  secondary:{ bg:'rgba(242,244,247,.16)', color:'#f2f4f7', border:'transparent' },
+  outline:  { bg:'transparent', color:'#f2f4f7', border:'rgba(242,244,247,.45)' }
+};
+function tree(v){
+  const L=[]; const p=(s)=>L.push(s);
+  p(`${v.name}:`);
+  p(`FlexBox(column, spacing: 12, padding: all 16)`);
+  if (v.back) p(`├─ Button("Back", style: outline, icon: arrowLeft) → ${VIEWS[v.back].name}`);
+  p(`└─ FlexBox(column, spacing: 10, padding: all 12) .background(${v.items?'.none':'.card'})`);
+  const rows=[];
+  if (v.mark) rows.push([`Image(uri: "anima://mark/${v.mark}-p042.png", 56×56)   // static PNG per state; monochrome; one image per view, sent once`]);
+  if (v.meta) rows.push([`FlexBox(row, spacing: 8, crossAlignment: center)`, [`Icon(${v.icon}, outline)`, `Text("${v.meta}", style: meta, color: secondary)`]]);
+  if (v.heading) rows.push([`Text("${v.heading}", style: heading, color: primary)`]);
+  if (v.body) rows.push([`Text(${JSON.stringify(v.body)}, style: body, color: ${v.bodySecondary?'secondary':'primary'})`]);
+  if (v.items) rows.push([`FlexBox(column, spacing: 8)`, v.items.map(it=>`FlexBox(row, spacing: 10) .background(.card) .onTap → ${VIEWS[it.to].name}\n   │     ├─ Icon(${it.icon}, outline)\n   │     └─ FlexBox(column, spacing: 2)\n   │        ├─ Text("${it.heading}", style: body)\n   │        └─ Text("${it.meta}", style: meta, color: secondary)`)]);
+  if (v.buttons) rows.push([`ButtonGroup(alignment: ${v.align||'end'})`, v.buttons.map(b=>`Button("${b.label}", style: ${b.style}, icon: ${b.icon}) → ${VIEWS[b.to].name}`)]);
+  rows.forEach((r,i)=>{ const last=i===rows.length-1; p(`   ${last?'└─':'├─'} ${r[0]}`); if(r[1]) r[1].forEach((c,j)=>p(`   ${last?'  ':'│ '} ${j===r[1].length-1?'└─':'├─'} ${c}`)); });
+  const interactive=(v.back?1:0)+(v.buttons?v.buttons.length:0)+(v.items?v.items.length:0);
+  p(``); p(`interactive elements: ${interactive} (≤4) · buttons: ${v.buttons?v.buttons.length:0} (≤3) · root: FlexBox ✓ · back button: ${v.root?'n/a (root)':'✓'}`);
+  return L.join('\n');
+}
+class Component extends DCLogic {
+  state = { view:null };
+  renderVals(){
+    const id=this.state.view||this.props.view||'home'; const v=VIEWS[id]||VIEWS.home;
+    const go=to=>()=>this.setState({view:to});
+    const focusIdx=this.props.focus??0; let k=0; const F='2px solid #9fd0ff'; const nextFocus=()=>(k++===focusIdx?F:'none');
+    const focusBack=v.back?nextFocus():'none';
+    const items=(v.items||[]).map(it=>({...it, iconPath:ICONS[it.icon], go:go(it.to), focus:nextFocus()}));
+    const buttons=(v.buttons||[]).map(b=>({...b, ...BTN[b.style], iconPath:ICONS[b.icon]||'', hasIcon:!!b.icon, go:go(b.to), focus:nextFocus()}));
+    return {
+      hasMark:!!v.mark, markPath:({listening:'M18 50c8 0 8 12 16 12s8-24 16-24 8 24 16 24 8-12 12-12',thinking:'M18 50c8 0 8 5 16 5s8-10 16-10 8 10 16 10 8-5 12-5',speaking:'M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18'})[v.mark]||'',
+      label:'HUD · '+v.name, hasBack:!!v.back, goBack:go(v.back||'home'), focusBack,
+      cardBg:v.items?'transparent':'rgba(242,244,247,.08)', cardPad:v.items?'0':'14px 16px',
+      hasMeta:!!v.meta, iconPath:ICONS[v.icon]||'', meta:v.meta||'', hasHeading:!!v.heading, heading:v.heading||'', hasBody:!!v.body, body:v.body||'', bodyColor:v.bodySecondary?'rgba(242,244,247,.6)':'#f2f4f7',
+      hasItems:!!v.items, items, hasFoot:!!v.foot, foot:v.foot||'', hasButtons:!!v.buttons, buttons, btnAlign:v.align==='start'?'flex-start':v.align==='center'?'center':'flex-end',
+      showTree:this.props.showTree!==false, tree:tree(v)
+    };
+  }
+}
+</script>
+</body>
+</html>

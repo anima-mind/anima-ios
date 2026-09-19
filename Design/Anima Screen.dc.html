@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/styles.css">
+<script src="_ds/nocturne-96af0b63-d53d-47b3-a61d-a2bdf8046dbd/_ds_bundle.js"></script>
+<style>body{margin:0;background:transparent}@keyframes an-blink{50%{opacity:0}}@keyframes an-pulse{0%,100%{opacity:.35}50%{opacity:1}}@keyframes an-wave{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}@keyframes an-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@keyframes an-spin{to{transform:rotate(360deg)}}@keyframes an-breathe{0%,100%{transform:scaleY(.45)}50%{transform:scaleY(1)}}@keyframes an-glow{0%,100%{opacity:.35}50%{opacity:.9}}@keyframes an-radar{0%{transform:scale(.3);opacity:.9}100%{transform:scale(1.5);opacity:0}}@keyframes an-rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}</style>
+</helmet>
+<div style="{{ rootStyle }}">
+<div style="height:100%;display:flex;flex-direction:column;background:var(--bg);color:var(--tx);font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;position:relative;overflow:hidden">
+
+<sc-if value="{{ isIntro }}" hint-placeholder-val="{{ false }}">
+<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:22px;padding:120px 28px 60px;background:radial-gradient(ellipse at 50% 45%,#2c455d,#101b26 75%)" data-screen-label="Intro">
+  <svg width="180" height="180" viewBox="0 0 96 96" style="overflow:visible"><defs><linearGradient id="inSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient><radialGradient id="inGl"><stop offset="0" stop-color="#94bce3" stop-opacity=".6"></stop><stop offset="1" stop-color="#94bce3" stop-opacity="0"></stop></radialGradient></defs><ellipse cx="48" cy="50" rx="34" ry="16" fill="url(#inGl)" style="animation:an-glow 4s ease-in-out infinite"></ellipse><g style="transform-origin:48px 50px;animation:an-breathe 4s ease-in-out infinite"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" fill="none" stroke="url(#inSt)" stroke-width="2.4" stroke-linecap="round"></path></g><path d="M14 50h68" stroke="#94bce3" stroke-width=".8" opacity=".5"></path><circle cx="48" cy="50" r="2.8" fill="#f5f5f8"></circle></svg>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:8px;animation:an-rise .8s ease-out .4s both"><div style="font-size:30px;font-weight:500;letter-spacing:.08em">ANIMA</div><div style="font-size:14px;color:var(--mu);text-align:center;max-width:260px;text-wrap:pretty">A mind that lives on your phone, remembers at night, and asks before it acts.</div></div>
+  <div style="flex:1"></div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:6px;width:100%;animation:an-rise .8s ease-out .9s both">
+    <div onClick="{{ startOnboarding }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Give life to a mind</div>
+    <div style="font-size:14px;color:var(--mu);cursor:pointer;padding:10px;min-height:44px;display:flex;align-items:center">Restore an exported mind</div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ false }}">
+<div style="flex:1;display:flex;flex-direction:column;padding:64px 22px 40px;overflow:auto" data-screen-label="Onboarding">
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:22px;min-height:44px"><div onClick="{{ obBack }}" style="width:44px;height:44px;margin-left:-12px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--act);visibility:{{ obBackVis }}"><svg width="12" height="20" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2 2 10l8 8"></path></svg></div><div style="flex:1;display:flex;gap:5px"><sc-for list="{{ obDots }}" as="d" hint-placeholder-count="6"><span style="height:2px;flex:1;background:{{ d.bg }};transition:background .3s"></span></sc-for></div></div>
+
+  <sc-if value="{{ ob0 }}" hint-placeholder-val="{{ true }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:22px;animation:an-in .4s ease-out">
+    <div style="font-size:28px;font-weight:500;letter-spacing:-.015em;line-height:1.15">Three things to know.</div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;gap:14px;padding:14px;border:1px solid var(--bd);border-radius:8px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" stroke-width="1.5" stroke-linecap="round" style="flex:none;margin-top:2px"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg><div><div style="font-weight:500">It remembers while you sleep</div><div style="font-size:13px;color:var(--mu);line-height:1.45;text-wrap:pretty">Each night on the charger, today's conversations settle into memory.</div></div></div>
+      <div style="display:flex;gap:14px;padding:14px;border:1px solid var(--bd);border-radius:8px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" stroke-width="1.5" stroke-linecap="round" style="flex:none;margin-top:2px"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"></path></svg><div><div style="font-weight:500">It asks before it acts</div><div style="font-size:13px;color:var(--mu);line-height:1.45;text-wrap:pretty">Anything that changes your calendar, or itself, arrives as a proposal. Nothing happens until you say so.</div></div></div>
+      <div style="display:flex;gap:14px;padding:14px;border:1px solid var(--bd);border-radius:8px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" stroke-width="1.5" stroke-linecap="round" style="flex:none;margin-top:2px"><path d="M3 12c3 0 3 6 6 6s3-12 6-12 3 6 6 6"></path></svg><div><div style="font-weight:500">It becomes someone</div><div style="font-size:13px;color:var(--mu);line-height:1.45;text-wrap:pretty">It starts fully plastic and settles over months. The wave in its mark flattens as it matures.</div></div></div>
+    </div>
+    <div style="flex:1"></div>
+    <div onClick="{{ obNext }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Next</div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ ob1 }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:16px;animation:an-in .4s ease-out">
+    <div style="font-size:26px;font-weight:500;letter-spacing:-.015em;line-height:1.15">Choose what it thinks with.</div>
+    <div style="color:var(--mu);font-size:14px;text-wrap:pretty">Anima runs on a model you pay for directly. The key stays in your Keychain and only goes to the provider you pick.</div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <sc-for list="{{ providers }}" as="p" hint-placeholder-count="4">
+      <div onClick="{{ p.pick }}" style="display:flex;align-items:center;gap:12px;padding:12px 14px;min-height:56px;border-bottom:1px solid var(--bd);cursor:pointer" style-active="background:var(--tint)">
+        <div style="width:30px;height:30px;border-radius:8px;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;color:var(--act);flex:none">{{ p.glyph }}</div>
+        <div style="flex:1;min-width:0"><div style="font-weight:500">{{ p.name }}</div><div style="font-size:12px;color:var(--mu)">{{ p.note }}</div></div>
+        <div style="width:18px;height:18px;border-radius:50%;border:1.5px solid {{ p.ring }};display:flex;align-items:center;justify-content:center;flex:none"><span style="width:8px;height:8px;border-radius:50%;background:{{ p.dot }}"></span></div>
+      </div>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <div onClick="{{ obNext }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Next</div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ ob2 }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:16px;animation:an-in .4s ease-out">
+    <div style="font-size:26px;font-weight:500;letter-spacing:-.015em;line-height:1.15">{{ providerName }} key.</div>
+    <div style="color:var(--mu);font-size:14px;text-wrap:pretty">Paste a key from your {{ providerName }} console. Anima checks it with a single cheap request and stores it in the Keychain, encrypted on this device.</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <input value="{{ key }}" onChange="{{ setKey }}" placeholder="{{ keyPlaceholder }}" style="height:46px;background:var(--sf);color:var(--tx);border:1px solid {{ keyBorder }};border-radius:8px;padding:0 12px;font:inherit;font-family:ui-monospace,Menlo,monospace;font-size:14px;outline:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--mu2);min-height:18px"><span style="display:flex;align-items:center;gap:6px"><sc-if value="{{ keyChecking }}" hint-placeholder-val="{{ false }}"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="animation:an-spin 1.2s linear infinite"><circle cx="5" cy="5" r="4" stroke="var(--ac)" stroke-width="1" stroke-dasharray="6 19"></circle></svg></sc-if>{{ keyStatus }}</span><span onClick="{{ pasteKey }}" style="color:var(--act);cursor:pointer;padding:4px 0">Paste</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Monthly budget</div>
+      <div style="display:flex;gap:8px"><sc-for list="{{ budgets }}" as="b" hint-placeholder-count="4"><div onClick="{{ b.pick }}" style="flex:1;text-align:center;padding:9px 0;border:1px solid {{ b.border }};color:{{ b.color }};border-radius:8px;font-size:14px;cursor:pointer;font-variant-numeric:tabular-nums">{{ b.label }}</div></sc-for></div>
+      <div style="font-size:12px;color:var(--mu);text-wrap:pretty">When it's reached, Anima stops calling the model and tells you. Memory and Inbox keep working.</div>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:center"><div style="font-size:12px;color:var(--mu2);min-height:16px">{{ keyNextHint }}</div><div onClick="{{ obNext }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid {{ keyNextBorder }};color:{{ keyNextColor }};border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Next</div></div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ ob3 }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:16px;animation:an-in .4s ease-out">
+    <div style="font-size:26px;font-weight:500;letter-spacing:-.015em;line-height:1.15">What it can see, and why.</div>
+    <div style="color:var(--mu);font-size:14px;text-wrap:pretty">Each one can be revoked in Settings; Anima will say what it can no longer do.</div>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <sc-for list="{{ perms }}" as="p" hint-placeholder-count="7">
+      <div onClick="{{ p.toggle }}" style="display:flex;align-items:center;gap:12px;padding:10px 14px;min-height:52px;border-bottom:1px solid var(--bd);cursor:pointer" style-active="background:var(--tint)">
+        <div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:500">{{ p.name }}</div><div style="font-size:12px;color:var(--mu);line-height:1.35">{{ p.why }}</div></div>
+        <div style="width:22px;height:22px;border-radius:50%;border:1.5px solid {{ p.ring }};background:{{ p.fill }};flex:none;display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--bg)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="opacity:{{ p.checkOp }}"><path d="M2.5 6.5 5 9l4.5-6"></path></svg></div>
+      </div>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:center"><div style="font-size:12px;color:var(--mu2)">{{ permsSummary }}</div><div onClick="{{ obNext }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Next</div></div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ ob4 }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:16px;animation:an-in .4s ease-out">
+    <div style="font-size:26px;font-weight:500;letter-spacing:-.015em;line-height:1.15">Glasses, if you have them.</div>
+    <div style="color:var(--mu);font-size:14px;text-wrap:pretty">Anima can project short cards into a pair of paired glasses: proposals, one-line answers, what it just remembered. Optional; the phone is always enough.</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:14px;padding:28px 0 10px">
+      <div style="position:relative;width:120px;height:120px;display:flex;align-items:center;justify-content:center">
+        <sc-if value="{{ pairing }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;inset:0;border-radius:50%;border:1px solid var(--ac);animation:an-radar 2.4s ease-out infinite"></span><span style="position:absolute;inset:0;border-radius:50%;border:1px solid var(--ac);animation:an-radar 2.4s ease-out .8s infinite"></span><span style="position:absolute;inset:0;border-radius:50%;border:1px solid var(--ac);animation:an-radar 2.4s ease-out 1.6s infinite"></span></sc-if>
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="{{ glassesStroke }}" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0zM15 13.5a3.5 3.5 0 1 0 7 0 3.5 3.5 0 1 0-7 0zM9 13.5h6M2 13.5 4 8h3M22 13.5 20 8h-3"></path></svg>
+      </div>
+      <div style="font-size:14px;color:var(--mu);text-align:center;min-height:20px">{{ pairStatus }}</div>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:center">
+      <sc-if value="{{ notPaired }}" hint-placeholder-val="{{ true }}"><div onClick="{{ startPair }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">{{ pairAction }}</div><div onClick="{{ obNext }}" style="font-size:14px;color:var(--mu);cursor:pointer;padding:10px;min-height:44px;display:flex;align-items:center">Not now</div></sc-if>
+      <sc-if value="{{ paired }}" hint-placeholder-val="{{ false }}"><div onClick="{{ obNext }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Next</div></sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ ob5 }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;gap:14px;animation:an-in .4s ease-out;min-height:0">
+    <div style="display:flex;align-items:center;gap:12px"><svg width="44" height="44" viewBox="0 0 96 96"><defs><linearGradient id="obSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient></defs><g fill="none" stroke="url(#obSt)" stroke-linecap="round"><path d="M18 50c8 0 8 18 16 18s8-36 16-36 8 36 16 36 8-18 12-18" stroke-width="2.6"></path><path d="M14 50h68" stroke-width=".8" opacity=".5"></path></g><circle cx="48" cy="50" r="3" fill="var(--tx)"></circle></svg><div><div style="font-size:20px;font-weight:500;letter-spacing:-.015em;line-height:1.15">A mind begins here.</div><div style="font-size:12px;color:var(--mu2)">{{ seedProgress }}</div></div></div>
+    <div style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:12px;min-height:0" ref="{{ seedRef }}">
+      <sc-for list="{{ seedMsgs }}" as="m" hint-placeholder-count="1">
+        <sc-if value="{{ m.isMind }}" hint-placeholder-val="{{ true }}"><div style="max-width:88%;font-size:17px;line-height:1.4;text-wrap:pretty;animation:an-in .3s ease-out">{{ m.text }}<span style="display:{{ m.caret }};width:2px;height:16px;background:var(--ac);margin-left:2px;vertical-align:-2px;animation:an-blink 1s steps(1) infinite"></span></div></sc-if>
+        <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ false }}"><div style="align-self:flex-end;max-width:80%;display:flex;flex-direction:column;align-items:flex-end;gap:4px;animation:an-in .3s ease-out"><sc-if value="{{ m.voice }}" hint-placeholder-val="{{ false }}"><div style="font-size:11px;color:var(--mu2);display:flex;align-items:center;gap:5px"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3.5" y="1" width="3" height="5.5" rx="1.5"></rect><path d="M1.5 5.5a3.5 3.5 0 0 0 7 0M5 9V7.5"></path></svg>voice</div></sc-if><div style="background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;font-size:15px">{{ m.text }}</div></div></sc-if>
+      </sc-for>
+      <sc-if value="{{ seedDone }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--bd);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;animation:an-in .3s ease-out"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--act)">Identity seed</div><sc-for list="{{ seedSummary }}" as="s" hint-placeholder-count="3"><div style="display:flex;gap:10px;font-size:13px"><span style="color:var(--mu2);width:64px;flex:none">{{ s.k }}</span><span style="color:var(--tx)">{{ s.v }}</span></div></sc-for></div></sc-if>
+    </div>
+    <sc-if value="{{ seedAsking }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ seedChips }}" as="c" hint-placeholder-count="3"><div onClick="{{ c.run }}" style="font-size:13px;color:var(--act);border:1px solid var(--bd);border-radius:16px;padding:7px 12px;cursor:pointer;min-height:32px" style-active="background:var(--tint)">{{ c.label }}</div></sc-for></div>
+      <sc-if value="{{ seedListening }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;align-items:center;gap:12px;border:1px solid var(--ac);border-radius:8px;padding:10px 14px;min-height:48px">
+        <div style="display:flex;align-items:center;gap:3px;height:18px"><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .15s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .3s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .45s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .6s infinite"></span></div>
+        <div style="flex:1;font-size:14px;color:var(--mu)">Listening…</div>
+        <div onClick="{{ seedStopListen }}" style="font-size:14px;color:var(--act);cursor:pointer;padding:10px 0 10px 10px;min-height:44px;display:flex;align-items:center">Done</div>
+      </div>
+      </sc-if>
+      <sc-if value="{{ seedNotListening }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;align-items:center;gap:8px">
+        <input value="{{ seedDraft }}" onChange="{{ setSeedDraft }}" onKeyDown="{{ seedKey }}" placeholder="Answer, or hold to talk" style="flex:1;min-width:0;height:44px;background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:0 12px;font:inherit;font-size:15px;outline:none">
+        <div onClick="{{ seedMicOrSend }}" style="width:44px;height:44px;border-radius:8px;border:1px solid var(--ac);display:flex;align-items:center;justify-content:center;color:var(--act);cursor:pointer;flex:none" style-active="background:var(--tint)">
+          <sc-if value="{{ seedHasDraft }}" hint-placeholder-val="{{ false }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></sc-if>
+          <sc-if value="{{ seedNoDraft }}" hint-placeholder-val="{{ true }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0M12 17v4"></path></svg></sc-if>
+        </div>
+      </div>
+      </sc-if>
+      <div onClick="{{ seedSkip }}" style="align-self:center;font-size:13px;color:var(--mu2);cursor:pointer;padding:8px;min-height:36px;display:flex;align-items:center">Skip the rest</div>
+    </div>
+    </sc-if>
+    <sc-if value="{{ seedDone }}" hint-placeholder-val="{{ false }}"><div onClick="{{ obFinish }}" style="width:100%;box-sizing:border-box;padding:12px 20px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-weight:500;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">Begin</div></sc-if>
+  </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isApp }}" hint-placeholder-val="{{ true }}">
+<div style="padding:58px 20px 0;display:flex;flex-direction:column;gap:6px;flex:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--mu2);min-height:16px">
+    <div style="display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:{{ bodyDot }};box-shadow:0 0 8px {{ bodyDot }}"></span>{{ bodyLine }}</div>
+    <sc-if value="{{ consolidating }}" hint-placeholder-val="{{ false }}"><div style="display:flex;align-items:center;gap:6px"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" style="animation:an-spin 3s linear infinite"><circle cx="5" cy="5" r="4" stroke="var(--ac)" stroke-width="1" stroke-dasharray="6 19"></circle></svg>consolidating memory</div></sc-if>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <div style="font-size:24px;font-weight:500;letter-spacing:-.015em">{{ screenTitle }}</div>
+    <div onClick="{{ toggleMindSheet }}" style="display:flex;align-items:center;gap:7px;font-size:11px;color:var(--act);cursor:pointer;padding:6px 0 6px 10px;font-variant-numeric:tabular-nums"><span style="width:44px;height:2px;background:{{ plastBar }}"></span>p {{ plastStr }} · {{ regime }}</div>
+  </div>
+  <div style="height:1px;background:linear-gradient(90deg,transparent,var(--bd) 48px,var(--bd) calc(100% - 48px),transparent)"></div>
+</div>
+
+<sc-if value="{{ isChat }}" hint-placeholder-val="{{ true }}">
+<div style="flex:1;overflow:auto;padding:12px 20px 16px;display:flex;flex-direction:column;gap:12px" ref="{{ chatRef }}" data-screen-label="Chat">
+  <sc-if value="{{ budgetOut }}" hint-placeholder-val="{{ false }}"><div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:4px"><div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Monthly budget reached · {{ budgetStr }}</div><div style="font-size:14px;color:var(--mu);line-height:1.45;text-wrap:pretty">New turns pause until Oct 1. Memory and Inbox still work, and anything you say now is kept for later.</div><div onClick="{{ goSettings }}" style="align-self:flex-end;font-size:14px;color:var(--act);cursor:pointer;padding:10px 0 4px;min-height:44px;display:flex;align-items:center">Raise budget</div></div></sc-if>
+  <sc-if value="{{ chatEmpty }}" hint-placeholder-val="{{ false }}"><div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:8px;color:var(--mu);padding:20px 0"><div style="font-size:17px;color:var(--tx)">Day one.</div><div style="font-size:14px;max-width:290px;text-wrap:pretty">I don't know you yet. Talk to me about anything; tonight I'll keep what mattered.</div></div></sc-if>
+  <sc-for list="{{ msgs }}" as="m" hint-placeholder-count="3">
+    <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ true }}">
+    <div style="align-self:flex-end;max-width:80%;display:flex;flex-direction:column;gap:6px;align-items:flex-end;animation:an-in .3s ease-out">
+      <sc-if value="{{ m.photo }}" hint-placeholder-val="{{ false }}"><div style="width:160px;height:110px;border-radius:8px;background:var(--sf);border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--mu2)">camera photo</div></sc-if>
+      <sc-if value="{{ m.voice }}" hint-placeholder-val="{{ false }}"><div style="font-size:11px;color:var(--mu2);display:flex;align-items:center;gap:5px"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3.5" y="1" width="3" height="5.5" rx="1.5"></rect><path d="M1.5 5.5a3.5 3.5 0 0 0 7 0M5 9V7.5"></path></svg>voice transcript</div></sc-if>
+      <div style="background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;font-size:15px">{{ m.text }}</div>
+    </div>
+    </sc-if>
+    <sc-if value="{{ m.isMind }}" hint-placeholder-val="{{ false }}">
+    <div style="max-width:90%;display:flex;flex-direction:column;gap:8px;animation:an-in .3s ease-out">
+      <sc-if value="{{ m.hasThought }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ m.toggleThought }}" style="display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:4px 0">
+        <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mu)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2" style="transform:rotate({{ m.chev }}deg);transition:transform .2s"><path d="M3.5 2l3 3-3 3"></path></svg><span style="animation:{{ m.thinkAnim }}">{{ m.thoughtLabel }}</span></div>
+        <sc-if value="{{ m.thoughtOpen }}" hint-placeholder-val="{{ false }}"><div style="font-size:13px;color:var(--mu);border-left:1px solid var(--bd);padding:2px 0 2px 12px;margin-left:4px;line-height:1.4">{{ m.thought }}</div></sc-if>
+      </div>
+      </sc-if>
+      <sc-if value="{{ m.spoken }}" hint-placeholder-val="{{ false }}"><div style="font-size:11px;color:var(--mu2);display:flex;align-items:center;gap:5px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7"></path></svg>spoken</div></sc-if>
+      <sc-if value="{{ m.hasText }}" hint-placeholder-val="{{ true }}"><div style="font-size:15px;line-height:1.5;text-wrap:pretty">{{ m.text }}<span style="display:{{ m.caret }};width:2px;height:15px;background:var(--ac);margin-left:2px;vertical-align:-2px;animation:an-blink 1s steps(1) infinite"></span></div></sc-if>
+      <sc-if value="{{ m.isError }}" hint-placeholder-val="{{ false }}">
+      <div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Couldn't reach the model</div><div style="font-size:14px;color:var(--mu)">{{ m.text }}</div><div onClick="{{ m.retry }}" style="align-self:flex-end;font-size:14px;color:var(--act);cursor:pointer;padding:10px 0 4px;min-height:44px;display:flex;align-items:center">Try again</div></div>
+      </sc-if>
+      <sc-if value="{{ m.isRefusal }}" hint-placeholder-val="{{ false }}">
+      <div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Declined</div><div style="font-size:15px;line-height:1.5">{{ m.text }}</div></div>
+      </sc-if>
+      <sc-if value="{{ m.isRevoked }}" hint-placeholder-val="{{ false }}">
+      <div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Calendar access is off</div><div style="font-size:14px;color:var(--mu);line-height:1.45">{{ m.text }}</div><div onClick="{{ goSettings }}" style="align-self:flex-end;font-size:14px;color:var(--act);cursor:pointer;padding:10px 0 4px;min-height:44px;display:flex;align-items:center">Open permissions</div></div>
+      </sc-if>
+    </div>
+    </sc-if>
+  </sc-for>
+</div>
+<div style="flex:none;padding:8px 20px 100px;display:flex;flex-direction:column;gap:8px">
+  <sc-if value="{{ listening }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;align-items:center;gap:12px;border:1px solid var(--ac);border-radius:8px;padding:10px 14px;min-height:48px">
+    <div style="display:flex;align-items:center;gap:3px;height:18px"><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .15s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .3s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .45s infinite"></span><span style="width:2px;height:18px;background:var(--ac);animation:an-wave .9s ease-in-out .6s infinite"></span></div>
+    <div style="flex:1;font-size:14px;color:var(--mu)">Listening…</div>
+    <div onClick="{{ stopListen }}" style="font-size:14px;color:var(--act);cursor:pointer;padding:10px 0 10px 10px;min-height:44px;display:flex;align-items:center">Done</div>
+  </div>
+  </sc-if>
+  <sc-if value="{{ notListening }}" hint-placeholder-val="{{ true }}">
+  <div style="display:flex;align-items:center;gap:8px">
+    <div onClick="{{ addPhoto }}" style="width:40px;height:40px;border-radius:8px;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;color:var(--mu);cursor:pointer;flex:none" style-active="background:var(--tint)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path><circle cx="12" cy="13" r="3"></circle></svg></div>
+    <input value="{{ draft }}" onChange="{{ setDraft }}" onKeyDown="{{ onKey }}" placeholder="{{ composerHint }}" style="flex:1;min-width:0;height:40px;background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:0 12px;font:inherit;font-size:15px;outline:none">
+    <div onClick="{{ micOrSend }}" style="width:40px;height:40px;border-radius:8px;border:1px solid var(--ac);display:flex;align-items:center;justify-content:center;color:var(--act);cursor:pointer;flex:none" style-active="background:var(--tint)">
+      <sc-if value="{{ hasDraft }}" hint-placeholder-val="{{ false }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></sc-if>
+      <sc-if value="{{ noDraft }}" hint-placeholder-val="{{ true }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0M12 17v4"></path></svg></sc-if>
+    </div>
+  </div>
+  <sc-if value="{{ showChips }}" hint-placeholder-val="{{ true }}"><div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ demoChips }}" as="c" hint-placeholder-count="3"><div onClick="{{ c.run }}" style="font-size:11px;color:var(--mu);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;cursor:pointer" style-active="background:var(--tint)">{{ c.label }}</div></sc-for></div></sc-if>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isInbox }}" hint-placeholder-val="{{ false }}">
+<div style="flex:1;overflow:auto;padding:14px 20px 110px;display:flex;flex-direction:column;gap:12px" data-screen-label="Inbox">
+  <sc-if value="{{ inboxEmpty }}" hint-placeholder-val="{{ false }}">
+  <div style="flex:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:10px;padding:40px 0;color:var(--mu)"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"></path></svg><div style="font-size:17px;color:var(--tx)">Nothing to decide.</div><div style="font-size:14px;max-width:280px;text-wrap:pretty">Anima only asks when a proposal touches something you've said you want, or when it wants to change who it is.</div></div>
+  </sc-if>
+  <sc-for list="{{ inbox }}" as="c" hint-placeholder-count="3">
+  <div style="border:1px solid var(--bd);border-radius:8px;padding:14px 14px 12px;display:flex;flex-direction:column;gap:9px;background:var(--sf);animation:an-in .3s ease-out">
+    <div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--act)">{{ c.kind }}</div><div style="font-size:11px;color:var(--mu2)">{{ c.meta }}</div></div>
+    <div style="font-size:16px;font-weight:500;line-height:1.3;text-wrap:pretty">{{ c.title }}</div>
+    <sc-if value="{{ c.hasBody }}" hint-placeholder-val="{{ true }}"><div style="font-size:13px;color:var(--mu);line-height:1.45;text-wrap:pretty">{{ c.body }}</div></sc-if>
+    <sc-if value="{{ c.hasDiff }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;flex-direction:column;border:1px solid var(--bd);border-radius:6px;overflow:hidden;font-size:13px">
+      <sc-for list="{{ c.diff }}" as="d" hint-placeholder-count="2">
+      <div style="display:grid;grid-template-columns:76px minmax(0,1fr);gap:0 10px;padding:8px 10px;border-bottom:1px solid var(--bd)">
+        <div style="font-size:11px;color:var(--mu2);text-transform:uppercase;letter-spacing:.04em;padding-top:2px">{{ d.field }}</div>
+        <div style="display:flex;flex-direction:column;gap:3px"><div style="color:var(--mu);text-decoration:line-through;text-decoration-color:var(--mu2)">{{ d.before }}</div><div style="color:var(--tx)">{{ d.after }}</div></div>
+      </div>
+      </sc-for>
+    </div>
+    </sc-if>
+    <div style="display:flex;gap:8px;margin-top:2px">
+      <div onClick="{{ c.dismiss }}" style="flex:1;text-align:center;padding:9px;border:1px solid var(--bd);color:var(--mu);border-radius:8px;font-size:14px;cursor:pointer;min-height:44px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">{{ c.no }}</div>
+      <div onClick="{{ c.accept }}" style="flex:1;text-align:center;padding:9px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;min-height:44px;display:flex;align-items:center;justify-content:center" style-active="background:var(--tint)">{{ c.yes }}</div>
+    </div>
+  </div>
+  </sc-for>
+  <sc-if value="{{ hasDecided }}" hint-placeholder-val="{{ false }}">
+  <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Decided</div>
+  <sc-for list="{{ decided }}" as="d" hint-placeholder-count="1"><div style="display:flex;justify-content:space-between;gap:12px;font-size:13px;color:var(--mu);padding:6px 0;border-bottom:1px solid var(--bd)"><span style="min-width:0">{{ d.title }}</span><span style="flex:none;color:var(--mu2)">{{ d.outcome }}</span></div></sc-for></div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isMemory }}" hint-placeholder-val="{{ false }}">
+<div style="flex:1;overflow:auto;padding:14px 20px 110px;display:flex;flex-direction:column;gap:14px" data-screen-label="Memory">
+  <div style="display:flex;gap:6px;flex-wrap:wrap"><sc-for list="{{ memFilters }}" as="f" hint-placeholder-count="5"><div onClick="{{ f.pick }}" style="font-size:12px;padding:5px 10px;border-radius:6px;border:1px solid {{ f.border }};color:{{ f.color }};cursor:pointer;min-height:28px">{{ f.label }}</div></sc-for></div>
+  <sc-if value="{{ memNewborn }}" hint-placeholder-val="{{ false }}"><div style="display:flex;flex-direction:column;gap:8px;padding:30px 0;color:var(--mu)"><div style="font-size:17px;color:var(--tx)">No memories yet.</div><div style="font-size:14px;max-width:280px;text-wrap:pretty">Memories form when the phone charges. Talk to Anima today; it will remember tonight.</div></div></sc-if>
+  <sc-for list="{{ memories }}" as="m" hint-placeholder-count="4">
+  <div onClick="{{ m.open }}" style="display:flex;gap:12px;padding:10px 0;cursor:pointer;opacity:{{ m.opacity }}">
+    <div style="width:22px;flex:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:4px"><div style="width:{{ m.dotSize }};height:{{ m.dotSize }};border-radius:50%;background:{{ m.dotBg }};border:1.5px solid var(--ac);box-shadow:{{ m.glow }}"></div><div style="flex:1;width:1px;background:var(--bd)"></div></div>
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mu2)"><span style="letter-spacing:.06em;text-transform:uppercase">{{ m.type }} · {{ m.importance }}/10</span><span>{{ m.when }}</span></div>
+      <div style="font-size:15px;line-height:1.4;text-wrap:pretty;text-decoration:{{ m.strike }};text-decoration-color:var(--mu2)">{{ m.text }}</div>
+      <sc-if value="{{ m.invalid }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:var(--mu);display:flex;gap:6px;align-items:baseline"><span style="color:var(--act)">invalidated</span>{{ m.reason }}</div></sc-if>
+      <sc-if value="{{ m.hasPrev }}" hint-placeholder-val="{{ false }}"><div style="font-size:12px;color:var(--mu2)">revises an earlier memory ↑</div></sc-if>
+    </div>
+  </div>
+  </sc-for>
+</div>
+<sc-if value="{{ memDetail }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ closeMem }}" style="position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:5">
+  <div onClick="{{ stop }}" style="width:100%;background:var(--bg);border-top:1px solid var(--bd);border-radius:16px 16px 0 0;padding:10px 20px 44px;display:flex;flex-direction:column;gap:12px;box-shadow:0 -12px 40px rgba(0,0,0,.4);animation:an-in .25s ease-out"><div style="width:36px;height:4px;border-radius:2px;background:var(--bd);align-self:center;margin-bottom:8px"></div>
+    <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--act)">{{ sel.type }} · importance {{ sel.importance }}/10 · {{ sel.state }}</div>
+    <div style="font-size:17px;line-height:1.4;text-wrap:pretty">{{ sel.text }}</div>
+    <div style="font-size:13px;color:var(--mu);line-height:1.45">{{ sel.detail }}</div>
+    <sc-if value="{{ sel.hasPrev }}" hint-placeholder-val="{{ false }}"><div style="border-left:1px solid var(--bd);padding:4px 0 4px 12px;display:flex;flex-direction:column;gap:3px"><div style="font-size:11px;color:var(--mu2);letter-spacing:.06em;text-transform:uppercase">Revised from</div><div style="font-size:14px;color:var(--mu);text-decoration:line-through;text-decoration-color:var(--mu2)">{{ sel.prev }}</div></div></sc-if>
+    <div style="display:flex;gap:8px;margin-top:4px"><div onClick="{{ closeMem }}" style="flex:1;justify-content:center;padding:9px 16px;border:1px solid var(--bd);color:var(--mu);border-radius:8px;font-size:14px;cursor:pointer;min-height:44px;display:flex;align-items:center">Close</div><div onClick="{{ invalidateSel }}" style="flex:1;justify-content:center;padding:9px 16px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;min-height:44px;display:flex;align-items:center">{{ sel.action }}</div></div>
+  </div>
+</div>
+</sc-if>
+</sc-if>
+
+<sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+<div style="flex:1;overflow:auto;padding:14px 20px 110px;display:flex;flex-direction:column;gap:20px" data-screen-label="Settings">
+  <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Model</div>
+    <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;border-bottom:1px solid var(--bd)"><span>Provider</span><span style="font-size:13px;color:var(--mu)">{{ providerName }}</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;border-bottom:1px solid var(--bd)"><span>API key</span><span style="font-size:13px;color:var(--mu);font-family:ui-monospace,Menlo,monospace">{{ keyMasked }} · Keychain</span></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px"><span>Monthly budget</span><span style="font-size:13px;color:var(--mu);font-variant-numeric:tabular-nums">{{ budgetStr }} · used {{ budgetUsedStr }}</span></div>
+    </div>
+    <div style="height:3px;border-radius:2px;background:var(--bd);overflow:hidden"><div style="width:{{ budgetPct }};height:100%;background:var(--ac)"></div></div>
+    <sc-if value="{{ budgetOut }}" hint-placeholder-val="{{ false }}"><div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--mu);padding-top:2px"><span>Turns paused until Oct 1</span><span onClick="{{ raiseBudget }}" style="color:var(--act);cursor:pointer;padding:4px 0">Raise to $40</span></div></sc-if>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Cost by turn type · September</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:4px 0">
+      <sc-for list="{{ costs }}" as="c" hint-placeholder-count="4">
+      <div style="display:grid;grid-template-columns:110px minmax(0,1fr) 52px;gap:10px;align-items:center;font-size:13px"><span style="color:var(--mu)">{{ c.label }}</span><div style="height:6px;border-radius:3px;background:var(--bd);overflow:hidden"><div style="width:{{ c.pct }};height:100%;background:var(--ac);opacity:.85"></div></div><span style="text-align:right;font-variant-numeric:tabular-nums">{{ c.usd }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Permissions</div>
+    <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <sc-for list="{{ perms }}" as="p" hint-placeholder-count="7">
+      <div onClick="{{ p.toggle }}" style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;min-height:48px;border-bottom:1px solid var(--bd);cursor:pointer" style-active="background:var(--tint)"><span>{{ p.name }}</span><span style="width:40px;height:24px;border-radius:12px;border:1px solid {{ p.ring }};background:{{ p.switchBg }};position:relative;transition:background .2s;flex:none"><span style="position:absolute;top:3px;left:{{ p.knobLeft }};width:16px;height:16px;border-radius:50%;background:{{ p.knobBg }};transition:left .2s"></span></span></div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Body</div>
+    <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <div onClick="{{ toggleGlasses }}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;cursor:pointer" style-active="background:var(--tint)"><span>Glasses</span><span style="font-size:13px;color:var(--mu)">{{ glassesState }}</span></div>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Mind</div>
+    <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;border-bottom:1px solid var(--bd)"><span>Consolidation cycles</span><span style="font-size:13px;color:var(--mu);font-variant-numeric:tabular-nums">{{ cycles }} · p {{ plastStr }}</span></div>
+      <div onClick="{{ simulateNight }}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;border-bottom:1px solid var(--bd);cursor:pointer" style-active="background:var(--tint)"><span>Sleep one night now</span><span style="color:var(--act)">›</span></div>
+      <div onClick="{{ exportMind }}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;border-bottom:1px solid var(--bd);cursor:pointer" style-active="background:var(--tint)"><span>Export mind</span><span style="font-size:13px;color:var(--mu)">{{ exportState }}</span></div>
+      <div onClick="{{ askDelete }}" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;min-height:48px;cursor:pointer" style-active="background:var(--tint)"><span style="color:var(--mu)">Delete this mind…</span></div>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ deleteSheet }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ cancelDelete }}" style="position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;z-index:6">
+  <div onClick="{{ stop }}" style="width:100%;background:var(--bg);border-top:1px solid var(--bd);border-radius:16px 16px 0 0;padding:18px 20px 44px;display:flex;flex-direction:column;gap:12px;box-shadow:0 -12px 40px rgba(0,0,0,.4);animation:an-in .25s ease-out" data-screen-label="Delete mind">
+    <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)">Delete this mind</div>
+    <div style="font-size:20px;font-weight:500;line-height:1.25;text-wrap:pretty">{{ cycles }} nights of memory, {{ liveCount }} live memories, one identity. Gone from this phone.</div>
+    <div style="font-size:14px;color:var(--mu);line-height:1.45;text-wrap:pretty">Nothing is stored on a server, so there is nothing to recover. Export first if you want to bring it back one day.</div>
+    <div style="display:flex;flex-direction:column;gap:6px"><div style="font-size:12px;color:var(--mu2)">Type <span style="color:var(--tx);font-family:ui-monospace,Menlo,monospace">delete</span> to confirm</div><input value="{{ deleteText }}" onChange="{{ setDeleteText }}" placeholder="delete" style="height:44px;background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:0 12px;font:inherit;font-family:ui-monospace,Menlo,monospace;font-size:14px;outline:none"></div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px"><div style="display:flex;gap:8px"><div onClick="{{ exportMind }}" style="flex:1;justify-content:center;padding:9px 16px;border:1px solid var(--ac);color:var(--act);border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;min-height:44px;display:flex;align-items:center">Export first</div><div onClick="{{ confirmDelete }}" style="flex:1;justify-content:center;padding:9px 16px;border:1px solid {{ deleteBorder }};color:{{ deleteColor }};border-radius:8px;font-size:14px;cursor:pointer;min-height:44px;display:flex;align-items:center">Delete</div></div><div onClick="{{ cancelDelete }}" style="align-self:center;padding:10px 16px;color:var(--mu);font-size:14px;cursor:pointer;min-height:44px;display:flex;align-items:center">Cancel</div></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ mindSheet }}" hint-placeholder-val="{{ false }}">
+<div onClick="{{ toggleMindSheet }}" style="position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:5">
+  <div onClick="{{ stop }}" style="width:100%;background:var(--bg);border-top:1px solid var(--bd);border-radius:16px 16px 0 0;padding:10px 20px 44px;display:flex;flex-direction:column;gap:14px;box-shadow:0 -12px 40px rgba(0,0,0,.4);animation:an-in .25s ease-out" data-screen-label="Mind state">
+    <div style="width:36px;height:4px;border-radius:2px;background:var(--bd);align-self:center;margin-bottom:8px"></div>
+    <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--act)">Mind · {{ regime }}</div>
+    <div style="display:flex;align-items:center;gap:18px">
+      <svg width="104" height="104" viewBox="0 0 96 96"><defs><linearGradient id="msSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient><radialGradient id="msGl"><stop offset="0" stop-color="#94bce3" stop-opacity="{{ glowOp }}"></stop><stop offset="1" stop-color="#94bce3" stop-opacity="0"></stop></radialGradient></defs><ellipse cx="48" cy="50" rx="34" ry="16" fill="url(#msGl)"></ellipse><g fill="none" stroke="url(#msSt)" stroke-linecap="round"><path d="{{ wavePath }}" stroke-width="2.4" style="transition:d .6s"></path><path d="M14 50h68" stroke-width=".8" opacity=".5"></path></g><circle cx="48" cy="50" r="2.8" fill="var(--tx)"></circle><text x="48" y="88" text-anchor="middle" font-size="12" font-weight="500" fill="var(--act)" font-family="-apple-system,system-ui" style="font-variant-numeric:tabular-nums">p {{ plastStr }}</text></svg>
+      <div style="display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mu);line-height:1.45"><div style="font-size:17px;color:var(--tx)">{{ cyclesLine }}</div><div>{{ regimeText }}</div><div style="font-size:12px;color:var(--mu2)">p(n) = 0.05 + 0.95·e^(−n/30)</div></div>
+    </div>
+    <div style="height:1px;background:linear-gradient(90deg,transparent,var(--bd) 48px,var(--bd) calc(100% - 48px),transparent)"></div>
+    <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+      <div style="display:flex;justify-content:space-between"><span style="color:var(--mu)">Body</span><span>{{ bodyLine }}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:var(--mu)">Last consolidation</span><span>{{ lastConsol }}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:var(--mu)">Live memories</span><span>{{ liveCount }}</span></div>
+      <sc-if value="{{ isMature }}" hint-placeholder-val="{{ false }}"><div style="display:flex;justify-content:space-between"><span style="color:var(--mu)">Identity</span><span>Settled · changes need approval</span></div></sc-if>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ voiceOn }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;background:radial-gradient(ellipse at 50% 42%,#2c455d,#101b26 78%);display:flex;flex-direction:column;align-items:center;padding:56px 24px 40px;z-index:8;animation:an-in .35s ease-out" data-screen-label="Conversation mode">
+  <div style="width:100%;display:flex;justify-content:space-between;align-items:center;min-height:44px">
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mu2)"><span style="width:6px;height:6px;border-radius:50%;background:{{ bodyDot }};box-shadow:0 0 8px {{ bodyDot }}"></span>{{ bodyLine }}</div>
+    <div onClick="{{ endVoice }}" style="width:44px;height:44px;margin-right:-10px;display:flex;align-items:center;justify-content:center;color:var(--mu);cursor:pointer"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"></path></svg></div>
+  </div>
+  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;width:100%">
+    <svg width="220" height="220" viewBox="0 0 96 96" style="overflow:visible"><defs><linearGradient id="vmSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient><radialGradient id="vmGl"><stop offset="0" stop-color="#94bce3" stop-opacity=".6"></stop><stop offset="1" stop-color="#94bce3" stop-opacity="0"></stop></radialGradient></defs><ellipse cx="48" cy="50" rx="36" ry="17" fill="url(#vmGl)" style="animation:{{ voiceGlowAnim }}"></ellipse><g style="transform-origin:48px 50px;animation:{{ voiceWaveAnim }}"><path d="{{ wavePath }}" fill="none" stroke="url(#vmSt)" stroke-width="2.4" stroke-linecap="round"></path></g><path d="M14 50h68" stroke="#94bce3" stroke-width=".8" opacity=".5"></path><circle cx="48" cy="50" r="2.8" fill="#f5f5f8"></circle></svg>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;width:100%">
+      <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--act);animation:{{ voiceLabelAnim }}">{{ voicePhaseLabel }}</div>
+      <div style="font-size:20px;line-height:1.35;text-align:center;max-width:320px;text-wrap:pretty;color:{{ voiceTextColor }};min-height:54px">{{ voiceText }}<span style="display:{{ voiceCaret }};width:2px;height:18px;background:var(--ac);margin-left:3px;vertical-align:-3px;animation:an-blink 1s steps(1) infinite"></span></div>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:14px;width:100%">
+    <div style="display:flex;align-items:center;justify-content:center;gap:28px;width:100%">
+      <div onClick="{{ voiceToText }}" style="width:48px;height:48px;border-radius:50%;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;color:var(--mu);cursor:pointer" style-active="background:var(--tint)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path></svg></div>
+      <div onClick="{{ voiceMain }}" style="width:72px;height:72px;border-radius:50%;border:1px solid var(--ac);background:{{ voiceMainBg }};display:flex;align-items:center;justify-content:center;color:var(--act);cursor:pointer;box-shadow:0 0 24px rgba(148,188,227,.25)" style-active="background:var(--tint)">
+        <sc-if value="{{ voiceIsListening }}" hint-placeholder-val="{{ true }}"><div style="display:flex;align-items:center;gap:3px;height:22px"><span style="width:2.5px;height:22px;background:var(--act);animation:an-wave .9s ease-in-out infinite"></span><span style="width:2.5px;height:22px;background:var(--act);animation:an-wave .9s ease-in-out .15s infinite"></span><span style="width:2.5px;height:22px;background:var(--act);animation:an-wave .9s ease-in-out .3s infinite"></span><span style="width:2.5px;height:22px;background:var(--act);animation:an-wave .9s ease-in-out .45s infinite"></span></div></sc-if>
+        <sc-if value="{{ voiceIsBusy }}" hint-placeholder-val="{{ false }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="var(--act)"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg></sc-if>
+        <sc-if value="{{ voiceIsDone }}" hint-placeholder-val="{{ false }}"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0M12 17v4"></path></svg></sc-if>
+      </div>
+      <div onClick="{{ toggleMute }}" style="width:48px;height:48px;border-radius:50%;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;color:{{ muteColor }};cursor:pointer" style-active="background:var(--tint)">
+        <sc-if value="{{ notMuted }}" hint-placeholder-val="{{ true }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7"></path></svg></sc-if>
+        <sc-if value="{{ muted }}" hint-placeholder-val="{{ false }}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6"></path></svg></sc-if>
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--mu2);min-height:16px">{{ voiceHint }}</div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ night }}" hint-placeholder-val="{{ false }}">
+<div style="position:absolute;inset:0;background:radial-gradient(ellipse at 50% 40%,#1a2a3a,#0b131b 75%);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;padding:40px 30px;z-index:7;animation:an-in .5s ease-out" data-screen-label="Consolidation night">
+  <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--mu2)">02:14 · charging · consolidating</div>
+  <svg width="200" height="200" viewBox="0 0 96 96" style="overflow:visible"><defs><linearGradient id="ntSt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94bce3" stop-opacity=".15"></stop><stop offset=".5" stop-color="#d6ebff"></stop><stop offset="1" stop-color="#94bce3" stop-opacity=".15"></stop></linearGradient><radialGradient id="ntGl"><stop offset="0" stop-color="#94bce3" stop-opacity=".5"></stop><stop offset="1" stop-color="#94bce3" stop-opacity="0"></stop></radialGradient></defs><ellipse cx="48" cy="50" rx="34" ry="16" fill="url(#ntGl)" style="animation:an-glow 6s ease-in-out infinite"></ellipse><g style="transform-origin:48px 50px;animation:an-breathe 6s ease-in-out infinite"><path d="{{ wavePath }}" fill="none" stroke="url(#ntSt)" stroke-width="2.4" stroke-linecap="round"></path></g><path d="M14 50h68" stroke="#94bce3" stroke-width=".8" opacity=".5"></path><circle cx="48" cy="50" r="2.8" fill="#f5f5f8"></circle></svg>
+  <div style="display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center"><div style="font-size:20px;font-weight:500">{{ nightLine }}</div><div style="font-size:13px;color:var(--mu);max-width:280px;text-wrap:pretty">{{ nightSub }}</div></div>
+  <div style="width:160px;height:2px;background:var(--bd);border-radius:1px;overflow:hidden"><div style="width:{{ nightPct }};height:100%;background:var(--ac);transition:width .8s"></div></div>
+  <div style="flex:1"></div>
+  <div onClick="{{ endNight }}" style="font-size:14px;color:var(--mu);cursor:pointer;padding:12px 20px;min-height:44px;display:flex;align-items:center">Tap to wake</div>
+</div>
+</sc-if>
+
+<div style="position:absolute;left:0;right:0;bottom:0;padding:10px 20px 30px;background:linear-gradient(180deg,transparent,var(--bg) 40%);display:flex;justify-content:space-around;align-items:flex-end;z-index:4">
+  <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4">
+  <div onClick="{{ t.go }}" style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:56px;min-height:44px;justify-content:center;cursor:pointer;color:{{ t.color }};position:relative">
+    <sc-if value="{{ t.isChat }}" hint-placeholder-val="{{ true }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></sc-if>
+    <sc-if value="{{ t.isInbox }}" hint-placeholder-val="{{ false }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"></path><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z"></path></svg></sc-if>
+    <sc-if value="{{ t.isMemory }}" hint-placeholder-val="{{ false }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="1"></circle></svg></sc-if>
+    <sc-if value="{{ t.isSettings }}" hint-placeholder-val="{{ false }}"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"></path></svg></sc-if>
+    <span style="font-size:10px;letter-spacing:.02em">{{ t.label }}</span>
+    <sc-if value="{{ t.dot }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:6px;right:12px;width:5px;height:5px;border-radius:50%;background:var(--ac)"></span></sc-if>
+  </div>
+  </sc-for>
+</div>
+</sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:402,&quot;height&quot;:874},&quot;scenario&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;default&quot;,&quot;intro&quot;,&quot;tutorial&quot;,&quot;provider&quot;,&quot;apikey&quot;,&quot;permissions&quot;,&quot;pairing&quot;,&quot;seed&quot;,&quot;voice&quot;,&quot;voiceSpeaking&quot;,&quot;newborn&quot;,&quot;mature&quot;,&quot;budget&quot;,&quot;revoked&quot;,&quot;night&quot;,&quot;delete&quot;,&quot;inbox&quot;,&quot;memory&quot;,&quot;settings&quot;,&quot;mind&quot;],&quot;default&quot;:&quot;default&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Prototype&quot;},&quot;chips&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Prototype&quot;}}">
+const TH = { bg:'#1d2d3d', sf:'#243849', tx:'#f5f5f8', mu:'#b7c4d2', mu2:'#8aa0b6', ac:'#94bce3', act:'#d6ebff', bd:'#2c455d', tint:'rgba(148,188,227,.12)' };
+const PERMS = [
+  ['Calendar','Find free slots and schedule what you confirm.'],
+  ['Health','Notice sleep and activity trends you ask about.'],
+  ['Location','Know when you are home or at the gym.'],
+  ['Contacts','Name the people you mention.'],
+  ['Camera','See what you show it.'],
+  ['Microphone','Hear you when you prefer to talk.'],
+  ['Notifications','Deliver proposals; never nag.']
+];
+const PROVIDERS = [
+  { id:'anthropic', name:'Anthropic', note:'Claude · recommended for Anima', glyph:'A', ph:'sk-ant-api03-…' },
+  { id:'openai', name:'OpenAI', note:'GPT models', glyph:'O', ph:'sk-proj-…' },
+  { id:'google', name:'Google', note:'Gemini', glyph:'G', ph:'AIza…' },
+  { id:'local', name:'On-device', note:'Small model, no key, slower and simpler', glyph:'\u2302', ph:'' }
+];
+const MEMS = [
+  { id:1, type:'episodic', importance:6, when:'Yesterday', text:'You skipped the gym Tuesday because of a late call with Bogot\u00e1.', detail:'Recorded from the 18:40 conversation. Referenced by the training-goal inference.' },
+  { id:2, type:'semantic', importance:9, when:'3 days ago', text:'Your mother\u2019s name is Rosa. You call her on Sundays.', detail:'Confirmed twice in conversation. High stability.', prev:'Your mother\u2019s name is Rosa. You call her on Saturdays.' },
+  { id:3, type:'procedural', importance:7, when:'1 week ago', text:'When you ask "what\u2019s today", answer with the calendar first, then reminders.', detail:'Learned from three corrections. Applied in 11 turns.' },
+  { id:4, type:'reflection', importance:5, when:'2 weeks ago', text:'You tend to accept proposals in the morning and dismiss them after 9 pm.', detail:'Formed during consolidation from 14 inbox decisions.' },
+  { id:5, type:'semantic', importance:4, when:'1 month ago', text:'You prefer the 7:15 train.', detail:'Superseded when the schedule changed.', invalid:true, reason:'schedule changed in June' }
+];
+const INBOX = [
+  { id:1, kind:'Proposal', meta:'expires in 6 days', title:'Two reminders are overdue and you have a free slot at 3 pm. Schedule both?', body:'Bounded to your wish "close pending items before Friday". Would create two 15-minute calendar events.', yes:'Confirm', no:'Not now' },
+  { id:2, kind:'Identity change', meta:'expires in 7 days', title:'Anima wants to change how it speaks to you.', body:'At plasticity 0.42, style can change, but you asked to approve anything about identity.', yes:'Approve', no:'Reject',
+    diff:[ {field:'style', before:'Formal, complete sentences, usted.', after:'Brief, warm, t\u00fa. Full sentences only when it matters.'}, {field:'values', before:'Ask before acting.', after:'Ask before acting. Name uncertainty out loud.'} ] },
+  { id:3, kind:'Inferred goal', meta:'from 4 conversations', title:'I inferred you want to train three times a week. Confirm?', body:'If confirmed, proposals about scheduling workouts stay within this.', yes:'Confirm', no:'Not quite' }
+];
+const MATURE_INBOX = [ { id:9, kind:'Identity change · locked', meta:'needs your approval', title:'A value would change. At p 0.07 this is rare; Anima asks instead of drifting.', body:'From "Ask before acting" to "Ask before acting, except for calendar moves under 15 minutes".', yes:'Approve', no:'Keep as is', diff:[ {field:'values', before:'Ask before acting.', after:'Ask before acting, except calendar moves under 15 min.'} ] } ];
+const SCRIPTS = {
+  plan: { thought:'Read today\u2019s calendar (3 events, gap 15:00\u201316:30). Checked reminders: 2 overdue. Weighed the Friday wish.', text:'You have a gap at 3 pm and two overdue reminders: call the bank and renew the prescription. I put a proposal in your inbox to schedule both. Nothing is booked until you confirm.' },
+  photo: { thought:'Image shows a receipt. Extracted merchant and total. No memory of this merchant.', text:'A receipt from Panader\u00eda Lucero, $18.40, today at 8:12. I can remember it as a regular breakfast place if you want, or forget it.' },
+  refuse: { thought:'Request involves accessing someone else\u2019s messages. This is outside what the owner can consent to for another person.', refusal:'I won\u2019t read Camila\u2019s messages, even from your phone. That\u2019s hers to share. If you tell me what you\u2019re worried about, I can help with that.' },
+  unknown: { thought:'No calendar or memory covers this. Guessing would be worse than saying so.', text:'I don\u2019t know. I have no record of where you parked, and location was off this morning. Want me to keep location on when you drive?' },
+  revoked: { thought:'Calendar permission was revoked yesterday. I can answer from memory only.', revoked:'I can\u2019t see your calendar since yesterday, so I can only tell you what I remember: a call with Bogot\u00e1 around 6 pm. Turn calendar back on and I\u2019ll check properly.' },
+  newborn: { thought:'No memories, no goals. Only the seed. Answer plainly and learn.', text:'I don\u2019t know yet. I was born a few minutes ago and remember nothing about you. Tell me what a normal afternoon looks like and I\u2019ll start from there.' },
+  error: { error:'The request timed out after 30 s. Your message is kept; nothing was lost.' }
+};
+const SEED_Q=[
+  { k:'Name', q:'Before anything else: what should I call you?', chips:['Just my first name','Use my full name'], voice:'Call me Dani.' },
+  { k:'Tone', q:'How do you want me to talk to you?', chips:['Brief and warm','Formal','In Spanish, tú'], voice:'Brief, in Spanish, and don\u2019t sugarcoat.' },
+  { k:'Ask first', q:'Last one. What should I always ask before doing?', chips:['Anything on my calendar','Spending money','Nothing, just act'], voice:'Anything that touches my calendar or money.' }
+];
+class Component extends DCLogic {
+  state = { screen:'chat', ob:0, seed:'', provider:'anthropic', key:'', keyState:'idle', budget:20, budgetUsed:6.42, perms:PERMS.map((p,i)=>({name:p[0],why:p[1],on:i<3||i>4})), msgs:[{id:0,role:'user',text:'What do I have this afternoon?'}], draft:'', listening:false, inbox:INBOX.map(c=>({...c})), decided:[], mems:MEMS.map(m=>({...m})), filter:'all', selId:null, cycles:26, mindSheet:false, glasses:true, pairing:false, consolidating:false, night:false, nightStep:0, deleteSheet:false, deleteText:'', exported:false, nextId:10, streamTimer:null, firstScript:'plan', voice:null, muted:false, seedQ:0, seedMsgs:[], seedAnswers:[], seedDraft:'', seedListening:false, seedStarted:false };
+  componentDidMount(){
+    const sc=this.props.scenario||'default';
+    const S={
+      intro:{screen:'intro'}, tutorial:{screen:'onboarding',ob:0}, provider:{screen:'onboarding',ob:1}, apikey:{screen:'onboarding',ob:2,key:'sk-ant-api03-Qm7x…c2Vw',keyState:'ok'}, permissions:{screen:'onboarding',ob:3}, pairing:{screen:'onboarding',ob:4,glasses:false,pairing:true}, seed:{screen:'onboarding',ob:5,seedQ:1,seedAnswers:['Dani'],seedMsgs:[{id:1,role:'mind',text:SEED_Q[0].q},{id:2,role:'user',text:'Dani'}]},
+      newborn:{screen:'chat',cycles:0,mems:[],inbox:[],msgs:[{id:0,role:'user',text:'What do I have this afternoon?'}],firstScript:'newborn',glasses:false},
+      mature:{screen:'inbox',cycles:120,inbox:MATURE_INBOX.map(c=>({...c}))},
+      budget:{screen:'chat',budgetUsed:20,msgs:[{id:0,role:'user',text:'Summarize my week'}],firstScript:null},
+      revoked:{screen:'chat',perms:PERMS.map((p,i)=>({name:p[0],why:p[1],on:i>0&&(i<3||i>4)})),msgs:[{id:0,role:'user',text:'What do I have this afternoon?'}],firstScript:'revoked'},
+      night:{screen:'chat',night:true,consolidating:true,firstScript:null},
+      voice:{screen:'chat',firstScript:null,voiceAuto:'listening'}, voiceSpeaking:{screen:'chat',firstScript:null,voiceAuto:'speaking'},
+      delete:{screen:'settings',deleteSheet:true,firstScript:null},
+      inbox:{screen:'inbox',firstScript:null}, memory:{screen:'memory',firstScript:null}, settings:{screen:'settings',firstScript:null}, mind:{screen:'chat',mindSheet:true,firstScript:null}
+    }[sc]||{};
+    this.setState(S,()=>{ if(S.voiceAuto) this.startVoice(S.voiceAuto); if(this.state.screen==='chat'&&this.state.firstScript&&!this.state.night) this.runScript(this.state.firstScript); if(this.state.night) this.nightTick(); if(this.state.pairing) setTimeout(()=>this.setState({pairing:false,glasses:true}),3200); });
+  }
+  componentDidUpdate(){ if(this.state.screen==='onboarding'&&this.state.ob===5&&!this.state.seedStarted){ this.setState({seedStarted:true},()=>{ if(this.state.seedMsgs.length===0) this.askSeed(0); else if(this.state.seedQ<SEED_Q.length) this.askSeed(this.state.seedQ); }); } }
+  askSeed(i){ const q=SEED_Q[i]; if(!q){ return; } const id=Date.now(); this.setState(s=>({seedMsgs:[...s.seedMsgs,{id,role:'mind',text:'',streaming:true}]})); let n=0; const t=setInterval(()=>{ n+=2; this.setState(s=>({seedMsgs:s.seedMsgs.map(m=>m.id===id?{...m,text:q.q.slice(0,n)}:m)})); this.seedScroll(); if(n>=q.q.length){ clearInterval(t); this.setState(s=>({seedMsgs:s.seedMsgs.map(m=>m.id===id?{...m,streaming:false}:m)})); } },22); }
+  answerSeed(text,voice){ if(!text) return; this.setState(s=>({seedMsgs:[...s.seedMsgs,{id:Date.now()+1,role:'user',text,voice}],seedAnswers:[...s.seedAnswers,text],seedQ:s.seedQ+1,seedDraft:'',seedListening:false}),()=>{ this.seedScroll(); if(this.state.seedQ<SEED_Q.length) setTimeout(()=>this.askSeed(this.state.seedQ),500); else this.setState(s=>({seedMsgs:[...s.seedMsgs,{id:Date.now()+2,role:'mind',text:'Good. I\u2019ll hold onto that loosely; you can change any of it just by telling me.'}]})); }); }
+  seedScroll(){ const el=this.seedEl; if(el) requestAnimationFrame(()=>{ el.scrollTop=el.scrollHeight; }); }
+  componentWillUnmount(){ clearInterval(this.state.streamTimer); clearTimeout(this.nightT); clearTimeout(this.vT); clearInterval(this.vI); }
+  plast(){ return 0.05 + 0.95*Math.exp(-this.state.cycles/30); }
+  regime(){ const p=this.plast(); return p>=0.7?'bootstrap':p>=0.3?'adolescence':'maturity'; }
+  addMsg(m){ const id=this.state.nextId; this.setState(s=>({msgs:[...s.msgs,{id,...m}],nextId:s.nextId+1})); return id; }
+  scroll(){ const el=this.chatEl; if(el) requestAnimationFrame(()=>{ el.scrollTop = el.scrollHeight; }); }
+  runScript(key){
+    const sc=SCRIPTS[key]; clearInterval(this.state.streamTimer);
+    if (sc.error){ setTimeout(()=>{ this.addMsg({role:'mind',error:sc.error}); this.scroll(); },600); return; }
+    const id=this.addMsg({role:'mind',thought:sc.thought,thinking:true,text:'',streaming:true,refusal:!!sc.refusal,revoked:!!sc.revoked}); this.scroll();
+    setTimeout(()=>{
+      this.patch(id,{thinking:false});
+      const full=sc.text||sc.refusal||sc.revoked; let i=0;
+      const t=setInterval(()=>{ i+=Math.ceil(1+Math.random()*3); this.patch(id,{text:full.slice(0,i)}); this.scroll(); if(i>=full.length){ clearInterval(t); this.patch(id,{streaming:false}); } },28);
+      this.setState({streamTimer:t});
+    },1400);
+  }
+  patch(id,ch){ this.setState(s=>({msgs:s.msgs.map(m=>m.id===id?{...m,...ch}:m)})); }
+  send(text, extra){ if(!text) return; if(this.state.budgetUsed>=this.state.budget){ this.addMsg({role:'user',text,...extra}); this.setState({draft:''}); this.scroll(); return; } this.addMsg({role:'user',text,...extra}); this.setState({draft:''}); this.scroll(); const cal=this.state.perms[0].on; const k=/read|message|camila/i.test(text)?'refuse':/park|where/i.test(text)?'unknown':extra&&extra.photo?'photo':this.state.cycles===0?'newborn':!cal?'revoked':'plan'; this.runScript(k); }
+  startVoice(from){
+    clearTimeout(this.vT); clearInterval(this.vI);
+    const q='What do I have this afternoon?'; const reply=SCRIPTS.plan.text;
+    const toThinking=()=>{ this.setState({voice:{phase:'thinking',text:q,caret:false}}); this.vT=setTimeout(toSpeaking,1500); };
+    const toSpeaking=()=>{ this.setState({voice:{phase:'speaking',text:'',caret:true}}); let n=0; this.vI=setInterval(()=>{ n+=2; this.setState({voice:{phase:'speaking',text:reply.slice(0,n),caret:n<reply.length}}); if(n>=reply.length){ clearInterval(this.vI); this.setState({voice:{phase:'done',text:reply,caret:false}}); } },34); };
+    if(from==='speaking'){ toSpeaking(); return; }
+    this.setState({voice:{phase:'listening',text:'',caret:false},listening:false});
+    let i=0; this.vT=setTimeout(()=>{ this.vI=setInterval(()=>{ i+=2; this.setState({voice:{phase:'listening',text:q.slice(0,i),caret:false}}); if(i>=q.length){ clearInterval(this.vI); this.vT=setTimeout(toThinking,900); } },45); },700);
+  }
+  endVoice(){ clearTimeout(this.vT); clearInterval(this.vI); const v=this.state.voice; if(v&&v.phase!=='listening'){ this.addMsg({role:'user',text:'What do I have this afternoon?',voice:true}); if(v.phase==='done'||v.phase==='speaking') this.addMsg({role:'mind',thought:SCRIPTS.plan.thought,text:SCRIPTS.plan.text,spoken:true}); } this.setState({voice:null}); this.scroll(); }
+  nightTick(){ const steps=['Replaying the day','Weighing what mattered','Writing 37 memories','Revising who I am, a little']; this.nightT=setTimeout(()=>{ this.setState(s=>({nightStep:Math.min(s.nightStep+1,steps.length-1)}),()=>{ if(this.state.nightStep<steps.length-1) this.nightTick(); }); },1800); }
+  decide(id,outcome){ this.setState(s=>{ const c=s.inbox.find(x=>x.id===id); return { inbox:s.inbox.filter(x=>x.id!==id), decided:[{title:c.title,outcome},...s.decided] }; }); }
+  renderVals(){
+    const s=this.state; const p=this.plast(); const reg=this.regime();
+    const rootStyle=`height:${this.props.height||874}px;--bg:${TH.bg};--sf:${TH.sf};--tx:${TH.tx};--mu:${TH.mu};--mu2:${TH.mu2};--ac:${TH.ac};--act:${TH.act};--bd:${TH.bd};--tint:${TH.tint}`;
+    const go=k=>()=>this.setState({screen:k,mindSheet:false,selId:null,deleteSheet:false});
+    const perms=s.perms.map((pm,i)=>({...pm, toggle:()=>this.setState(st=>({perms:st.perms.map((q,j)=>j===i?{...q,on:!q.on}:q)})), ring:pm.on?'var(--ac)':'var(--bd)', fill:pm.on?'var(--ac)':'transparent', checkOp:pm.on?1:0, state:pm.on?'Allowed':'Off', stateColor:pm.on?'var(--act)':'var(--mu2)', switchBg:pm.on?'var(--ac)':'transparent', knobLeft:pm.on?'19px':'3px', knobBg:pm.on?'var(--bg)':'var(--mu2)'}));
+    const onCount=s.perms.filter(x=>x.on).length;
+    const prov=PROVIDERS.find(x=>x.id===s.provider);
+    const providers=PROVIDERS.map(x=>({...x, pick:()=>this.setState({provider:x.id,key:'',keyState:'idle'}), ring:x.id===s.provider?'var(--ac)':'var(--bd)', dot:x.id===s.provider?'var(--ac)':'transparent'}));
+    const needsKey=s.provider!=='local';
+    const keyOk=!needsKey||s.keyState==='ok';
+    const keyStatus={idle:needsKey?'Not checked yet':'No key needed on-device',checking:'Checking with a 1-token request…',ok:'Valid · stored in Keychain',bad:'That key was rejected. Check it and try again.'}[s.keyState];
+    const budgets=[10,20,40,100].map(b=>({label:'$'+b, pick:()=>this.setState({budget:b}), border:s.budget===b?'var(--ac)':'var(--bd)', color:s.budget===b?'var(--act)':'var(--mu)'}));
+    const msgs=s.msgs.map(m=>({ ...m, isUser:m.role==='user', isMind:m.role==='mind', hasThought:!!m.thought, hasText:!m.error&&!m.refusal&&!m.revoked, isError:!!m.error, isRefusal:!!m.refusal&&!m.thinking, isRevoked:!!m.revoked&&!m.thinking, text:m.error||m.text, thoughtLabel:m.thinking?'Thinking\u2026':'Thought \u00b7 '+(m.thought||'').split('.')[0], thinkAnim:m.thinking?'an-pulse 1.4s ease-in-out infinite':'none', chev:m.open?90:0, thoughtOpen:!!m.open, toggleThought:()=>this.patch(m.id,{open:!m.open}), caret:m.streaming&&!m.thinking?'inline-block':'none', retry:()=>{ this.setState(st=>({msgs:st.msgs.filter(x=>x.id!==m.id)})); this.runScript('plan'); } }));
+    const inbox=s.inbox.map(c=>({ ...c, hasBody:!!c.body, hasDiff:!!c.diff, accept:()=>this.decide(c.id,c.yes==='Approve'?'approved':'confirmed'), dismiss:()=>this.decide(c.id,/Reject|Keep/.test(c.no)?'rejected':'dismissed') }));
+    const filters=['all','episodic','semantic','procedural','reflection'].map(f=>({label:f, pick:()=>this.setState({filter:f}), border:s.filter===f?'var(--ac)':'var(--bd)', color:s.filter===f?'var(--act)':'var(--mu)'}));
+    const memories=s.mems.filter(m=>s.filter==='all'||m.type===s.filter).map(m=>({ ...m, open:()=>this.setState({selId:m.id}), opacity:m.invalid?.55:1, dotSize:(6+m.importance*1.2)+'px', dotBg:m.invalid?'transparent':'var(--ac)', glow:m.invalid?'none':`0 0 ${m.importance*1.5}px var(--ac)`, strike:m.invalid?'line-through':'none', hasPrev:!!m.prev }));
+    const selM=s.mems.find(m=>m.id===s.selId);
+    const sel=selM?{...selM, state:selM.invalid?'invalidated':'live', hasPrev:!!selM.prev, action:selM.invalid?'Restore':'Invalidate\u2026'}:{};
+    const costs=[['Chat turn',3.1,'$3.10'],['Consolidation',1.9,'$1.90'],['Proposal',0.92,'$0.92'],['Vision',0.5,'$0.50']].map(c=>({label:c[0],pct:(c[1]/3.1*100)+'%',usd:c[2]}));
+    const tabs=[['chat','Chat'],['inbox','Inbox'],['memory','Memory'],['settings','Settings']].map(t=>({label:t[1], go:go(t[0]), color:s.screen===t[0]?'var(--act)':'var(--mu2)', isChat:t[0]==='chat', isInbox:t[0]==='inbox', isMemory:t[0]==='memory', isSettings:t[0]==='settings', dot:t[0]==='inbox'&&s.inbox.length>0&&s.screen!=='inbox'}));
+    const titles={chat:'Anima',inbox:'Inbox',memory:'Memory',settings:'Settings'};
+    const a=(4+14*p).toFixed(1);
+    const wavePath=`M18 50c8 0 8 ${a} 16 ${a}s8 ${-2*a} 16 ${-2*a} 8 ${2*a} 16 ${2*a} 8 ${-a} 12 ${-a}`;
+    const budgetOut=s.budgetUsed>=s.budget;
+    const nightSteps=['Replaying the day','Weighing what mattered','Writing 37 memories','Revising who I am, a little'];
+    const canDelete=s.deleteText.trim().toLowerCase()==='delete';
+    const v=s.voice;
+    return {
+      rootStyle, isIntro:s.screen==='intro', isOnboarding:s.screen==='onboarding', isApp:s.screen!=='onboarding'&&s.screen!=='intro',
+      startOnboarding:()=>this.setState({screen:'onboarding',ob:0}),
+      obDots:[0,1,2,3,4,5].map(i=>({bg:i<=s.ob?'var(--ac)':'var(--bd)'})), ob0:s.ob===0, ob1:s.ob===1, ob2:s.ob===2, ob3:s.ob===3, ob4:s.ob===4, ob5:s.ob===5,
+      obNext:()=>{ if(s.ob===2&&!keyOk) return; this.setState(st=>({ob:st.ob+1})); }, obBack:()=>this.setState(st=>st.ob===0?{screen:'intro'}:{ob:st.ob-1}), obBackVis:'visible',
+      providers, providerName:prov.name, needsKey, key:s.key, setKey:e=>this.setState({key:e.target.value,keyState:'idle'}), keyPlaceholder:prov.ph||'no key needed', keyBorder:s.keyState==='ok'?'var(--ac)':s.keyState==='bad'?'var(--mu2)':'var(--bd)', keyChecking:s.keyState==='checking', keyStatus,
+      pasteKey:()=>{ this.setState({key:(prov.ph||'sk-')+'Qm7xR2pL9vT4wY8zK1nB3cF6hJ0sD5gA',keyState:'checking'}); setTimeout(()=>this.setState({keyState:'ok'}),1300); },
+      budgets, keyNextBorder:keyOk?'var(--ac)':'var(--bd)', keyNextColor:keyOk?'var(--act)':'var(--mu2)', keyNextHint:keyOk?'':'Paste a key to continue',
+      perms, permsSummary:`${onCount} of 7 allowed`,
+      pairing:s.pairing, notPaired:!s.glasses, paired:s.glasses, glassesStroke:s.glasses?'var(--act)':s.pairing?'var(--ac)':'var(--mu2)', pairStatus:s.glasses?'Paired · Anima Glasses':s.pairing?'Looking nearby… keep the glasses on':'No glasses paired', pairAction:s.pairing?'Searching…':'Pair glasses',
+      startPair:()=>{ this.setState({pairing:true}); setTimeout(()=>this.setState({pairing:false,glasses:true}),3200); },
+      seedRef:el=>{this.seedEl=el;}, seedMsgs:s.seedMsgs.map(m=>({...m,isMind:m.role==='mind',isUser:m.role==='user',caret:m.streaming?'inline-block':'none'})),
+      seedProgress:s.seedQ<SEED_Q.length?`Question ${s.seedQ+1} of ${SEED_Q.length} · answer by text or voice`:'Seed ready', seedAsking:s.seedQ<SEED_Q.length, seedDone:s.seedQ>=SEED_Q.length,
+      seedChips:(SEED_Q[s.seedQ]||{chips:[]}).chips.map(c=>({label:c,run:()=>this.answerSeed(c)})),
+      seedSummary:SEED_Q.map((q,i)=>({k:q.k,v:s.seedAnswers[i]||'\u2014 left open'})),
+      seedListening:s.seedListening, seedNotListening:!s.seedListening, seedStopListen:()=>this.answerSeed((SEED_Q[s.seedQ]||{}).voice||'',true),
+      seedDraft:s.seedDraft, setSeedDraft:e=>this.setState({seedDraft:e.target.value}), seedKey:e=>{ if(e.key==='Enter') this.answerSeed(s.seedDraft); }, seedHasDraft:!!s.seedDraft, seedNoDraft:!s.seedDraft,
+      seedMicOrSend:()=>{ if(s.seedDraft) this.answerSeed(s.seedDraft); else this.setState({seedListening:true}); },
+      seedSkip:()=>this.setState({seedQ:SEED_Q.length,seedListening:false}),
+      seed:s.seedAnswers.join(' · '), obFinish:()=>this.setState({screen:'chat',ob:0,cycles:0,mems:[],inbox:[],msgs:[],firstScript:'newborn'}),
+      bodyDot:s.glasses?'var(--ac)':'var(--mu2)', bodyLine:s.glasses?'glasses connected':'phone only', consolidating:s.consolidating,
+      screenTitle:titles[s.screen]||'Anima', plastStr:p.toFixed(2), regime:reg, plastBar:`linear-gradient(90deg,var(--ac) ${p*100}%,var(--bd) ${p*100}%)`,
+      regimeText: reg==='bootstrap'?'Everything is still forming: identity, values, capabilities and style.':reg==='adolescence'?'Only capabilities and style shift on their own; identity and values need your approval.':'Identity and values are settled; changes need your approval and are rare.',
+      isMature:reg==='maturity', cyclesLine:s.cycles===0?'Born today':`${s.cycles} nights of consolidation`, lastConsol:s.cycles===0?'Tonight, when charging':'Last night, 02:14 · 37 memories',
+      toggleMindSheet:()=>this.setState(st=>({mindSheet:!st.mindSheet})), mindSheet:s.mindSheet, stop:e=>e.stopPropagation(),
+      wavePath, glowOp:(0.2+0.4*p).toFixed(2), cycles:s.cycles, liveCount:s.mems.filter(m=>!m.invalid).length,
+      toggleGlasses:()=>this.setState(st=>({glasses:!st.glasses})), glassesState:s.glasses?'Anima Glasses · connected':'Not paired',
+      isChat:s.screen==='chat', chatRef:el=>{this.chatEl=el;}, msgs, chatEmpty:s.msgs.length===0&&!budgetOut,
+      budgetOut, budgetStr:'$'+s.budget.toFixed(2), budgetUsedStr:'$'+s.budgetUsed.toFixed(2), budgetPct:Math.min(100,s.budgetUsed/s.budget*100)+'%', raiseBudget:()=>this.setState({budget:40}), goSettings:go('settings'),
+      composerHint:budgetOut?'Kept for later…':s.cycles===0?'Say anything':'Talk to Anima',
+      listening:s.listening, notListening:!s.listening, stopListen:()=>{ this.setState({listening:false}); this.send('Where did I park this morning?',{voice:true}); },
+      draft:s.draft, setDraft:e=>this.setState({draft:e.target.value}), onKey:e=>{ if(e.key==='Enter') this.send(s.draft); }, hasDraft:!!s.draft, noDraft:!s.draft,
+      micOrSend:()=>{ if(s.draft) this.send(s.draft); else this.startVoice(); },
+      addPhoto:()=>this.send('What is this?',{photo:true}),
+      showChips:this.props.chips!==false&&!budgetOut,
+      demoChips:[ {label:'ask to read someone\u2019s messages',run:()=>this.send('Can you read Camila\u2019s messages?')}, {label:'network error',run:()=>{ this.addMsg({role:'user',text:'Summarize my week'}); this.scroll(); this.runScript('error'); }}, {label:'conversation mode',run:()=>this.startVoice()}, {label:'night',run:()=>{ this.setState({night:true,nightStep:0,consolidating:true}); this.nightTick(); }} ],
+      isInbox:s.screen==='inbox', inbox, inboxEmpty:s.inbox.length===0, hasDecided:s.decided.length>0, decided:s.decided,
+      isMemory:s.screen==='memory', memFilters:filters, memories, memNewborn:s.mems.length===0, memDetail:!!selM, sel, closeMem:()=>this.setState({selId:null}),
+      invalidateSel:()=>this.setState(st=>({mems:st.mems.map(m=>m.id===st.selId?{...m,invalid:!m.invalid,reason:m.invalid?'':'invalidated by you today'}:m), selId:null})),
+      isSettings:s.screen==='settings', costs, keyMasked:prov.id==='local'?'none':(prov.ph||'sk-').slice(0,6)+'…c2Vw',
+      simulateNight:()=>{ this.setState({night:true,nightStep:0,consolidating:true}); this.nightTick(); },
+      exportMind:()=>this.setState({exported:true}), exportState:s.exported?'anima-mind.json · shared':'Encrypted file',
+      askDelete:()=>this.setState({deleteSheet:true}), cancelDelete:()=>this.setState({deleteSheet:false,deleteText:''}), deleteSheet:s.deleteSheet, deleteText:s.deleteText, setDeleteText:e=>this.setState({deleteText:e.target.value}), deleteBorder:canDelete?'var(--tx)':'var(--bd)', deleteColor:canDelete?'var(--tx)':'var(--mu2)',
+      confirmDelete:()=>{ if(!canDelete) return; clearInterval(this.state.streamTimer); this.setState({screen:'intro',deleteSheet:false,deleteText:'',cycles:0,mems:[],inbox:[],decided:[],msgs:[],seed:'',key:'',keyState:'idle',glasses:false,exported:false}); },
+      night:s.night, nightLine:nightSteps[s.nightStep], nightSub:s.nightStep<3?'Anima consolidates only while charging, so the day\u2019s conversations never sit half-remembered.':`Plasticity ${p.toFixed(2)} → ${(0.05+0.95*Math.exp(-(s.cycles+1)/30)).toFixed(2)}. One night older.`, nightPct:((s.nightStep+1)/4*100)+'%',
+      endNight:()=>{ clearTimeout(this.nightT); this.setState(st=>({night:false,consolidating:false,cycles:st.cycles+1,nightStep:0})); },
+      tabs,
+      voiceOn:!!s.voice, endVoice:()=>this.endVoice(),
+      voicePhaseLabel:v?({listening:'Listening',thinking:'Thinking',speaking:s.muted?'Replying · muted':'Speaking',done:'Tap to talk'})[v.phase]:'',
+      voiceText:v?(v.text||(v.phase==='listening'?'Say anything':'')):'', voiceTextColor:v&&(v.phase==='listening'&&!v.text)?'var(--mu2)':v&&v.phase==='thinking'?'var(--mu)':'var(--tx)', voiceCaret:v&&v.caret?'inline-block':'none',
+      voiceWaveAnim:v?({listening:'an-breathe 1.1s ease-in-out infinite',thinking:'none',speaking:'an-breathe .6s ease-in-out infinite',done:'an-breathe 4s ease-in-out infinite'})[v.phase]:'none',
+      voiceGlowAnim:v?({listening:'an-glow 1.1s ease-in-out infinite',thinking:'an-glow 1.6s ease-in-out infinite',speaking:'an-glow .6s ease-in-out infinite',done:'an-glow 4s ease-in-out infinite'})[v.phase]:'none',
+      voiceLabelAnim:v&&v.phase==='thinking'?'an-pulse 1.4s ease-in-out infinite':'none',
+      voiceIsListening:v&&v.phase==='listening', voiceIsBusy:v&&(v.phase==='thinking'||v.phase==='speaking'), voiceIsDone:v&&v.phase==='done', voiceMainBg:v&&v.phase==='listening'?'var(--tint)':'transparent',
+      voiceMain:()=>{ if(!v) return; if(v.phase==='listening'){ clearTimeout(this.vT); clearInterval(this.vI); this.setState({voice:{phase:'thinking',text:v.text||'What do I have this afternoon?',caret:false}}); this.vT=setTimeout(()=>this.startVoice('speaking'),1200); } else if(v.phase==='done') this.startVoice(); else { clearTimeout(this.vT); clearInterval(this.vI); this.setState({voice:{phase:'done',text:v.text,caret:false}}); } },
+      voiceHint:v?({listening:'Pause to send · tap to send now',thinking:'Tap to interrupt',speaking:'Tap to interrupt · the glasses hear this too',done:'Swipe down or × to return to text'})[v.phase]:'',
+      voiceToText:()=>this.endVoice(), toggleMute:()=>this.setState(st=>({muted:!st.muted})), muted:s.muted, notMuted:!s.muted, muteColor:s.muted?'var(--act)':'var(--mu)'
+    };
+  }
+}
+</script>
+</body>
+</html>

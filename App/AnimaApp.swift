@@ -129,6 +129,9 @@ final class AppModel: ObservableObject {
             authMode: authMode,
             token: token,
             clientTools: Self.tools(),
+            // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
+            // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
+            serverTools: [],
             confirmation: confirmation,
             brain: brain,
             inbox: inbox,
@@ -218,10 +221,11 @@ final class AppModel: ObservableObject {
         return dir.appendingPathComponent("anima.sqlite").path
     }
 
-    /// NSFileProtectionComplete para el .sqlite (§8).
+    /// Protección del .sqlite alineada con el token del Keychain (AfterFirstUnlock):
+    /// Complete impediría que el BGTask nocturno abra la DB con el teléfono bloqueado (§8).
     private static func protect(path: String) {
         try? FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.complete], ofItemAtPath: path)
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path)
     }
 }
 

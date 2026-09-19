@@ -34,7 +34,7 @@ public enum ClaudeRequestBuilder {
 
         // thinking: adaptive con display summarized cuando hay razonamiento
         // (turnos con effort). Haiku (sin effort) va sin thinking.
-        let thinkingEnabled = policy.allowsThinking && opts.route.effort != nil
+        let thinkingEnabled = policy.allowsThinking && opts.route.effort != nil && opts.enableThinking
         if thinkingEnabled {
             body["thinking"] = .object(["type": .string("adaptive"), "display": .string("summarized")])
         }

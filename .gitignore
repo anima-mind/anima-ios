@@ -10,3 +10,4 @@ xcuserdata/
 *.env
 Secrets.*
 GoogleService-Info.plist
+.spm-ci/

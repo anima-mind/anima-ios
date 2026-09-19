@@ -3,14 +3,50 @@ on:
   push:
     branches: [main]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-test:
+  package-test:
+    name: AnimaKit — build + tests
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
       - name: Swift version
         run: swift --version
       - name: Build
-        run: swift build -v
+        run: swift build
       - name: Test
         run: swift test
+
+  app-build:
+    name: App shell — xcodegen + xcodebuild (iOS Simulator)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate --spec App/project.yml
+      - name: Cache SPM (Xcode)
+        uses: actions/cache@v4
+        with:
+          path: .spm-ci
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('App/project.yml', 'Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
+      - name: Build app target (sin firma)
+        run: >
+          xcodebuild -project App/Anima.xcodeproj -scheme Anima
+          -destination 'generic/platform=iOS Simulator'
+          -clonedSourcePackagesDirPath .spm-ci
+          build CODE_SIGNING_ALLOWED=NO

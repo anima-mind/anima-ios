@@ -1,0 +1,59 @@
+name: Anima
+options:
+  bundleIdPrefix: mind.anima
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  AnimaKit:
+    path: ..
+  Firebase:
+    url: https://github.com/firebase/firebase-ios-sdk.git
+    from: "11.0.0"
+
+schemes:
+  Anima:
+    build:
+      targets:
+        Anima: all
+
+targets:
+  Anima:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: .
+        excludes:
+          - project.yml
+          - "*.template.plist"
+          - "Anima.xcodeproj"
+    dependencies:
+      - package: AnimaKit
+        product: AnimaKit
+      - package: Firebase
+        product: FirebaseRemoteConfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: mind.anima.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Anima
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        # Sueño (§5.4): el ciclo de consolidación corre como BGProcessingTask al cargar.
+        # NOTA device-pending: BGTaskSchedulerPermittedIdentifiers requiere un Info.plist
+        # explícito (array); pendiente de verificación en device real.
+        INFOPLIST_KEY_UIBackgroundModes: processing
+        INFOPLIST_KEY_NSCameraUsageDescription: "Anima usa la cámara solo cuando tú se lo pides o confirmas, para ver y comentar una foto que le muestras."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Anima usa el micrófono para grabar notas de voz que tú inicias; el audio se transcribe en el teléfono."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "La transcripción de tus notas de voz ocurre en el dispositivo (es-CO); el audio no sale del teléfono."
+        INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription: "Anima lee tu calendario para responder qué tienes agendado y crea eventos solo tras tu confirmación."
+        INFOPLIST_KEY_NSRemindersFullAccessUsageDescription: "Anima lee tus recordatorios para ayudarte a no olvidar pendientes y crea nuevos solo tras tu confirmación."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Anima usa tu ubicación para dar respuestas con contexto de dónde estás; nunca la comparte."
+        INFOPLIST_KEY_NSContactsUsageDescription: "Anima busca en tus contactos cuando necesitas datos de alguien; la información se queda en tu teléfono."

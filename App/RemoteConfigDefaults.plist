@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Defaults bundled obligatorios (§4.8, regla dura 2): la app funciona sin red,
+     primera apertura incluida. Estos valores son el template actual; Remote
+     Config los rota sin release. Los secretos JAMÁS viven aquí. -->
+<plist version="1.0">
+<dict>
+    <key>provider_config</key>
+    <string>{"anthropic":{"api":{"base_url":"https://api.anthropic.com","version":"2023-06-01","betas":["compact-2026-01-12","context-management-2025-06-27","interleaved-thinking-2025-05-14","prompt-caching-scope-2026-01-05","extended-cache-ttl-2025-04-11"],"auth_betas":{"oauth":["oauth-2025-04-20","claude-code-20250219"]},"auth_system_prefix":{"oauth":"You are Claude Code, Anthropic's official CLI for Claude."}},"routes":{"interactive":{"model":"claude-opus-4-8","effort":"medium","max_tokens":16000},"interactiveHard":{"model":"claude-opus-4-8","effort":"high","max_tokens":32000},"restructure":{"model":"claude-opus-4-8","effort":"high","max_tokens":32000},"consolidation":{"model":"claude-haiku-4-5","max_tokens":4000},"reconsolidation":{"model":"claude-haiku-4-5","max_tokens":4000},"desirePulse":{"model":"claude-haiku-4-5","max_tokens":4000},"distill":{"model":"claude-haiku-4-5","max_tokens":4000}}}}</string>
+    <key>system_prompt_anthropic</key>
+    <string>Eres Anima, un asistente personal que vive en el teléfono de su dueño. Hablas español (es-CO) por defecto, con tono cercano, directo y honesto. Tienes acceso a herramientas del teléfono (calendario, recordatorios, notas, contexto, cámara, audio, búsqueda web): úsalas cuando aporten valor real, nunca por rutina. Toda acción que cree o modifique algo requiere la confirmación del dueño. No inventes: si no sabes algo, dilo o búscalo. Cuida el contexto y el costo: sé conciso sin ser seco.</string>
+</dict>
+</plist>

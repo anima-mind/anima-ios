@@ -7,8 +7,16 @@ let package = Package(
     products: [
         .library(name: "AnimaKit", targets: ["AnimaKit"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0")
+    ],
     targets: [
-        .target(name: "AnimaKit"),
+        .target(
+            name: "AnimaKit",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift")
+            ]
+        ),
         .testTarget(name: "AnimaKitTests", dependencies: ["AnimaKit"])
     ]
 )

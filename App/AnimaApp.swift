@@ -39,6 +39,10 @@ final class AppModel: ObservableObject {
     }
 
     @Published var phase: Phase = .loading
+    /// Primer arranque (handoff): landing → onboarding hasta que el Birth corra.
+    @Published var onboarded: Bool = OnboardingDefaults().hasOnboarded
+    /// "Repetir onboarding" desde Ajustes (re-corre el flujo sin borrar memoria).
+    @Published var replayingOnboarding = false
     @Published private(set) var chatModel: ChatViewModel?
     @Published private(set) var settingsModel: SettingsViewModel?
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
@@ -92,7 +96,9 @@ final class AppModel: ObservableObject {
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
-            self.settingsModel = SettingsViewModel(keychain: keychain, telemetry: telemetry)
+            let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry)
+            settings.onReplayOnboarding = { [weak self] in self?.startOnboardingReplay() }
+            self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
             phase = .misconfigured("No se pudo abrir la base de datos: \(error.localizedDescription)")
@@ -105,6 +111,43 @@ final class AppModel: ObservableObject {
     /// Reintenta el cableado tras guardar el token en Settings.
     func refreshAfterToken() {
         Task { await buildIfPossible() }
+    }
+
+    // MARK: - Primer arranque / onboarding
+
+    /// Fábrica del view model del flujo de 6 pasos, con el cableado real:
+    /// Keychain para la key, config del provider para validar contra el API,
+    /// y el SelfModel para sembrar el Birth.
+    func makeOnboardingModel() -> OnboardingViewModel {
+        OnboardingViewModel(
+            keychain: keychain,
+            api: configProvider?.snapshot().config(for: .anthropic)?.api,
+            selfModel: selfModel,
+            isReplay: replayingOnboarding
+        ) { [weak self] in
+            self?.completeOnboarding()
+        }
+    }
+
+    func completeOnboarding() {
+        onboarded = true
+        replayingOnboarding = false
+        Task { await buildIfPossible() }
+    }
+
+    func startOnboardingReplay() {
+        onboarded = false
+        replayingOnboarding = true
+    }
+
+    /// Salida con el back chevron desde el primer paso.
+    func exitOnboardingFlow() {
+        if replayingOnboarding {
+            // Cancela el replay: la mente ya había nacido.
+            OnboardingDefaults().markOnboarded()
+            onboarded = true
+            replayingOnboarding = false
+        }
     }
 
     private func buildIfPossible() async {
@@ -229,46 +272,116 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// Enrutado del shell (handoff): splash → (landing → onboarding) | chat.
+/// El TabView existente es el destino post-onboarding.
 struct RootView: View {
     @ObservedObject var app: AppModel
 
     var body: some View {
-        switch app.phase {
-        case .loading:
-            ProgressView().preferredColorScheme(.dark)
-        case .needsToken:
+        ZStack {
+            Theme.Colors.bg.ignoresSafeArea()
+            switch app.phase {
+            case .loading:
+                SplashView()
+                    .transition(.opacity)
+            case .misconfigured(let reason):
+                misconfigured(reason)
+            case .needsToken, .ready:
+                if needsFirstRun {
+                    FirstRunContainer(app: app)
+                        .transition(.opacity)
+                } else if app.phase == .ready, app.chatModel != nil {
+                    shellTabs
+                        .transition(.opacity)
+                } else {
+                    // Token presente pero el cableado aún resuelve.
+                    SplashView()
+                        .transition(.opacity)
+                }
+            }
+        }
+        .animation(.easeOut(duration: Theme.Motion.enter), value: app.phase)
+        .animation(.easeOut(duration: Theme.Motion.enter), value: needsFirstRun)
+        .preferredColorScheme(.dark)
+    }
+
+    /// Landing/onboarding si no hay token o la mente no ha nacido (Birth).
+    private var needsFirstRun: Bool {
+        FirstRunRouter.destination(
+            hasToken: app.phase != .needsToken,
+            hasOnboarded: app.onboarded) == .landing
+    }
+
+    private var shellTabs: some View {
+        TabView {
+            if let chat = app.chatModel {
+                ChatView(model: chat)
+                    .confirmationOverlay(app.confirmation)
+                    .tabItem { Label("Chat", systemImage: "bubble.left") }
+            }
+            if let memory = app.memoryModel {
+                MemoryBrowserView(model: memory)
+                    .tabItem { Label("Memoria", systemImage: "brain") }
+            }
+            if let goals = app.goalsModel {
+                GoalsView(model: goals)
+                    .tabItem { Label("Metas", systemImage: "target") }
+            }
+            if let approvals = app.approvalsModel {
+                ApprovalsInboxView(model: approvals)
+                    .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal") }
+                    .badge(approvals.badgeCount)
+            }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
-                    .onDisappear { app.refreshAfterToken() }
+                    .tabItem { Label("Ajustes", systemImage: "gearshape") }
             }
-        case .misconfigured(let reason):
-            Text(reason).padding()
-        case .ready:
-            if let chat = app.chatModel {
-                TabView {
-                    ChatView(model: chat)
-                        .confirmationOverlay(app.confirmation)
-                        .tabItem { Label("Chat", systemImage: "bubble.left") }
-                    if let memory = app.memoryModel {
-                        MemoryBrowserView(model: memory)
-                            .tabItem { Label("Memoria", systemImage: "brain") }
-                    }
-                    if let goals = app.goalsModel {
-                        GoalsView(model: goals)
-                            .tabItem { Label("Metas", systemImage: "target") }
-                    }
-                    if let approvals = app.approvalsModel {
-                        ApprovalsInboxView(model: approvals)
-                            .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal") }
-                            .badge(approvals.badgeCount)
-                    }
-                    if let settings = app.settingsModel {
-                        SettingsView(model: settings)
-                            .tabItem { Label("Ajustes", systemImage: "gearshape") }
-                    }
+        }
+        .tint(Theme.Colors.accent)
+    }
+
+    private func misconfigured(_ reason: String) -> some View {
+        VStack(spacing: Theme.Space.stack) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(Theme.Colors.accent)
+            Text(reason)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.Colors.textMuted)
+                .multilineTextAlignment(.center)
+        }
+        .padding(Theme.Space.screenInset)
+    }
+}
+
+/// Primer arranque: landing (intro) → flujo de 6 pasos. En "Repetir onboarding"
+/// entra directo al flujo (la mente ya nació).
+struct FirstRunContainer: View {
+    @ObservedObject var app: AppModel
+    @State private var onboardingModel: OnboardingViewModel?
+
+    var body: some View {
+        Group {
+            if let model = onboardingModel {
+                OnboardingFlowView(model: model) {
+                    onboardingModel = nil
+                    app.exitOnboardingFlow()
                 }
-                .tint(Theme.Colors.accent)
+            } else {
+                LandingView {
+                    onboardingModel = app.makeOnboardingModel()
+                }
             }
+        }
+        .onAppear { enterFlowIfReplaying(app.replayingOnboarding) }
+        .onChange(of: app.replayingOnboarding) { _, replaying in
+            enterFlowIfReplaying(replaying)
+        }
+    }
+
+    private func enterFlowIfReplaying(_ replaying: Bool) {
+        if replaying, onboardingModel == nil {
+            onboardingModel = app.makeOnboardingModel()
         }
     }
 }

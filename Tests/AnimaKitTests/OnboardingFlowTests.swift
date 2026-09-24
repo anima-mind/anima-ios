@@ -5,7 +5,8 @@ import Testing
 @MainActor
 @Suite struct OnboardingFlowTests {
 
-    private func makeModel(account: AccountViewModel? = nil) throws -> (OnboardingViewModel, UserDefaults, String) {
+    private func makeModel(account: AccountViewModel? = nil,
+                           availability: OnDeviceAvailability = .unknown) throws -> (OnboardingViewModel, UserDefaults, String) {
         let suite = "test.anima.onboarding.\(UUID().uuidString)"
         let ud = try #require(UserDefaults(suiteName: suite))
         let model = OnboardingViewModel(
@@ -13,8 +14,80 @@ import Testing
             api: nil,
             selfModel: nil,
             defaults: OnboardingDefaults(defaults: ud),
-            account: account) {}
+            account: account,
+            availability: { availability }) {}
         return (model, ud, suite)
+    }
+
+    private func goToProvider(_ model: OnboardingViewModel) {
+        model.advance()        // → account
+        model.skipAccount()    // → provider
+    }
+
+    // MARK: Modo gratis on-device (§4.9)
+
+    @Test func onDeviceChoiceSkipsAPIKeyStep() throws {
+        let (model, ud, suite) = try makeModel(availability: .available)
+        defer { ud.removePersistentDomain(forName: suite) }
+        goToProvider(model)
+        model.selectProvider(.onDevice)
+        #expect(model.selectedProvider == .onDevice)
+        #expect(model.canLeaveProviderStep)
+        model.advance()
+        #expect(model.step == .permissions)   // sin paso de API key
+        #expect(OperatingModeStore(defaults: ud).mode == .onDeviceOnly)
+        // Back desde permisos vuelve al provider (la key nunca se vio).
+        model.goBack()
+        #expect(model.step == .provider)
+    }
+
+    @Test func unavailableOnDeviceCannotBeChosen() throws {
+        let (model, ud, suite) = try makeModel(availability: .deviceNotEligible)
+        defer { ud.removePersistentDomain(forName: suite) }
+        goToProvider(model)
+        model.selectProvider(.onDevice)
+        #expect(model.selectedProvider == .anthropic)
+        #expect(model.onDeviceAvailability.reason != nil)   // la UI muestra el porqué
+        model.advance()
+        #expect(model.step == .apiKey)
+    }
+
+    @Test func anthropicWithTokenOffersHybridDefaultOn() throws {
+        let (model, ud, suite) = try makeModel(availability: .available)
+        defer { ud.removePersistentDomain(forName: suite) }
+        goToProvider(model)
+        model.advance()
+        #expect(model.step == .apiKey)
+        #expect(!model.offersHybrid)                  // sin token aún
+        model.keyStatus = .valid(.apiKey)
+        #expect(model.offersHybrid)
+        #expect(model.hybridEnabled)                  // default ON con availability
+        model.advance()
+        #expect(model.step == .permissions)
+        #expect(OperatingModeStore(defaults: ud).mode == .hybrid)
+    }
+
+    @Test func hybridOffPersistsClaudeMode() throws {
+        let (model, ud, suite) = try makeModel(availability: .available)
+        defer { ud.removePersistentDomain(forName: suite) }
+        goToProvider(model)
+        model.advance()
+        model.keyStatus = .offline(.oauth)
+        model.hybridEnabled = false
+        model.advance()
+        #expect(OperatingModeStore(defaults: ud).mode == .claude)
+    }
+
+    @Test func withoutLocalModelHybridIsNotOffered() throws {
+        let (model, ud, suite) = try makeModel(availability: .modelNotReady)
+        defer { ud.removePersistentDomain(forName: suite) }
+        goToProvider(model)
+        model.advance()
+        model.keyStatus = .valid(.apiKey)
+        #expect(!model.offersHybrid)
+        #expect(!model.hybridEnabled)
+        model.advance()
+        #expect(OperatingModeStore(defaults: ud).mode == .claude)
     }
 
     @Test func onboardingHasSevenStepsWithAccountBeforeProvider() {

@@ -93,6 +93,12 @@ public final class OnboardingViewModel: ObservableObject {
     @Published public var step: Step = .tutorial
     @Published public var selectedProvider: ModelProvider = .anthropic
 
+    // Paso 3 — modo gratis on-device (§4.9): disponibilidad SIEMPRE por runtime.
+    @Published public private(set) var onDeviceAvailability: OnDeviceAvailability
+    /// Híbrido ("el sueño corre en tu teléfono, gratis"): se ofrece si eligió
+    /// Anthropic con token y el modelo local está disponible. Default ON entonces.
+    @Published public var hybridEnabled: Bool
+
     // Paso 4 — API key
     @Published public var keyInput: String = ""
     @Published public var keyStatus: KeyStatus = .idle
@@ -126,6 +132,7 @@ public final class OnboardingViewModel: ObservableObject {
     private let defaults: OnboardingDefaults
     private let selfModel: SelfModel?
     private let onFinished: () -> Void
+    private let availabilityProbe: () -> OnDeviceAvailability
     private var streamTask: Task<Void, Never>?
 
     public init(keychain: KeychainStore,
@@ -135,8 +142,19 @@ public final class OnboardingViewModel: ObservableObject {
                 validator: APIKeyValidator = APIKeyValidator(),
                 isReplay: Bool = false,
                 account: AccountViewModel? = nil,
+                availability: @escaping () -> OnDeviceAvailability = { OnDeviceAvailability.current() },
                 onFinished: @escaping () -> Void) {
         self.account = account ?? AccountViewModel(provider: nil)
+        self.availabilityProbe = availability
+        let current = availability()
+        self.onDeviceAvailability = current
+        self.hybridEnabled = current.isAvailable
+        // Replay: arranca en el modo que ya tenía.
+        switch defaults.modeStore.storedMode {
+        case .onDeviceOnly?: self.selectedProvider = .onDevice
+        case .claude?: self.hybridEnabled = false
+        default: break
+        }
         self.keychain = keychain
         self.api = api
         self.selfModel = selfModel
@@ -158,17 +176,72 @@ public final class OnboardingViewModel: ObservableObject {
     public static let stepCount = Step.allCases.count
 
     public func advance() {
+        switch step {
+        case .provider:
+            guard canLeaveProviderStep else { return }
+            if selectedProvider == .onDevice {
+                // Solo este teléfono: sin API key — directo a permisos.
+                defaults.modeStore.set(.onDeviceOnly)
+                step = .permissions
+                return
+            }
+        case .apiKey:
+            defaults.modeStore.set(offersHybrid && hybridEnabled ? .hybrid : .claude)
+        default:
+            break
+        }
         guard let next = Step(rawValue: step.rawValue + 1) else { return }
         step = next
+        if step == .provider { refreshAvailability() }
         if step == .birth { startBirthIfNeeded() }
     }
 
     /// Back chevron: true si salió del flujo (estaba en el primer paso).
     @discardableResult
     public func goBack() -> Bool {
+        if step == .permissions, selectedProvider == .onDevice {
+            step = .provider   // el paso de la key se saltó al venir
+            refreshAvailability()
+            return false
+        }
         guard let previous = Step(rawValue: step.rawValue - 1) else { return true }
         step = previous
+        if step == .provider { refreshAvailability() }
         return false
+    }
+
+    // MARK: Paso 3 — provider / modo
+
+    /// Re-lee la disponibilidad del modelo local (puede terminar de descargar
+    /// o encenderse Apple Intelligence mientras el dueño está en el flujo).
+    public func refreshAvailability() {
+        onDeviceAvailability = availabilityProbe()
+        if !onDeviceAvailability.isAvailable {
+            hybridEnabled = false
+            if selectedProvider == .onDevice { selectedProvider = .anthropic }
+        }
+    }
+
+    /// Selección de provider: on-device solo si está disponible; los "pronto" no.
+    public func selectProvider(_ provider: ModelProvider) {
+        switch provider {
+        case .anthropic: selectedProvider = .anthropic
+        case .onDevice where onDeviceAvailability.isAvailable: selectedProvider = .onDevice
+        default: break
+        }
+    }
+
+    public var canLeaveProviderStep: Bool {
+        switch selectedProvider {
+        case .anthropic: return true
+        case .onDevice: return onDeviceAvailability.isAvailable
+        default: return false
+        }
+    }
+
+    /// El toggle híbrido se ofrece con token válido y modelo local disponible.
+    public var offersHybrid: Bool {
+        onDeviceAvailability.isAvailable && canLeaveKeyStep
     }
 
     // MARK: Paso 2 — cuenta (jamás bloquea)
@@ -454,33 +527,46 @@ struct TutorialStep: View {
 struct ProviderStep: View {
     @ObservedObject var model: OnboardingViewModel
 
-    private let providers: [(ModelProvider, String, Bool)] = [
-        (.anthropic, "Anthropic", true),
-        (.openai, "OpenAI", false),
-        (.google, "Google", false),
-        (.onDevice, "On-device", false),
+    private struct Option {
+        let provider: ModelProvider
+        let name: String
+        let comingSoon: Bool
+    }
+
+    private let options: [Option] = [
+        Option(provider: .anthropic, name: "Anthropic · Claude", comingSoon: false),
+        Option(provider: .onDevice, name: "Solo este teléfono · gratis", comingSoon: false),
+        Option(provider: .openai, name: "OpenAI", comingSoon: true),
+        Option(provider: .google, name: "Google", comingSoon: true),
     ]
 
     var body: some View {
         StepScaffold(title: "El modelo detrás de la mente",
-                     primary: ("Siguiente", true, model.advance)) {
+                     primary: ("Siguiente", model.canLeaveProviderStep, model.advance)) {
             VStack(spacing: 0) {
-                ForEach(Array(providers.enumerated()), id: \.offset) { index, entry in
-                    let (provider, name, enabled) = entry
+                ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                    let enabled = isEnabled(option)
+                    let selected = model.selectedProvider == option.provider
                     Button {
-                        if enabled { model.selectedProvider = provider }
+                        model.selectProvider(option.provider)
                     } label: {
-                        HStack {
-                            Image(systemName: model.selectedProvider == provider
-                                  ? "largecircle.fill.circle" : "circle")
+                        HStack(alignment: .center, spacing: Theme.Space.stack) {
+                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                                 .font(.system(size: 18, weight: .light))
-                                .foregroundStyle(model.selectedProvider == provider
-                                                 ? Theme.Colors.accent : Theme.Colors.textFaint)
-                            Text(name)
-                                .font(Theme.Type_.body)
-                                .foregroundStyle(enabled ? Theme.Colors.text : Theme.Colors.textFaint)
+                                .foregroundStyle(selected ? Theme.Colors.accent : Theme.Colors.textFaint)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.name)
+                                    .font(Theme.Type_.body)
+                                    .foregroundStyle(enabled ? Theme.Colors.text : Theme.Colors.textFaint)
+                                if let detail = detail(option) {
+                                    Text(detail)
+                                        .font(Theme.Type_.meta)
+                                        .foregroundStyle(Theme.Colors.textFaint)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
                             Spacer()
-                            if !enabled {
+                            if option.comingSoon {
                                 Text("pronto")
                                     .font(Theme.Type_.label)
                                     .textCase(.uppercase)
@@ -488,12 +574,13 @@ struct ProviderStep: View {
                                     .foregroundStyle(Theme.Colors.textFaint)
                             }
                         }
-                        .frame(height: 48)
+                        .frame(minHeight: 48)
+                        .padding(.vertical, 6)
                         .padding(.horizontal, Theme.Space.cardPad)
                     }
                     .buttonStyle(.plain)
                     .disabled(!enabled)
-                    if index < providers.count - 1 {
+                    if index < options.count - 1 {
                         Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
                     }
                 }
@@ -501,6 +588,30 @@ struct ProviderStep: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+        }
+        .onAppear { model.refreshAvailability() }
+    }
+
+    private func isEnabled(_ option: Option) -> Bool {
+        switch option.provider {
+        case .anthropic: return true
+        case .onDevice: return model.onDeviceAvailability.isAvailable
+        default: return false
+        }
+    }
+
+    /// Línea bajo el nombre: el porqué cuando el modo local no se puede usar.
+    private func detail(_ option: Option) -> String? {
+        switch option.provider {
+        case .anthropic:
+            return "Con tu API key o suscripción. Pagas por uso."
+        case .onDevice:
+            if let reason = model.onDeviceAvailability.reason {
+                return model.onDeviceAvailability.label + ". " + reason
+            }
+            return "Apple Intelligence: sin red, sin costo, todo en el dispositivo."
+        default:
+            return nil
         }
     }
 }
@@ -546,6 +657,10 @@ struct APIKeyStep: View {
 
                 statusLine
 
+                if model.offersHybrid {
+                    hybridToggle
+                }
+
                 VStack(alignment: .leading, spacing: Theme.Space.stack) {
                     Text("Presupuesto mensual")
                         .font(Theme.Type_.label)
@@ -570,6 +685,40 @@ struct APIKeyStep: View {
                 }
             }
         }
+    }
+
+    /// Híbrido (§4.9): el sueño y los pulsos corren en el modelo local. Toggle de
+    /// línea (check en círculo), jamás un track relleno de acento.
+    private var hybridToggle: some View {
+        Button {
+            model.hybridEnabled.toggle()
+        } label: {
+            HStack(spacing: Theme.Space.cardPad) {
+                Image(systemName: "moon.stars")
+                    .font(.system(size: 18, weight: .light))
+                    .foregroundStyle(Theme.Colors.accent)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("El sueño corre en tu teléfono, gratis")
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                    Text("Conversas con Claude; consolidación y pulsos en el modelo de Apple.")
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Image(systemName: model.hybridEnabled ? "checkmark.circle" : "circle")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(model.hybridEnabled ? Theme.Colors.accent : Theme.Colors.textFaint)
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, Theme.Space.cardPad)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

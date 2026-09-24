@@ -167,3 +167,53 @@ import Testing
         #expect(request.instructions.hasPrefix(OnDeviceTestConfig.prompt))
     }
 }
+
+#if canImport(SwiftUI)
+/// Ajustes › Modo: cambiar entre los 3 sin re-onboarding.
+@MainActor
+@Suite struct SettingsModeTests {
+    private func makeModel(availability: OnDeviceAvailability) throws -> (SettingsViewModel, UserDefaults, String) {
+        let suite = "test.anima.settings.\(UUID().uuidString)"
+        let ud = try #require(UserDefaults(suiteName: suite))
+        let model = SettingsViewModel(
+            keychain: KeychainStore(service: "test.anima.settings.\(UUID().uuidString)"),
+            telemetry: Telemetry(queue: try AnimaDatabase.temporary()),
+            onboardingDefaults: OnboardingDefaults(defaults: ud),
+            availability: { availability })
+        return (model, ud, suite)
+    }
+
+    @Test func switchesToOnDeviceWithoutTokenAndNotifiesShell() throws {
+        let (model, ud, suite) = try makeModel(availability: .available)
+        defer { ud.removePersistentDomain(forName: suite) }
+        model.load()
+        var changed: OperatingMode?
+        model.onModeChanged = { changed = $0 }
+        model.select(.onDeviceOnly)
+        #expect(model.mode == .onDeviceOnly)
+        #expect(changed == .onDeviceOnly)
+        #expect(OperatingModeStore(defaults: ud).mode == .onDeviceOnly)
+        // Claude/Híbrido sin token: bloqueados con el porqué.
+        #expect(model.blocker(for: .claude) != nil)
+        model.select(.hybrid)
+        #expect(model.mode == .onDeviceOnly)
+        #expect(model.modeNotice != nil)
+    }
+
+    @Test func unavailableLocalModelBlocksLocalModesWithReason() throws {
+        let (model, ud, suite) = try makeModel(availability: .appleIntelligenceOff)
+        defer { ud.removePersistentDomain(forName: suite) }
+        model.load()
+        #expect(model.blocker(for: .onDeviceOnly) == OnDeviceAvailability.appleIntelligenceOff.reason)
+        model.select(.onDeviceOnly)
+        #expect(model.mode == .claude)
+    }
+
+    @Test func placementShowsWhatRunsWhere() {
+        let hybrid = SettingsViewModel.placement(for: .hybrid).map(\.backend)
+        #expect(hybrid == [.claude, .onDevice])
+        #expect(SettingsViewModel.placement(for: .onDeviceOnly).map(\.backend) == [.onDevice, .onDevice])
+        #expect(SettingsViewModel.placement(for: .claude).map(\.backend) == [.claude, .claude])
+    }
+}
+#endif

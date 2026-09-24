@@ -317,6 +317,9 @@ public actor AgentLoop {
         case .retryable(let a): return "Error transitorio (reintentar en \(a ?? 0)s)."
         case .rateLimited(let a): return "Límite de tasa (retry-after \(a ?? 0)s)."
         case .contextOverflow: return "Contexto excedido."
+        case .fatal(let status, let message)
+            where status == OnDeviceProvider.unavailableStatus || status == OnDeviceProvider.failureStatus:
+            return message   // modelo local: el porqué ya viene legible
         case .fatal(let status, let message): return "Error \(status): \(message)"
         }
     }

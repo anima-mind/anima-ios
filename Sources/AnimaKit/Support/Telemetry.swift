@@ -84,6 +84,8 @@ public enum Pricing {
     struct Rate { let input: Double; let output: Double }
 
     static func rate(for model: String) -> Rate {
+        // Modelo local de Apple (§4.9): gratis, cero red.
+        if model == OnDeviceProvider.modelName { return Rate(input: 0, output: 0) }
         if model.hasPrefix("claude-opus") { return Rate(input: 5, output: 25) }
         if model.hasPrefix("claude-sonnet") { return Rate(input: 3, output: 15) }
         if model.hasPrefix("claude-haiku") { return Rate(input: 1, output: 5) }

@@ -38,17 +38,16 @@ public actor DesireEngine {
     private let otherModel: OtherModel
     private let environment: ObservableEnvironment
     private let queue: DatabaseQueue
-    private let provider: Provider
-    private let router: ModelRouter
-    private let authMode: AuthMode
-    private let token: String
+    /// Córtex por clase de turno (§4.9): en Híbrido/Solo teléfono el ciclo corre
+    /// en el modelo local — gratis y sin red.
+    private let selector: ProviderSelector
     private let store: SymbolicStore?
     private let telemetry: Telemetry?
     private let now: @Sendable () -> Date
     private let dailyBudget: Int
     private let cooldown: TimeInterval
 
-    /// ≤4 pulsos/día (§5.8) y cooldown de 48h por goal.
+    /// ≤4 pulsos/día (§5.8) y cooldown de 48h por goal. Un solo córtex Claude.
     public init(otherModel: OtherModel,
                 environment: ObservableEnvironment,
                 queue: DatabaseQueue,
@@ -61,13 +60,25 @@ public actor DesireEngine {
                 dailyBudget: Int = 4,
                 cooldown: TimeInterval = 48 * 3600,
                 now: @escaping @Sendable () -> Date = { Date() }) {
+        self.init(otherModel: otherModel, environment: environment, queue: queue,
+                  selector: .claudeOnly(provider: provider, router: router, authMode: authMode, token: token),
+                  store: store, telemetry: telemetry, dailyBudget: dailyBudget, cooldown: cooldown, now: now)
+    }
+
+    /// Init por modo de operación (§4.9): en Híbrido/Solo teléfono el pulso es local.
+    public init(otherModel: OtherModel,
+                environment: ObservableEnvironment,
+                queue: DatabaseQueue,
+                selector: ProviderSelector,
+                store: SymbolicStore? = nil,
+                telemetry: Telemetry? = nil,
+                dailyBudget: Int = 4,
+                cooldown: TimeInterval = 48 * 3600,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.otherModel = otherModel
         self.environment = environment
         self.queue = queue
-        self.provider = provider
-        self.router = router
-        self.authMode = authMode
-        self.token = token
+        self.selector = selector
         self.store = store
         self.telemetry = telemetry
         self.dailyBudget = dailyBudget
@@ -223,13 +234,15 @@ public actor DesireEngine {
     // MARK: - Provider (Haiku, single-shot — patrón del Consolidator)
 
     private func complete(system: String, user: String, maxOutputTokens: Int) async throws -> String {
-        var route = router.route(.desirePulse)
+        guard let binding = selector.binding(for: .desirePulse) else {
+            throw ClassifiedError.fatal(status: -1, message: "Sin córtex configurado para DesireEngine.")
+        }
+        var route = binding.router.route(.desirePulse)
         route = ModelRoute(model: route.model,
                            effort: ModelParamPolicy.policy(for: route.model).allowsEffort ? route.effort : nil,
                            maxTokens: min(route.maxTokens, maxOutputTokens))
-        let opts = CallOpts(route: route, api: router.api, authMode: authMode,
-                            token: token, systemPromptBase: system)
-        let response = try await provider.completeCollecting(
+        let opts = binding.callOpts(route: route, systemPromptBase: system)
+        let response = try await binding.provider.completeCollecting(
             AssembledContext(messages: [.user(user)]), tools: [], opts: opts)
         if let telemetry {
             try? telemetry.record(sessionId: "desire", turnClass: .desirePulse, model: route.model,

@@ -28,6 +28,15 @@ public struct SleepScheduler: Sendable {
         self.foregroundFallbackInterval = foregroundFallbackInterval
     }
 
+    /// Por modo de operación (§4.9): si el sueño corre en el teléfono (Híbrido /
+    /// Solo teléfono) el BGProcessingTask no exige red — gratis y offline.
+    public init(selector: ProviderSelector, requiresExternalPower: Bool = true,
+                foregroundFallbackInterval: TimeInterval = 48 * 3600) {
+        self.init(requiresExternalPower: requiresExternalPower,
+                  requiresNetworkConnectivity: selector.sleepRequiresNetwork,
+                  foregroundFallbackInterval: foregroundFallbackInterval)
+    }
+
     /// El sueño es la vía preferida, no la única: si pasaron más de 48h sin ciclo
     /// completo, hay que correrlo en foreground (best-effort, presupuesto reducido).
     public func shouldRunForegroundFallback(lastCycleAt: Date?, now: Date = Date()) -> Bool {

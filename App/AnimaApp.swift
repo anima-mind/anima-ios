@@ -49,6 +49,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
     @Published private(set) var goalsModel: GoalsViewModel?
     let confirmation = ConfirmationCenter()
+    /// Identidad (Sign in with Apple vía Firebase Auth). Se crea en bootstrap,
+    /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
+    private(set) var account: AccountViewModel?
 
     private let keychain = KeychainStore()
     private var store: SymbolicStore?
@@ -71,6 +74,8 @@ final class AppModel: ObservableObject {
     static let shared = ConsolidatorHolder()
 
     func bootstrap() async {
+        account = AccountViewModel(provider: FirebaseAccountProvider())
+
         // Config congelada por sesión (fetch+activate una vez).
         let provider = await FirebaseConfigProvider.bootstrap()
         configProvider = provider
@@ -98,6 +103,7 @@ final class AppModel: ObservableObject {
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry)
             settings.onReplayOnboarding = { [weak self] in self?.startOnboardingReplay() }
+            settings.account = account
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -123,7 +129,8 @@ final class AppModel: ObservableObject {
             keychain: keychain,
             api: configProvider?.snapshot().config(for: .anthropic)?.api,
             selfModel: selfModel,
-            isReplay: replayingOnboarding
+            isReplay: replayingOnboarding,
+            account: account
         ) { [weak self] in
             self?.completeOnboarding()
         }

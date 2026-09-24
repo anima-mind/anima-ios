@@ -43,6 +43,9 @@ public enum ReliefStrategy: Sendable, Equatable {
 public actor WorkingMemory {
     private let store: SymbolicStore
     private let budgetTokens: Int
+    /// Perfil del provider activo (§4.9): presupuesto, history window, memorias
+    /// activadas y modo de relieve. Claude por default (comportamiento previo).
+    public nonisolated let profile: ContextProfile
     private var selfView: ProvisionalSelfView
     // Fase 3: el render vivo del SelfModel (§5.5) reemplaza al SelfView estático
     // cuando el loop lo empuja cada turno. nil ⇒ se usa selfView.render().
@@ -63,11 +66,16 @@ public actor WorkingMemory {
 
     public init(store: SymbolicStore,
                 selfView: ProvisionalSelfView = .provisional,
-                budgetTokens: Int = 180_000) {
+                budgetTokens: Int? = nil,
+                profile: ContextProfile = .claude) {
         self.store = store
-        self.budgetTokens = budgetTokens
+        self.profile = profile
+        self.budgetTokens = budgetTokens ?? profile.contextBudgetTokens
         self.selfView = selfView
     }
+
+    /// Modo de relieve del provider activo.
+    public nonisolated var reliefMode: ContextProfile.ReliefMode { profile.reliefMode }
 
     // MARK: - Ensamblado (orden estable §5.1)
 
@@ -80,7 +88,8 @@ public actor WorkingMemory {
         }
 
         // 2. history window desde el transcript canónico.
-        let history = try store.window(sessionId: turn.sessionId)
+        //    En on-device la ventana es corta (presupuesto del perfil).
+        let history = try store.window(sessionId: turn.sessionId, budgetTokens: profile.historyBudgetTokens)
         messages.append(contentsOf: history)
 
         // 3. mid-conversation system message — SelfModel view vivo (§4.5, §5.5) o,
@@ -140,6 +149,8 @@ public actor WorkingMemory {
     /// clear/compact). `evictToBrain` es hook de Fase 2.
     @discardableResult
     public func relieve(_ strategy: ReliefStrategy) -> ReliefControls {
+        // On-device jamás marca controles server-side (usa relieveLocally).
+        guard profile.reliefMode == .serverSide else { return ReliefControls() }
         switch strategy {
         case .clearStaleToolResults:
             pendingRelief.clearStaleToolResults = true
@@ -154,7 +165,26 @@ public actor WorkingMemory {
     /// Controles de relieve para el próximo request, combinando lo pendiente con
     /// la escalera automática por presión (§5.1: >0.7 clear, >0.85 compact).
     public func requestControls() -> ReliefControls {
-        pendingRelief.merged(with: PressureRelief.plan(pressure: pressure))
+        // On-device: las betas context-management/compaction son de Anthropic y
+        // NO existen aquí — el relieve es mecánico local (relieveLocally).
+        guard profile.reliefMode == .serverSide else { return ReliefControls() }
+        return pendingRelief.merged(with: PressureRelief.plan(pressure: pressure))
+    }
+
+    /// Relieve mecánico local (on-device) sobre los messages del turno en curso:
+    /// trim de tool results viejos + history más corta. Devuelve lo desalojado
+    /// para que el loop lo encole al Brain. En serverSide no toca nada.
+    public func relieveLocally(_ messages: [Message], force: Bool = false) -> LocalRelief.Result {
+        guard profile.reliefMode == .localMechanical else {
+            return LocalRelief.Result(messages: messages, evicted: [], didRelieve: false)
+        }
+        let result = LocalRelief.apply(messages, budgetTokens: budgetTokens, force: force)
+        if result.didRelieve {
+            lastAssembledChars = result.messages.reduce(0) { acc, message in
+                acc + message.content.reduce(0) { $0 + SymbolicStore.approxChars($1) }
+            }
+        }
+        return result
     }
 
     /// El loop consume los controles y los limpia tras enviarlos al server.
@@ -184,7 +214,8 @@ public actor WorkingMemory {
     /// etiquetado (role:user, posición 6 del §5.1). Vacío ⇒ no anexa nada.
     public func setActivatedMemories(_ memories: [ActivatedMemory]) {
         guard !memories.isEmpty else { activatedMemories = []; return }
-        let body = memories.map { "- \($0.content)" }.joined(separator: "\n")
+        // On-device: solo las top-N (el retrieve ya viene ordenado por relevancia).
+        let body = memories.prefix(profile.maxActivatedMemories).map { "- \($0.content)" }.joined(separator: "\n")
         activatedMemories = [.text(Self.activatedMemoriesHeader + "\n" + body)]
     }
 

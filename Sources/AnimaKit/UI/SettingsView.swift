@@ -12,6 +12,11 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var costs: [Telemetry.CostRow] = []
     @Published public var totalCost: Double = 0
     @Published public var monthlyBudgetUSD: Int?
+    // Modo de operación (§4.9): cambia entre los 3 sin re-onboarding.
+    @Published public private(set) var mode: OperatingMode
+    @Published public private(set) var onDeviceAvailability: OnDeviceAvailability
+    @Published public private(set) var hasToken: Bool = false
+    @Published public var modeNotice: String?
 
     private let keychain: KeychainStore
     private let telemetry: Telemetry
@@ -21,12 +26,57 @@ public final class SettingsViewModel: ObservableObject {
     public var onReplayOnboarding: (() -> Void)?
     /// Sección Cuenta (Sign in with Apple); la inyecta el shell.
     public var account: AccountViewModel?
+    /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
+    public var onModeChanged: ((OperatingMode) -> Void)?
+    private let availabilityProbe: () -> OnDeviceAvailability
 
     public init(keychain: KeychainStore, telemetry: Telemetry,
-                onboardingDefaults: OnboardingDefaults = OnboardingDefaults()) {
+                onboardingDefaults: OnboardingDefaults = OnboardingDefaults(),
+                availability: @escaping () -> OnDeviceAvailability = { OnDeviceAvailability.current() }) {
         self.keychain = keychain
         self.telemetry = telemetry
         self.onboardingDefaults = onboardingDefaults
+        self.availabilityProbe = availability
+        self.mode = onboardingDefaults.modeStore.mode
+        self.onDeviceAvailability = availability()
+    }
+
+    // MARK: Modo
+
+    /// Si el modo se puede elegir ahora; si no, el porqué.
+    public func blocker(for mode: OperatingMode) -> String? {
+        if mode.requiresOnDevice, let reason = onDeviceAvailability.reason {
+            return reason
+        }
+        if mode.requiresToken, !hasToken {
+            return "Requiere tu API key o token de Anthropic (abajo)."
+        }
+        return nil
+    }
+
+    public func select(_ newMode: OperatingMode) {
+        refreshAvailability()
+        if let reason = blocker(for: newMode) {
+            modeNotice = reason
+            return
+        }
+        modeNotice = nil
+        guard newMode != mode else { return }
+        onboardingDefaults.modeStore.set(newMode)
+        mode = newMode
+        onModeChanged?(newMode)
+    }
+
+    public func refreshAvailability() {
+        onDeviceAvailability = availabilityProbe()
+    }
+
+    /// Qué corre dónde en un modo: (qué, dónde).
+    public static func placement(for mode: OperatingMode) -> [(what: String, backend: ProviderBackend)] {
+        [
+            ("Conversación", ProviderSelector.plannedBackend(mode: mode, turn: .interactive)),
+            ("Sueño, pulsos y destilado", ProviderSelector.plannedBackend(mode: mode, turn: .consolidation)),
+        ]
     }
 
     public func replayOnboarding() {
@@ -35,6 +85,9 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     public func load() {
+        mode = onboardingDefaults.modeStore.mode
+        refreshAvailability()
+        hasToken = ((try? keychain.read()) ?? "").isEmpty == false
         if let token = try? keychain.read(), !token.isEmpty {
             detectedMode = AuthMode.detect(fromToken: token)
             statusText = "Token guardado."
@@ -55,6 +108,7 @@ public final class SettingsViewModel: ObservableObject {
         }
         do {
             try keychain.save(token)
+            hasToken = true
             tokenInput = ""
             statusText = "Token guardado."
         } catch {
@@ -83,6 +137,7 @@ public struct SettingsView: View {
                     if let account = model.account {
                         AccountSettingsSection(account: account)
                     }
+                    modeSection
                     tokenSection
                     costsSection
                     mindSection
@@ -91,6 +146,71 @@ public struct SettingsView: View {
             }
         }
         .onAppear { model.load() }
+    }
+
+    /// Sección Modo (§4.9): los 3 modos, la disponibilidad actual y qué corre dónde.
+    private var modeSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            label("Modo")
+            VStack(spacing: 0) {
+                ForEach(Array(OperatingMode.allCases.enumerated()), id: \.element) { index, mode in
+                    let selected = model.mode == mode
+                    let blocker = model.blocker(for: mode)
+                    Button {
+                        model.select(mode)
+                    } label: {
+                        HStack(alignment: .top, spacing: Theme.Space.stack) {
+                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                                .font(.system(size: 18, weight: .light))
+                                .foregroundStyle(selected ? Theme.Colors.accent : Theme.Colors.textFaint)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mode.title)
+                                    .font(Theme.Type_.body)
+                                    .foregroundStyle(blocker == nil ? Theme.Colors.text : Theme.Colors.textFaint)
+                                Text(blocker ?? mode.summary)
+                                    .font(Theme.Type_.meta)
+                                    .foregroundStyle(Theme.Colors.textFaint)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, Theme.Space.cardPad)
+                    }
+                    .buttonStyle(.plain)
+                    if index < OperatingMode.allCases.count - 1 {
+                        Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
+                    }
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+
+            ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
+                HStack {
+                    Text(row.what)
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                    Spacer()
+                    Text(row.backend.label)
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.accentText)
+                }
+            }
+            HStack(spacing: 6) {
+                Image(systemName: model.onDeviceAvailability.isAvailable ? "iphone" : "iphone.slash")
+                    .font(.system(size: 12, weight: .light))
+                Text("Modelo local: " + model.onDeviceAvailability.label)
+            }
+            .font(Theme.Type_.meta)
+            .foregroundStyle(Theme.Colors.textFaint)
+            if let notice = model.modeNotice {
+                Text(notice)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.textMuted)
+            }
+        }
     }
 
     private var tokenSection: some View {

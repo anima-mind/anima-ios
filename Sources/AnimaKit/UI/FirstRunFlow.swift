@@ -66,6 +66,11 @@ public struct OnboardingDefaults: @unchecked Sendable {
     public func setPermissionIntents(_ intents: Set<String>) {
         defaults.set(Array(intents).sorted(), forKey: Self.permissionIntentsKey)
     }
+
+    /// El modo de operación (§4.9) vive en el mismo dominio de defaults.
+    public var modeStore: OperatingModeStore {
+        OperatingModeStore(defaults: defaults)
+    }
 }
 
 // MARK: - Validación de la API key (paso 3)

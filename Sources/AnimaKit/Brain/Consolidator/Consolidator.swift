@@ -46,10 +46,9 @@ public actor Consolidator {
 
     private let brain: Brain
     private let queue: DatabaseQueue
-    private let provider: Provider
-    private let router: ModelRouter
-    private let authMode: AuthMode
-    private let token: String
+    /// Córtex por clase de turno (§4.9): en Híbrido/Solo teléfono el ciclo corre
+    /// en el modelo local — gratis y sin red.
+    private let selector: ProviderSelector
     private let telemetry: Telemetry?
     private let cycleTokenBudget: Int
     // Fase 3: el reflection propone cambios al self (§5.5); la restructure queue del
@@ -60,17 +59,26 @@ public actor Consolidator {
     // reflection también puede proponer metas inferred (siempre pending_confirmation).
     private let otherModel: OtherModel?
 
+    /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(brain: Brain, queue: DatabaseQueue, provider: Provider, router: ModelRouter,
                 authMode: AuthMode, token: String, telemetry: Telemetry? = nil,
                 cycleTokenBudget: Int = 8000,
                 selfModel: SelfModel? = nil, realRegister: RealRegister? = nil,
                 otherModel: OtherModel? = nil) {
+        self.init(brain: brain, queue: queue,
+                  selector: .claudeOnly(provider: provider, router: router, authMode: authMode, token: token),
+                  telemetry: telemetry, cycleTokenBudget: cycleTokenBudget,
+                  selfModel: selfModel, realRegister: realRegister, otherModel: otherModel)
+    }
+
+    /// Init por modo de operación (§4.9): el selector decide dónde corre el sueño.
+    public init(brain: Brain, queue: DatabaseQueue, selector: ProviderSelector,
+                telemetry: Telemetry? = nil, cycleTokenBudget: Int = 8000,
+                selfModel: SelfModel? = nil, realRegister: RealRegister? = nil,
+                otherModel: OtherModel? = nil) {
         self.brain = brain
         self.queue = queue
-        self.provider = provider
-        self.router = router
-        self.authMode = authMode
-        self.token = token
+        self.selector = selector
         self.telemetry = telemetry
         self.cycleTokenBudget = cycleTokenBudget
         self.selfModel = selfModel
@@ -507,14 +515,16 @@ public actor Consolidator {
     // MARK: - Provider (Haiku, single-shot)
 
     private func complete(_ turnClass: TurnClass, system: String, user: String, maxOutputTokens: Int) async throws -> String {
-        var route = router.route(turnClass)
+        guard let binding = selector.binding(for: turnClass) else {
+            throw ClassifiedError.fatal(status: -1, message: "Sin córtex configurado para Consolidator.")
+        }
+        var route = binding.router.route(turnClass)
         // El ciclo va SIEMPRE por Haiku sin effort (§4.7): si la config no define
         // la clase y cae a Opus, respetamos el modelo pero el maxTokens del ciclo.
         route = ModelRoute(model: route.model, effort: ModelParamPolicy.policy(for: route.model).allowsEffort ? route.effort : nil,
                            maxTokens: min(route.maxTokens, maxOutputTokens))
-        let opts = CallOpts(route: route, api: router.api, authMode: authMode,
-                            token: token, systemPromptBase: system)
-        let response = try await provider.completeCollecting(AssembledContext(messages: [.user(user)]), tools: [], opts: opts)
+        let opts = binding.callOpts(route: route, systemPromptBase: system)
+        let response = try await binding.provider.completeCollecting(AssembledContext(messages: [.user(user)]), tools: [], opts: opts)
         if let telemetry {
             try? telemetry.record(sessionId: "consolidator", turnClass: turnClass, model: route.model,
                                   usage: response.usage, toolCalls: 0, retries: 0)

@@ -20,15 +20,13 @@ public enum LoopEvent: Sendable, Equatable {
 }
 
 public actor AgentLoop {
-    private let provider: Provider
+    /// Qué córtex corre cada TurnClass (§4.9: Solo teléfono / Claude / Híbrido).
+    private let selector: ProviderSelector
     private let store: SymbolicStore
     private let workingMemory: WorkingMemory
     private let sensorimotor: Sensorimotor
     private let telemetry: Telemetry
     private let serverTools: [ToolSpec]
-    private let router: ModelRouter
-    private let authMode: AuthMode
-    private let token: String
     private let stopConditions: StopConditions
     private let retryPolicy: RetryPolicy
     private let sleep: @Sendable (TimeInterval) async throws -> Void
@@ -42,6 +40,7 @@ public actor AgentLoop {
     private let selfModel: SelfModel?
     private let realRegister: RealRegister?
 
+    /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(
         provider: Provider,
         store: SymbolicStore,
@@ -66,16 +65,44 @@ public actor AgentLoop {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
     ) {
-        self.provider = provider
+        self.init(selector: .claudeOnly(provider: provider, router: router, authMode: authMode, token: token),
+                  store: store, telemetry: telemetry, clientTools: clientTools, serverTools: serverTools,
+                  workingMemory: workingMemory, permissionPolicy: permissionPolicy, confirmation: confirmation,
+                  toolTimeout: toolTimeout, stopConditions: stopConditions, retryPolicy: retryPolicy,
+                  brain: brain, inbox: inbox, memoryBudget: memoryBudget, selfModel: selfModel,
+                  realRegister: realRegister, sleep: sleep)
+    }
+
+    /// Init por modo de operación: el selector decide el córtex de cada turno y
+    /// el perfil de contexto de la WorkingMemory (§4.9).
+    public init(
+        selector: ProviderSelector,
+        store: SymbolicStore,
+        telemetry: Telemetry,
+        clientTools: [any SensorimotorTool],
+        serverTools: [ToolSpec] = [WebSearchTool.spec],
+        workingMemory: WorkingMemory? = nil,
+        permissionPolicy: PermissionPolicy = .init(),
+        confirmation: ConfirmationProvider = FailClosedConfirmation(),
+        toolTimeout: TimeInterval = 30,
+        stopConditions: StopConditions = .init(),
+        retryPolicy: RetryPolicy = .init(),
+        brain: Brain? = nil,
+        inbox: ConsolidationInbox? = nil,
+        memoryBudget: Int = 8,
+        selfModel: SelfModel? = nil,
+        realRegister: RealRegister? = nil,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        }
+    ) {
+        self.selector = selector
         self.store = store
-        self.workingMemory = workingMemory ?? WorkingMemory(store: store)
+        self.workingMemory = workingMemory ?? WorkingMemory(store: store, profile: selector.conversationProfile)
         self.sensorimotor = Sensorimotor(tools: clientTools, policy: permissionPolicy,
                                          confirmation: confirmation, timeout: toolTimeout)
         self.telemetry = telemetry
         self.serverTools = serverTools
-        self.router = router
-        self.authMode = authMode
-        self.token = token
         self.stopConditions = stopConditions
         self.retryPolicy = retryPolicy
         self.brain = brain
@@ -108,7 +135,8 @@ public actor AgentLoop {
         let turnStart = Date()
         do {
             let clientSpecs = await sensorimotor.toolSpecs()
-            let allSpecs = clientSpecs + serverTools
+            // On-device: sin server tools (web_search necesita red y es de Anthropic).
+            let allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
 
             // Restructure (§5.6): si un patrón demanding matchea una tool disponible,
             // el turno se rutea a .restructure (Opus effort high) y se inyecta un
@@ -122,7 +150,11 @@ public actor AgentLoop {
                     turnClass = .restructure
                 }
             }
-            let route = router.route(turnClass)
+            guard let binding = selector.binding(for: turnClass) else {
+                emit(.error("El modo \(selector.mode.title) no tiene un modelo configurado (¿falta el token?)."))
+                return
+            }
+            let route = binding.router.route(turnClass)
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -135,8 +167,9 @@ public actor AgentLoop {
             let userText = Self.plainText(content)
             var activatedIds: [MemoryID] = []
             if let brain {
+                let limit = min(memoryBudget, workingMemory.profile.maxActivatedMemories)
                 let activated = (try? await brain.retrieve(
-                    MemoryQuery(text: userText, turnRef: sessionId, limit: memoryBudget))) ?? []
+                    MemoryQuery(text: userText, turnRef: sessionId, limit: limit))) ?? []
                 activatedIds = activated.map(\.id)
                 await workingMemory.setActivatedMemories(activated)
             }
@@ -168,23 +201,38 @@ public actor AgentLoop {
                 case .loopDetected: emit(.stopped(.loopDetected)); return
                 }
 
-                // Controles de gestión de contexto para este request (escalera por presión).
+                // On-device (§4.9): relieve mecánico local ANTES de llamar si la
+                // presión lo pide — trim de tool results + evict al Brain.
+                if workingMemory.reliefMode == .localMechanical {
+                    let local = await workingMemory.relieveLocally(messages)
+                    messages = local.messages
+                    evictToBrain(local.evicted, sessionId: sessionId)
+                }
+
+                // Controles de gestión de contexto para este request (escalera por
+                // presión). En on-device siempre vacíos: jamás betas de Anthropic.
                 let controls = await workingMemory.consumeRelief()
-                let opts = CallOpts(route: route, api: router.api, authMode: authMode,
-                                    token: token, systemPromptBase: router.systemPromptBase, relief: controls)
+                let opts = binding.callOpts(route: route, relief: controls)
 
                 let response: ProviderResponse
                 do {
                     let attempts = Counter()
                     response = try await streamOnce(
+                        provider: binding.provider,
                         ctx: AssembledContext(messages: messages), tools: allSpecs, opts: opts, attempts: attempts, emit: emit)
                     retryCount += max(0, attempts.value - 1)
                 } catch ClassifiedError.contextOverflow {
                     // Sobrevive el overflow vía relieve: aliviar y reintentar UNA vez.
                     if !reliefRetried {
                         reliefRetried = true
-                        _ = await workingMemory.relieve(.clearStaleToolResults)
-                        _ = await workingMemory.relieve(.compact)
+                        if workingMemory.reliefMode == .localMechanical {
+                            let local = await workingMemory.relieveLocally(messages, force: true)
+                            messages = local.messages
+                            evictToBrain(local.evicted, sessionId: sessionId)
+                        } else {
+                            _ = await workingMemory.relieve(.clearStaleToolResults)
+                            _ = await workingMemory.relieve(.compact)
+                        }
                         continue
                     }
                     emit(.error("Contexto excedido aún tras aliviar la presión."))
@@ -270,6 +318,7 @@ public actor AgentLoop {
     /// Un intento de completar (con retry ante errores previos a cualquier delta).
     /// Si ya se emitieron deltas y falla, se propaga sin reintentar (evita doble stream).
     private func streamOnce(
+        provider: Provider,
         ctx: AssembledContext,
         tools: [ToolSpec],
         opts: CallOpts,
@@ -280,7 +329,7 @@ public actor AgentLoop {
             attempts.set(attempt)
             let forwarded = ForwardedFlag()
             do {
-                return try await self.provider.completeCollecting(ctx, tools: tools, opts: opts) { event in
+                return try await provider.completeCollecting(ctx, tools: tools, opts: opts) { event in
                     switch event {
                     case .textDelta(let t): forwarded.mark(); emit(.textDelta(t))
                     case .thinkingDelta(let t): forwarded.mark(); emit(.thinkingDelta(t))
@@ -293,6 +342,17 @@ public actor AgentLoop {
                 }
                 throw error
             }
+        }
+    }
+
+    /// Evict al Brain (§4.9, relieve local): el texto desalojado del contexto se
+    /// encola como candidato para el Consolidator — se pierde el texto, no el insight.
+    /// Los turnos del dueño ya se encolaron al llegar; aquí van las respuestas.
+    private func evictToBrain(_ evicted: [Message], sessionId: SessionID) {
+        guard let inbox else { return }
+        for message in evicted where message.role == .assistant {
+            let text = Self.plainText(message.content)
+            if !text.isEmpty { try? inbox.enqueue(sessionId: sessionId, text: text, source: "evict") }
         }
     }
 
@@ -317,6 +377,9 @@ public actor AgentLoop {
         case .retryable(let a): return "Error transitorio (reintentar en \(a ?? 0)s)."
         case .rateLimited(let a): return "Límite de tasa (retry-after \(a ?? 0)s)."
         case .contextOverflow: return "Contexto excedido."
+        case .fatal(let status, let message)
+            where status == OnDeviceProvider.unavailableStatus || status == OnDeviceProvider.failureStatus:
+            return message   // modelo local: el porqué ya viene legible
         case .fatal(let status, let message): return "Error \(status): \(message)"
         }
     }

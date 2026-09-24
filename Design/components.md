@@ -50,8 +50,8 @@ Newborn empty state: "No memories yet. Memories form when the phone charges."
 ## Settings
 Grouped lists in bordered radius-8 containers (row h48, hairline separators). Sections: Model (API key masked · Keychain, monthly budget + 3px progress), Cost by turn type (label · bar · $), Permissions (Allowed / Off), Mind (cycles · p, Simulate one night, Replay onboarding).
 
-## Onboarding (6 steps, back chevron + progress segments)
-1 Tutorial: three bordered rows (glyph, title, one sentence). 2 Provider: radio list (Anthropic, OpenAI, Google, On-device). 3 API key: monospace field, Paste action, status line (checking → valid/rejected), budget chips $10/20/40/100; Next disabled until valid. 4 Permissions: list with why-lines, 22pt check circles, "n of 7 allowed". 5 Glasses: radar animation while pairing, "Pair glasses" / "Not now". 6 Birth: conversational field, three questions (name, tone, ask-first), summary card, "Begin". Finishing sets cycles 0 and empties memory/inbox.
+## Onboarding (7 steps, back chevron + progress segments)
+1 Tutorial: three bordered rows (glyph, title, one sentence). 2 Account: one sentence (identity for what's next — backup, shared plans; the mind lives on the phone), native Sign in with Apple button (.black, h48, radius 8, hairline) with "Not now" text button under it, always available; signed in = bordered row with check + name, primary "Next"; a Firebase failure shows a soft meta line, never blocks. 3 Provider: radio list (Anthropic, OpenAI, Google, On-device). 4 API key: monospace field, Paste action, status line (checking → valid/rejected), budget chips $10/20/40/100; Next disabled until valid. 5 Permissions: list with why-lines, 22pt check circles, "n of 7 allowed". 6 Glasses: radar animation while pairing, "Pair glasses" / "Not now". 7 Birth: conversational field, three questions (name, tone, ask-first), summary card, "Begin". Finishing sets cycles 0 and empties memory/inbox.
 
 ## Intro
 Radial ground, Breath mark 180pt breathing (4 s), wordmark ANIMA 30pt tracked .08em, one sentence, primary "Give life to a mind", secondary "Restore an exported mind".

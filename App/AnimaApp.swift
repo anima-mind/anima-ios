@@ -115,7 +115,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Primer arranque / onboarding
 
-    /// Fábrica del view model del flujo de 6 pasos, con el cableado real:
+    /// Fábrica del view model del flujo de 7 pasos, con el cableado real:
     /// Keychain para la key, config del provider para validar contra el API,
     /// y el SelfModel para sembrar el Birth.
     func makeOnboardingModel() -> OnboardingViewModel {
@@ -354,7 +354,7 @@ struct RootView: View {
     }
 }
 
-/// Primer arranque: landing (intro) → flujo de 6 pasos. En "Repetir onboarding"
+/// Primer arranque: landing (intro) → flujo de 7 pasos. En "Repetir onboarding"
 /// entra directo al flujo (la mente ya nació).
 struct FirstRunContainer: View {
     @ObservedObject var app: AppModel

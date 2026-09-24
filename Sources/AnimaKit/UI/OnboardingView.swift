@@ -1,6 +1,6 @@
 // OnboardingView.swift — la experiencia de primer arranque del handoff:
-// splash (cada arranque), landing/intro (primera vez) y el onboarding de 6
-// pasos (tutorial → provider → API key → permisos → gafas → Birth
+// splash (cada arranque), landing/intro (primera vez) y el onboarding de 7
+// pasos (tutorial → cuenta → provider → API key → permisos → gafas → Birth
 // conversacional). Dark only; el acento es línea o glow, jamás fill.
 
 #if canImport(SwiftUI)
@@ -80,7 +80,7 @@ public struct LandingView: View {
 public final class OnboardingViewModel: ObservableObject {
 
     public enum Step: Int, CaseIterable {
-        case tutorial, provider, apiKey, permissions, glasses, birth
+        case tutorial, account, provider, apiKey, permissions, glasses, birth
     }
 
     public enum KeyStatus: Equatable {
@@ -93,15 +93,15 @@ public final class OnboardingViewModel: ObservableObject {
     @Published public var step: Step = .tutorial
     @Published public var selectedProvider: ModelProvider = .anthropic
 
-    // Paso 3 — API key
+    // Paso 4 — API key
     @Published public var keyInput: String = ""
     @Published public var keyStatus: KeyStatus = .idle
     @Published public var selectedBudget: Int?
 
-    // Paso 4 — permisos (intención; el prompt TCC real sale al primer uso).
+    // Paso 5 — permisos (intención; el prompt TCC real sale al primer uso).
     @Published public var permissionIntents: Set<String> = []
 
-    // Paso 6 — Birth conversacional
+    // Paso 7 — Birth conversacional
     public struct BirthMessage: Identifiable, Equatable {
         public let id = UUID()
         public var role: Role
@@ -117,6 +117,8 @@ public final class OnboardingViewModel: ObservableObject {
     @Published public var askReseedConfirmation: Bool = false
 
     public let isReplay: Bool
+    /// Paso "Tu cuenta": identidad opcional; sin proveedor queda `.unavailable`.
+    public let account: AccountViewModel
 
     private let keychain: KeychainStore
     private let api: ProviderAPIConfig?
@@ -132,7 +134,9 @@ public final class OnboardingViewModel: ObservableObject {
                 defaults: OnboardingDefaults = OnboardingDefaults(),
                 validator: APIKeyValidator = APIKeyValidator(),
                 isReplay: Bool = false,
+                account: AccountViewModel? = nil,
                 onFinished: @escaping () -> Void) {
+        self.account = account ?? AccountViewModel(provider: nil)
         self.keychain = keychain
         self.api = api
         self.selfModel = selfModel
@@ -142,7 +146,7 @@ public final class OnboardingViewModel: ObservableObject {
         self.onFinished = onFinished
         self.permissionIntents = defaults.permissionIntents
         self.selectedBudget = defaults.monthlyBudgetUSD
-        // Si ya hay token válido guardado (replay), el paso 3 arranca en verde.
+        // Si ya hay token válido guardado (replay), el paso de la key arranca en verde.
         if let token = try? keychain.read(), let mode = AuthMode.detect(fromToken: token) {
             self.keyStatus = .valid(mode)
         }
@@ -167,7 +171,15 @@ public final class OnboardingViewModel: ObservableObject {
         return false
     }
 
-    // MARK: Paso 3 — API key
+    // MARK: Paso 2 — cuenta (jamás bloquea)
+
+    /// "Ahora no": sigue el onboarding sin cuenta.
+    public func skipAccount() {
+        guard step == .account else { return }
+        advance()
+    }
+
+    // MARK: Paso 4 — API key
 
     public var canLeaveKeyStep: Bool {
         switch keyStatus {
@@ -220,7 +232,7 @@ public final class OnboardingViewModel: ObservableObject {
         defaults.setMonthlyBudget(usd: usd)
     }
 
-    // MARK: Paso 4 — permisos
+    // MARK: Paso 5 — permisos
 
     public func toggleIntent(_ id: String) {
         if permissionIntents.contains(id) {
@@ -231,7 +243,7 @@ public final class OnboardingViewModel: ObservableObject {
         defaults.setPermissionIntents(permissionIntents)
     }
 
-    // MARK: Paso 6 — Birth
+    // MARK: Paso 7 — Birth
 
     public func startBirthIfNeeded() {
         guard birthMessages.isEmpty else { return }
@@ -372,6 +384,8 @@ public struct OnboardingFlowView: View {
     private var content: some View {
         switch model.step {
         case .tutorial: TutorialStep(onNext: model.advance)
+        case .account: AccountStep(account: model.account, onNext: model.advance,
+                                   onSkip: model.skipAccount)
         case .provider: ProviderStep(model: model)
         case .apiKey: APIKeyStep(model: model)
         case .permissions: PermissionsStep(model: model)
@@ -435,7 +449,7 @@ struct TutorialStep: View {
     }
 }
 
-// MARK: - Paso 2 · Provider
+// MARK: - Paso 3 · Provider
 
 struct ProviderStep: View {
     @ObservedObject var model: OnboardingViewModel
@@ -491,7 +505,7 @@ struct ProviderStep: View {
     }
 }
 
-// MARK: - Paso 3 · API key
+// MARK: - Paso 4 · API key
 
 struct APIKeyStep: View {
     @ObservedObject var model: OnboardingViewModel
@@ -587,7 +601,7 @@ struct APIKeyStep: View {
     }
 }
 
-// MARK: - Paso 4 · Permisos (intención; el prompt TCC sale al primer uso)
+// MARK: - Paso 5 · Permisos (intención; el prompt TCC sale al primer uso)
 
 struct PermissionsStep: View {
     @ObservedObject var model: OnboardingViewModel
@@ -661,7 +675,7 @@ struct PermissionsStep: View {
     }
 }
 
-// MARK: - Paso 5 · Gafas (v1 sin gafas)
+// MARK: - Paso 6 · Gafas (v1 sin gafas)
 
 struct GlassesStep: View {
     let onNext: () -> Void
@@ -695,7 +709,7 @@ struct GlassesStep: View {
     }
 }
 
-// MARK: - Paso 6 · Birth (conversational field)
+// MARK: - Paso 7 · Birth (conversational field)
 
 struct BirthStep: View {
     @ObservedObject var model: OnboardingViewModel

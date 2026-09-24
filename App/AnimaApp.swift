@@ -1,6 +1,6 @@
 // AnimaApp.swift — @main del app shell iOS (§3, §6 Fase 1). FirebaseApp.configure,
 // snapshot de config congelado por sesión, y el cableado real del harness:
-// KeychainStore → ClaudeProvider → SymbolicStore → WorkingMemory → Sensorimotor
+// KeychainStore → ProviderSelector (Claude / on-device, §4.9) → SymbolicStore → WorkingMemory → Sensorimotor
 // (7 tools) → AgentLoop → ChatView. El `ask` in-chat pasa por ConfirmationCenter.
 
 import SwiftUI
@@ -61,7 +61,8 @@ final class AppModel: ObservableObject {
     private var brain: Brain?
     private var inbox: ConsolidationInbox?
     private var consolidator: Consolidator?
-    private let sleepScheduler = SleepScheduler()
+    /// Se re-crea por modo (§4.9): si el sueño es local, el BGTask no exige red.
+    private var sleepScheduler = SleepScheduler()
     // Fase 3: la identidad viva y el registro de lo Real.
     private var selfModel: SelfModel?
     private var realRegister: RealRegister?
@@ -104,6 +105,8 @@ final class AppModel: ObservableObject {
             let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry)
             settings.onReplayOnboarding = { [weak self] in self?.startOnboardingReplay() }
             settings.account = account
+            // Cambio de modo en Ajustes (§4.9): re-cablea el harness sin re-onboarding.
+            settings.onModeChanged = { [weak self] _ in self?.refreshAfterToken() }
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -159,25 +162,45 @@ final class AppModel: ObservableObject {
 
     private func buildIfPossible() async {
         guard let store, let telemetry, let configProvider else { return }
-        guard let token = (try? keychain.read()), !token.isEmpty,
-              let authMode = AuthMode.detect(fromToken: token) else {
-            phase = .needsToken
+        let snapshot = configProvider.snapshot()
+        let mode = OperatingModeStore().mode
+
+        // Córtex remoto (Claude): solo si hay token con modo de auth reconocible.
+        let token = (try? keychain.read()) ?? ""
+        let authMode = AuthMode.detect(fromToken: token)
+        var claude: ProviderSelector.ClaudeCortex?
+        if let authMode, let config = snapshot.config(for: .anthropic) {
+            claude = .init(provider: ClaudeProvider(), router: ModelRouter(config: config),
+                           authMode: authMode, token: token)
+        }
+        // Córtex local (Apple Foundation Models): sin red, sin auth. La
+        // disponibilidad se consulta en cada turno, jamás se asume.
+        var local: ProviderSelector.LocalCortex?
+        if let config = snapshot.config(for: .onDevice) {
+            local = .init(provider: OnDeviceProvider.system(), router: ModelRouter(config: config))
+        }
+
+        if mode.requiresToken, claude == nil {
+            if authMode == nil {
+                phase = .needsToken
+            } else {
+                phase = .misconfigured("Falta la config del provider anthropic (Remote Config / defaults).")
+            }
             return
         }
-        let snapshot = configProvider.snapshot()
-        guard let providerConfig = snapshot.config(for: .anthropic) else {
-            phase = .misconfigured("Falta la config del provider anthropic (Remote Config / defaults).")
+        if mode == .onDeviceOnly, local == nil {
+            phase = .misconfigured("Falta la config del provider on_device (Remote Config / defaults).")
             return
         }
 
-        let router = ModelRouter(config: providerConfig)
+        let selector = ProviderSelector(mode: mode, claude: claude, local: local,
+                                        availability: { OnDeviceAvailability.current() })
+        sleepScheduler = SleepScheduler(selector: selector)
+
         let loop = AgentLoop(
-            provider: ClaudeProvider(),
+            selector: selector,
             store: store,
             telemetry: telemetry,
-            router: router,
-            authMode: authMode,
-            token: token,
             clientTools: Self.tools(),
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
@@ -188,12 +211,13 @@ final class AppModel: ObservableObject {
             selfModel: selfModel,
             realRegister: realRegister)
 
-        // El Consolidator (§5.4) para el sueño: Haiku por el mismo dial. Fase 4: la
+        // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
+        // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
         // extracción de Stated Goals es una etapa nueva del ciclo (§5.8).
         if let brain {
-            let consolidator = Consolidator(brain: brain, queue: store.database, provider: ClaudeProvider(),
-                                            router: router, authMode: authMode, token: token, telemetry: telemetry,
-                                            selfModel: selfModel, realRegister: realRegister, otherModel: otherModel)
+            let consolidator = Consolidator(brain: brain, queue: store.database, selector: selector,
+                                            telemetry: telemetry, selfModel: selfModel,
+                                            realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
             await runForegroundFallbackIfNeeded(consolidator)
@@ -204,8 +228,8 @@ final class AppModel: ObservableObject {
         var desireEngine: DesireEngine?
         if let otherModel {
             let engine = DesireEngine(otherModel: otherModel, environment: SystemObservableEnvironment(),
-                                      queue: store.database, provider: ClaudeProvider(), router: router,
-                                      authMode: authMode, token: token, store: store, telemetry: telemetry)
+                                      queue: store.database, selector: selector,
+                                      store: store, telemetry: telemetry)
             self.desireEngine = engine
             desireEngine = engine
             // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.

@@ -102,4 +102,21 @@ import Testing
         #expect(snap.config(for: .google) == nil)
         #expect(StaticConfigProvider(snap).snapshot() == snap)
     }
+
+    /// Los defaults bundled (sin red, primera apertura) traen la entrada
+    /// on_device idéntica a la publicada: 7 rutas al modelo local y su prompt.
+    @Test func bundledDefaultsIncludeOnDeviceEntry() throws {
+        let plist = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("App/RemoteConfigDefaults.plist")
+        let dict = try #require(NSDictionary(contentsOf: plist) as? [String: String])
+        let parsed = try ProviderConfigParser.parse(Data(try #require(dict["provider_config"]).utf8))
+        let onDevice = try #require(parsed[.onDevice])
+        #expect(onDevice.api.baseURL.absoluteString == "local://device")
+        #expect(onDevice.api.betas.isEmpty)
+        #expect(Set(onDevice.routes.keys) == Set(TurnClass.allCases))
+        #expect(onDevice.routes.values.allSatisfy { $0.model == OnDeviceProvider.modelName })
+        #expect(dict[ProviderConfigParser.promptKey(for: .onDevice)]?.isEmpty == false)
+        #expect(parsed[.anthropic] != nil)
+    }
 }

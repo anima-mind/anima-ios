@@ -21,6 +21,10 @@ public enum Theme {
         public static let tint = Color(hex: 0x94BCE3).opacity(0.12)
         public static let scrim = Color.black.opacity(0.45)
 
+        /// Ground radial del handoff (launch/intro/voice): 2c455d → 101b26.
+        public static let groundInner = Color(hex: 0x2C455D)
+        public static let groundOuter = Color(hex: 0x101B26)
+
         /// Paleta del HUD (gafas) — tinta sobre vidrio.
         public enum HUD {
             public static let ink = Color(hex: 0xE8F3FF)
@@ -99,6 +103,15 @@ public enum Theme {
         /// Opacidad del glow radial: 0.2 + 0.4·p.
         public static func glowOpacity(plasticity p: Double) -> Double {
             0.2 + 0.4 * p
+        }
+
+        /// Períodos de animación del mark por fase (handoff §Conversation mode):
+        /// breathing 4 s · listening 1.1 s · speaking 0.6 s · thinking glow 1.6 s.
+        public enum Phase {
+            public static let breathing: TimeInterval = 4.0
+            public static let listening: TimeInterval = 1.1
+            public static let speaking: TimeInterval = 0.6
+            public static let thinkingGlow: TimeInterval = 1.6
         }
     }
 }

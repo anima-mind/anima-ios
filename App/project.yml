@@ -29,12 +29,15 @@ targets:
         excludes:
           - project.yml
           - "*.template.plist"
+          - "*.entitlements"
           - "Anima.xcodeproj"
     dependencies:
       - package: AnimaKit
         product: AnimaKit
       - package: Firebase
         product: FirebaseRemoteConfig
+      - package: Firebase
+        product: FirebaseAuth
     info:
       path: Info.plist
       properties:
@@ -58,4 +61,7 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
+        # Sign in with Apple (identidad vía Firebase Auth, proveedor apple.com).
+        CODE_SIGN_ENTITLEMENTS: Anima.entitlements

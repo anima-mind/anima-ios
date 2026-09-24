@@ -11,13 +11,27 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var statusText: String = ""
     @Published public var costs: [Telemetry.CostRow] = []
     @Published public var totalCost: Double = 0
+    @Published public var monthlyBudgetUSD: Int?
 
     private let keychain: KeychainStore
     private let telemetry: Telemetry
+    private let onboardingDefaults: OnboardingDefaults
+    /// "Repetir onboarding": re-corre el flujo sin borrar memoria (el Birth
+    /// re-siembra solo si el dueño confirma). Lo cablea el shell.
+    public var onReplayOnboarding: (() -> Void)?
+    /// Sección Cuenta (Sign in with Apple); la inyecta el shell.
+    public var account: AccountViewModel?
 
-    public init(keychain: KeychainStore, telemetry: Telemetry) {
+    public init(keychain: KeychainStore, telemetry: Telemetry,
+                onboardingDefaults: OnboardingDefaults = OnboardingDefaults()) {
         self.keychain = keychain
         self.telemetry = telemetry
+        self.onboardingDefaults = onboardingDefaults
+    }
+
+    public func replayOnboarding() {
+        onboardingDefaults.markOnboarded(false)
+        onReplayOnboarding?()
     }
 
     public func load() {
@@ -27,6 +41,7 @@ public final class SettingsViewModel: ObservableObject {
         } else {
             statusText = "Sin token."
         }
+        monthlyBudgetUSD = onboardingDefaults.monthlyBudgetUSD
         refreshCosts()
     }
 
@@ -65,8 +80,12 @@ public struct SettingsView: View {
             Theme.Colors.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                    if let account = model.account {
+                        AccountSettingsSection(account: account)
+                    }
                     tokenSection
                     costsSection
+                    mindSection
                 }
                 .padding(Theme.Space.screenInset)
             }
@@ -102,6 +121,37 @@ public struct SettingsView: View {
         }
     }
 
+    /// Sección Mente: repetir el onboarding (sin borrar memoria).
+    private var mindSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            label("Mente")
+            VStack(spacing: 0) {
+                Button {
+                    model.replayOnboarding()
+                } label: {
+                    HStack {
+                        Text("Repetir onboarding")
+                            .font(Theme.Type_.body)
+                            .foregroundStyle(Theme.Colors.accentText)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .light))
+                            .foregroundStyle(Theme.Colors.textFaint)
+                    }
+                    .frame(height: 48)
+                    .padding(.horizontal, Theme.Space.cardPad)
+                }
+                .buttonStyle(.plain)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            Text("Re-corre el flujo sin borrar memoria; la identidad solo se re-siembra si lo confirmas.")
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Theme.Colors.textFaint)
+        }
+    }
+
     private var costsSection: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
             HStack {
@@ -110,6 +160,17 @@ public struct SettingsView: View {
                 Text(String(format: "$%.4f", model.totalCost))
                     .font(Theme.Type_.tabular(Theme.Type_.cardTitle))
                     .foregroundStyle(Theme.Colors.accentText)
+            }
+            if let budget = model.monthlyBudgetUSD {
+                HStack {
+                    Text("Presupuesto mensual")
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                    Spacer()
+                    Text("$\(budget)")
+                        .font(Theme.Type_.tabular(Theme.Type_.secondary))
+                        .foregroundStyle(Theme.Colors.textMuted)
+                }
             }
             if model.costs.isEmpty {
                 Text("Sin turnos registrados.")

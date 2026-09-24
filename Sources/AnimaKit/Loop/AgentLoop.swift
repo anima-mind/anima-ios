@@ -135,8 +135,9 @@ public actor AgentLoop {
             let userText = Self.plainText(content)
             var activatedIds: [MemoryID] = []
             if let brain {
+                let limit = min(memoryBudget, workingMemory.profile.maxActivatedMemories)
                 let activated = (try? await brain.retrieve(
-                    MemoryQuery(text: userText, turnRef: sessionId, limit: memoryBudget))) ?? []
+                    MemoryQuery(text: userText, turnRef: sessionId, limit: limit))) ?? []
                 activatedIds = activated.map(\.id)
                 await workingMemory.setActivatedMemories(activated)
             }
@@ -168,7 +169,16 @@ public actor AgentLoop {
                 case .loopDetected: emit(.stopped(.loopDetected)); return
                 }
 
-                // Controles de gestión de contexto para este request (escalera por presión).
+                // On-device (§4.9): relieve mecánico local ANTES de llamar si la
+                // presión lo pide — trim de tool results + evict al Brain.
+                if workingMemory.reliefMode == .localMechanical {
+                    let local = await workingMemory.relieveLocally(messages)
+                    messages = local.messages
+                    evictToBrain(local.evicted, sessionId: sessionId)
+                }
+
+                // Controles de gestión de contexto para este request (escalera por
+                // presión). En on-device siempre vacíos: jamás betas de Anthropic.
                 let controls = await workingMemory.consumeRelief()
                 let opts = CallOpts(route: route, api: router.api, authMode: authMode,
                                     token: token, systemPromptBase: router.systemPromptBase, relief: controls)
@@ -183,8 +193,14 @@ public actor AgentLoop {
                     // Sobrevive el overflow vía relieve: aliviar y reintentar UNA vez.
                     if !reliefRetried {
                         reliefRetried = true
-                        _ = await workingMemory.relieve(.clearStaleToolResults)
-                        _ = await workingMemory.relieve(.compact)
+                        if workingMemory.reliefMode == .localMechanical {
+                            let local = await workingMemory.relieveLocally(messages, force: true)
+                            messages = local.messages
+                            evictToBrain(local.evicted, sessionId: sessionId)
+                        } else {
+                            _ = await workingMemory.relieve(.clearStaleToolResults)
+                            _ = await workingMemory.relieve(.compact)
+                        }
                         continue
                     }
                     emit(.error("Contexto excedido aún tras aliviar la presión."))
@@ -293,6 +309,17 @@ public actor AgentLoop {
                 }
                 throw error
             }
+        }
+    }
+
+    /// Evict al Brain (§4.9, relieve local): el texto desalojado del contexto se
+    /// encola como candidato para el Consolidator — se pierde el texto, no el insight.
+    /// Los turnos del dueño ya se encolaron al llegar; aquí van las respuestas.
+    private func evictToBrain(_ evicted: [Message], sessionId: SessionID) {
+        guard let inbox else { return }
+        for message in evicted where message.role == .assistant {
+            let text = Self.plainText(message.content)
+            if !text.isEmpty { try? inbox.enqueue(sessionId: sessionId, text: text, source: "evict") }
         }
     }
 

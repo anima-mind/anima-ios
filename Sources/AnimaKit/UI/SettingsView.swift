@@ -19,6 +19,8 @@ public final class SettingsViewModel: ObservableObject {
     /// "Repetir onboarding": re-corre el flujo sin borrar memoria (el Birth
     /// re-siembra solo si el dueño confirma). Lo cablea el shell.
     public var onReplayOnboarding: (() -> Void)?
+    /// Sección Cuenta (Sign in with Apple); la inyecta el shell.
+    public var account: AccountViewModel?
 
     public init(keychain: KeychainStore, telemetry: Telemetry,
                 onboardingDefaults: OnboardingDefaults = OnboardingDefaults()) {
@@ -78,6 +80,9 @@ public struct SettingsView: View {
             Theme.Colors.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                    if let account = model.account {
+                        AccountSettingsSection(account: account)
+                    }
                     tokenSection
                     costsSection
                     mindSection

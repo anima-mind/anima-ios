@@ -47,11 +47,27 @@ public enum ClaudeRequestBuilder {
         body["tools"] = .array(sortedTools.map(encodeTool))
 
         // system: bloques text; cache_control en el último (fin del prefijo estable).
+        // Los mensajes role:system del assemble (SelfView, banner de restructure) NO
+        // van dentro de messages[] — la API los rechaza con contenido de texto
+        // (verificado en vivo: 400 "use the top-level system parameter"). Van como
+        // bloques ADICIONALES del system top-level, después del prefijo estable,
+        // con su PROPIO cache_control: el base conserva su hit aunque el self mute
+        // (la API soporta hasta 4 breakpoints).
         let blocks = opts.api.systemBlocks(for: opts.authMode, base: opts.systemPromptBase)
-        body["system"] = .array(encodeSystemBlocks(blocks))
+        let volatileSystem = context.messages.filter { $0.role == .system }
+            .flatMap { $0.content }.compactMap { if case .text(let t) = $0 { return t } else { return nil } }
+        var systemArray = encodeSystemBlocks(blocks)
+        if !volatileSystem.isEmpty {
+            systemArray.append(.object([
+                "type": .string("text"),
+                "text": .string(volatileSystem.joined(separator: "\n\n")),
+                "cache_control": .object(["type": .string("ephemeral")]),
+            ]))
+        }
+        body["system"] = .array(systemArray)
 
-        // messages: se omiten los bloques thinking al reenviar (Fase 0).
-        body["messages"] = .array(context.messages.map(encodeMessage))
+        // messages: sin role:system (ya movidos arriba); thinking se omite al reenviar (Fase 0).
+        body["messages"] = .array(context.messages.filter { $0.role != .system }.map(encodeMessage))
 
         // context_management: alivio de presión server-side (§5.1). Solo cuando
         // hay algo que enviar — mantiene el prefijo cacheado intacto si no se usa.

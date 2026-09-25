@@ -1,5 +1,6 @@
-// SettingsView.swift — token → KeychainStore, muestra el AuthMode detectado y la
-// vista de costos reales desde Telemetry (§6, §7). Dark-only, tokens de Theme.
+// SettingsView.swift — token por provider → ProviderTokenStore, el provider
+// remoto activo, el AuthMode detectado y la vista de costos reales desde
+// Telemetry (§6, §7). Dark-only, tokens de Theme.
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -17,8 +18,13 @@ public final class SettingsViewModel: ObservableObject {
     @Published public private(set) var onDeviceAvailability: OnDeviceAvailability
     @Published public private(set) var hasToken: Bool = false
     @Published public var modeNotice: String?
+    /// Provider remoto activo (Claude/OpenAI/Gemini) y los que tienen key guardada.
+    @Published public private(set) var remoteProvider: ModelProvider
+    @Published public private(set) var savedRemotes: Set<ModelProvider> = []
+    /// A qué provider va la key del campo de texto.
+    @Published public var tokenTarget: ModelProvider
 
-    private let keychain: KeychainStore
+    private let keychain: ProviderTokenStore
     private let telemetry: Telemetry
     private let onboardingDefaults: OnboardingDefaults
     /// "Repetir onboarding": re-corre el flujo sin borrar memoria (el Birth
@@ -30,7 +36,7 @@ public final class SettingsViewModel: ObservableObject {
     public var onModeChanged: ((OperatingMode) -> Void)?
     private let availabilityProbe: () -> OnDeviceAvailability
 
-    public init(keychain: KeychainStore, telemetry: Telemetry,
+    public init(keychain: ProviderTokenStore, telemetry: Telemetry,
                 onboardingDefaults: OnboardingDefaults = OnboardingDefaults(),
                 availability: @escaping () -> OnDeviceAvailability = { OnDeviceAvailability.current() }) {
         self.keychain = keychain
@@ -39,6 +45,9 @@ public final class SettingsViewModel: ObservableObject {
         self.availabilityProbe = availability
         self.mode = onboardingDefaults.modeStore.mode
         self.onDeviceAvailability = availability()
+        let remote = onboardingDefaults.remoteStore.provider
+        self.remoteProvider = remote
+        self.tokenTarget = remote
     }
 
     // MARK: Modo
@@ -49,9 +58,31 @@ public final class SettingsViewModel: ObservableObject {
             return reason
         }
         if mode.requiresToken, !hasToken {
-            return "Requiere tu API key o token de Anthropic (abajo)."
+            return "Requiere tu API key de \(remoteProvider.displayName) (abajo)."
         }
         return nil
+    }
+
+    /// Si se puede activar ese provider remoto; si no, el porqué.
+    public func remoteBlocker(for provider: ModelProvider) -> String? {
+        savedRemotes.contains(provider) ? nil : "Guarda primero su API key (abajo)."
+    }
+
+    /// Cambia el córtex remoto (requiere su key guardada). Re-cablea el shell.
+    public func selectRemote(_ provider: ModelProvider) {
+        guard provider.isRemote else { return }
+        if let reason = remoteBlocker(for: provider) {
+            modeNotice = reason
+            tokenTarget = provider
+            return
+        }
+        modeNotice = nil
+        guard provider != remoteProvider else { return }
+        onboardingDefaults.remoteStore.set(provider)
+        remoteProvider = provider
+        tokenTarget = provider
+        refreshTokenState()
+        onModeChanged?(mode)
     }
 
     public func select(_ newMode: OperatingMode) {
@@ -86,31 +117,44 @@ public final class SettingsViewModel: ObservableObject {
 
     public func load() {
         mode = onboardingDefaults.modeStore.mode
+        remoteProvider = onboardingDefaults.remoteStore.provider
+        tokenTarget = remoteProvider
         refreshAvailability()
-        hasToken = ((try? keychain.read()) ?? "").isEmpty == false
-        if let token = try? keychain.read(), !token.isEmpty {
-            detectedMode = AuthMode.detect(fromToken: token)
-            statusText = "Token guardado."
-        } else {
-            statusText = "Sin token."
-        }
+        refreshTokenState()
         monthlyBudgetUSD = onboardingDefaults.monthlyBudgetUSD
         refreshCosts()
     }
 
+    private func refreshTokenState() {
+        savedRemotes = Set(ModelProvider.remoteCases.filter { keychain.hasToken($0) })
+        hasToken = savedRemotes.contains(remoteProvider)
+        if let token = (try? keychain.read(remoteProvider)) ?? nil, !token.isEmpty {
+            detectedMode = remoteProvider == .anthropic ? AuthMode.detect(fromToken: token) : nil
+            statusText = "Key de \(remoteProvider.displayName) guardada."
+        } else {
+            detectedMode = nil
+            statusText = "Sin key de \(remoteProvider.displayName)."
+        }
+    }
+
     public func save() {
         let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else { return }
-        detectedMode = AuthMode.detect(fromToken: token)
-        guard detectedMode != nil else {
-            statusText = "Token no reconocido (esperado sk-ant-api… o sk-ant-oat…)."
+        guard !token.isEmpty, tokenTarget.isRemote else { return }
+        guard tokenTarget.acceptsTokenFormat(token) else {
+            statusText = tokenTarget == .anthropic
+                ? "Token no reconocido (esperado sk-ant-api… o sk-ant-oat…)."
+                : "Key no reconocida (sin espacios)."
             return
         }
         do {
-            try keychain.save(token)
-            hasToken = true
+            try keychain.save(token, for: tokenTarget)
             tokenInput = ""
-            statusText = "Token guardado."
+            refreshTokenState()
+            if tokenTarget != remoteProvider {
+                statusText = "Key de \(tokenTarget.displayName) guardada; actívala arriba."
+            } else {
+                onModeChanged?(mode)   // la key del córtex activo cambió: re-cablear
+            }
         } catch {
             statusText = "Error al guardar: \(error.localizedDescription)"
         }
@@ -164,10 +208,10 @@ public struct SettingsView: View {
                                 .font(.system(size: 18, weight: .light))
                                 .foregroundStyle(selected ? Theme.Colors.accent : Theme.Colors.textFaint)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(mode.title)
+                                Text(mode.title(remote: model.remoteProvider))
                                     .font(Theme.Type_.body)
                                     .foregroundStyle(blocker == nil ? Theme.Colors.text : Theme.Colors.textFaint)
-                                Text(blocker ?? mode.summary)
+                                Text(blocker ?? mode.summary(remote: model.remoteProvider))
                                     .font(Theme.Type_.meta)
                                     .foregroundStyle(Theme.Colors.textFaint)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -193,11 +237,12 @@ public struct SettingsView: View {
                         .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.textMuted)
                     Spacer()
-                    Text(row.backend.label)
+                    Text(row.backend.label(remote: model.remoteProvider))
                         .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.accentText)
                 }
             }
+            remotePicker
             HStack(spacing: 6) {
                 Image(systemName: model.onDeviceAvailability.isAvailable ? "iphone" : "iphone.slash")
                     .font(.system(size: 12, weight: .light))
@@ -213,10 +258,42 @@ public struct SettingsView: View {
         }
     }
 
+    /// Provider remoto activo: se cambia si ya hay key guardada de ese provider.
+    private var remotePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Provider remoto")
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+            HStack(spacing: Theme.Space.stack) {
+                ForEach(ModelProvider.remoteCases, id: \.self) { provider in
+                    let selected = model.remoteProvider == provider
+                    let available = model.remoteBlocker(for: provider) == nil
+                    Button(provider.displayName) { model.selectRemote(provider) }
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(selected ? Theme.Colors.accentText
+                                         : (available ? Theme.Colors.textMuted : Theme.Colors.textFaint))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .strokeBorder(selected ? Theme.Colors.accent : Theme.Colors.border,
+                                              lineWidth: Theme.Stroke.hairline))
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     private var tokenSection: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            label("Token del provider")
-            SecureField("sk-ant-…", text: $model.tokenInput)
+            label("API key")
+            Picker("Provider", selection: $model.tokenTarget) {
+                ForEach(ModelProvider.remoteCases, id: \.self) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            SecureField(model.tokenTarget.tokenPlaceholder, text: $model.tokenInput)
                 .font(Theme.Type_.body)
                 .foregroundStyle(Theme.Colors.text)
                 .padding(Theme.Space.cardPad)

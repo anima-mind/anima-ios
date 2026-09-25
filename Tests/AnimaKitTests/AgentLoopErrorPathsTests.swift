@@ -91,7 +91,7 @@ final class FailingProvider: Provider, @unchecked Sendable {
     }
 
     @Test func modeWithoutCortexExplainsMissingModel() async throws {
-        let selector = ProviderSelector(mode: .claude, claude: nil, local: nil, availability: { .available })
+        let selector = ProviderSelector(mode: .remote, remote: nil, local: nil, availability: { .available })
         let events = try await run(MockProvider(events: []), selector: selector)
         guard case .error(let message)? = events.last else { Issue.record("sin error"); return }
         #expect(message.contains("no tiene un modelo configurado"))

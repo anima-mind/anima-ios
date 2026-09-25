@@ -26,8 +26,20 @@ enum CompatTestConfig {
                  enableThinking: true)
     }
 
+    /// Body del request; dentro de URLProtocol llega como httpBodyStream.
     static func body(_ request: URLRequest) throws -> JSONValue {
-        try JSONDecoder().decode(JSONValue.self, from: try #require(request.httpBody))
+        if let data = request.httpBody { return try JSONDecoder().decode(JSONValue.self, from: data) }
+        let stream = try #require(request.httpBodyStream)
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let n = stream.read(&buffer, maxLength: buffer.count)
+            guard n > 0 else { break }
+            data.append(buffer, count: n)
+        }
+        return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 }
 
@@ -490,5 +502,62 @@ enum CompatTestConfig {
         do { for try await _ in provider.complete(Self.ctx, tools: tools, opts: opts) {} } catch { thrown = error }
         #expect(thrown != nil)
         #expect(scenario.requests.value.isEmpty)
+    }
+
+    /// Turno completo por el AgentLoop real: tool_call → NotesTool → role:tool → respuesta.
+    @Test func agentLoopRunsCompatToolTurn() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = await NotesTool(root: root).execute(.object([
+            "action": .string("create"), "name": .string("clave"), "content": .string("mango-42")]))
+
+        let final = """
+            data: {"id":"chatcmpl-10","model":"gpt-5.2","choices":[{"delta":{"content":"La palabra es mango-42."}}]}
+
+            data: {"id":"chatcmpl-10","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+            data: [DONE]
+
+            """
+        let (provider, opts, scenario) = rig([
+            [.http(status: 200, headers: Self.sseHeaders), .body(Self.toolTurn), .finish],
+            [.http(status: 200, headers: Self.sseHeaders), .body(final), .finish],
+        ])
+        let config = ProviderConfig(systemPromptBase: "BASE", api: opts.api,
+                                    routes: [.interactive: opts.route])
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let selector = ProviderSelector(
+            mode: .remote,
+            remote: .init(provider: provider, router: ModelRouter(config: config), authMode: .apiKey,
+                          token: opts.token, kind: .openai),
+            local: nil, availability: { .deviceNotEligible })
+        let loop = AgentLoop(selector: selector, store: store, telemetry: Telemetry(queue: queue),
+                             clientTools: [NotesTool(root: root)], serverTools: [WebSearchTool.spec],
+                             sleep: { _ in })
+        let sid = try store.startSession()
+        var tools: [String] = []
+        var text = ""
+        var stop: StopReason?
+        for await event in await loop.run(sessionId: sid, userText: "lee la nota clave") {
+            switch event {
+            case .toolFinished(let name, let isError): if !isError { tools.append(name) }
+            case .textDelta(let t): text += t
+            case .turnFinished(let s): stop = s
+            default: break
+            }
+        }
+        #expect(tools == ["notes"])
+        #expect(text.contains("mango-42"))
+        #expect(stop == .endTurn)
+
+        let second = try CompatTestConfig.body(try #require(scenario.requests.value.last))
+        let messages = try #require(second["messages"].flatMap { if case .array(let a) = $0 { a } else { nil } })
+        #expect(messages.first?["content"] == .string("BASE"))
+        #expect(messages.contains { $0["role"] == .string("system") && $0["content"] != .string("BASE") })  // SelfView
+        let toolMsg = try #require(messages.first { $0["role"] == .string("tool") })
+        #expect(toolMsg["tool_call_id"] == .string("call_1"))
+        #expect(second["tools"]?[0]?.at("function", "name") == .string("notes"))   // web_search filtrada
+        #expect(second["tools"]?[1] == nil)
     }
 }

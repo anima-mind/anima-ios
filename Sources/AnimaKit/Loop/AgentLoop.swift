@@ -135,7 +135,8 @@ public actor AgentLoop {
         let turnStart = Date()
         do {
             let clientSpecs = await sensorimotor.toolSpecs()
-            // On-device: sin server tools (web_search necesita red y es de Anthropic).
+            // Solo el perfil de Claude lleva server tools (web_search es de Anthropic):
+            // on-device y OpenAI-compat van sin ellas.
             let allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
 
             // Restructure (§5.6): si un patrón demanding matchea una tool disponible,
@@ -151,7 +152,7 @@ public actor AgentLoop {
                 }
             }
             guard let binding = selector.binding(for: turnClass) else {
-                emit(.error("El modo \(selector.mode.title) no tiene un modelo configurado (¿falta el token?)."))
+                emit(.error("El modo \(selector.modeTitle) no tiene un modelo configurado (¿falta el token?)."))
                 return
             }
             let route = binding.router.route(turnClass)

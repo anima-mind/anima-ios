@@ -10,8 +10,7 @@ import Testing
         let suite = "test.anima.onboarding.\(UUID().uuidString)"
         let ud = try #require(UserDefaults(suiteName: suite))
         let model = OnboardingViewModel(
-            keychain: KeychainStore(service: "test.anima.onboarding.\(UUID().uuidString)"),
-            api: nil,
+            keychain: ProviderTokenStore(service: "test.anima.onboarding.\(UUID().uuidString)"),
             selfModel: nil,
             defaults: OnboardingDefaults(defaults: ud),
             account: account,
@@ -75,7 +74,7 @@ import Testing
         model.keyStatus = .offline(.oauth)
         model.hybridEnabled = false
         model.advance()
-        #expect(OperatingModeStore(defaults: ud).mode == .claude)
+        #expect(OperatingModeStore(defaults: ud).mode == .remote)
     }
 
     @Test func withoutLocalModelHybridIsNotOffered() throws {
@@ -87,7 +86,7 @@ import Testing
         #expect(!model.offersHybrid)
         #expect(!model.hybridEnabled)
         model.advance()
-        #expect(OperatingModeStore(defaults: ud).mode == .claude)
+        #expect(OperatingModeStore(defaults: ud).mode == .remote)
     }
 
     @Test func onboardingHasSevenStepsWithAccountBeforeProvider() {

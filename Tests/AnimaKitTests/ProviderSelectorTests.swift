@@ -10,11 +10,11 @@ import Testing
                           localProvider: Provider = MockProvider(events: .text("local")),
                           withClaude: Bool = true) throws -> ProviderSelector {
         let claude = withClaude
-            ? ProviderSelector.ClaudeCortex(provider: claudeProvider, router: try .haikuAll(),
+            ? ProviderSelector.RemoteCortex(provider: claudeProvider, router: try .haikuAll(),
                                             authMode: .apiKey, token: "sk-ant-api03-xyz")
             : nil
         let local = ProviderSelector.LocalCortex(provider: localProvider, router: try OnDeviceTestConfig.router())
-        return ProviderSelector(mode: mode, claude: claude, local: local, availability: availability)
+        return ProviderSelector(mode: mode, remote: claude, local: local, availability: availability)
     }
 
     // MARK: los 3 modos × 7 TurnClasses
@@ -30,9 +30,9 @@ import Testing
     }
 
     @Test func claudeRoutesEveryClassToClaude() throws {
-        let s = try selector(.claude)
+        let s = try selector(.remote)
         for turn in TurnClass.allCases {
-            #expect(s.backend(for: turn) == .claude)
+            #expect(s.backend(for: turn) == .remote)
             let binding = try #require(s.binding(for: turn))
             #expect(binding.router.route(turn).model.hasPrefix("claude-"))
             #expect(binding.token == "sk-ant-api03-xyz")
@@ -42,7 +42,7 @@ import Testing
     @Test func hybridSplitsConversationAndSleep() throws {
         let s = try selector(.hybrid)
         let expected: [TurnClass: ProviderBackend] = [
-            .interactive: .claude, .interactiveHard: .claude, .restructure: .claude,
+            .interactive: .remote, .interactiveHard: .remote, .restructure: .remote,
             .consolidation: .onDevice, .reconsolidation: .onDevice, .desirePulse: .onDevice, .distill: .onDevice,
         ]
         #expect(Set(expected.keys) == Set(TurnClass.allCases))
@@ -57,7 +57,7 @@ import Testing
     @Test func hybridFallsBackToClaudeWhenLocalUnavailable() throws {
         let s = try selector(.hybrid, availability: { .modelNotReady })
         for turn in TurnClass.allCases {
-            #expect(s.backend(for: turn) == .claude)
+            #expect(s.backend(for: turn) == .remote)
         }
         #expect(s.sleepRequiresNetwork)
     }
@@ -70,7 +70,7 @@ import Testing
     }
 
     @Test func claudeModeWithoutTokenHasNoBinding() throws {
-        let s = try selector(.claude, withClaude: false)
+        let s = try selector(.remote, withClaude: false)
         #expect(s.binding(for: .interactive) == nil)
     }
 
@@ -98,14 +98,14 @@ import Testing
     @Test func sleepRunsOfflineWhenLocal() throws {
         #expect(try selector(.hybrid).sleepRequiresNetwork == false)
         #expect(try selector(.onDeviceOnly).sleepRequiresNetwork == false)
-        #expect(try selector(.claude).sleepRequiresNetwork == true)
+        #expect(try selector(.remote).sleepRequiresNetwork == true)
         #expect(SleepScheduler(selector: try selector(.hybrid)).requiresNetworkConnectivity == false)
     }
 
     @Test func conversationProfileFollowsInteractiveBackend() throws {
         #expect(try selector(.onDeviceOnly).conversationProfile == .onDevice)
         #expect(try selector(.hybrid).conversationProfile == .claude)
-        #expect(try selector(.claude).conversationProfile == .claude)
+        #expect(try selector(.remote).conversationProfile == .claude)
     }
 
     // MARK: persistencia del modo
@@ -116,7 +116,7 @@ import Testing
         defer { ud.removePersistentDomain(forName: suite) }
         let store = OperatingModeStore(defaults: ud)
         #expect(store.storedMode == nil)
-        #expect(store.mode == .claude)   // instalaciones previas a §4.9
+        #expect(store.mode == .remote)   // instalaciones previas a §4.9
         store.set(.onDeviceOnly)
         #expect(OperatingModeStore(defaults: ud).mode == .onDeviceOnly)
     }
@@ -149,7 +149,7 @@ import Testing
         let sid = try store.startSession()
         let session = MockOnDeviceSession([[.snapshot("Hola"), .snapshot("Hola, aquí estoy.")]])
         let local = OnDeviceProvider(session: session, availability: { .available })
-        let s = ProviderSelector(mode: .onDeviceOnly, claude: nil,
+        let s = ProviderSelector(mode: .onDeviceOnly, remote: nil,
                                  local: .init(provider: local, router: try OnDeviceTestConfig.router()),
                                  availability: { .available })
         let loop = AgentLoop(selector: s, store: store, telemetry: Telemetry(queue: queue),
@@ -176,7 +176,7 @@ import Testing
         let suite = "test.anima.settings.\(UUID().uuidString)"
         let ud = try #require(UserDefaults(suiteName: suite))
         let model = SettingsViewModel(
-            keychain: KeychainStore(service: "test.anima.settings.\(UUID().uuidString)"),
+            keychain: ProviderTokenStore(service: "test.anima.settings.\(UUID().uuidString)"),
             telemetry: Telemetry(queue: try AnimaDatabase.temporary()),
             onboardingDefaults: OnboardingDefaults(defaults: ud),
             availability: { availability })
@@ -194,7 +194,7 @@ import Testing
         #expect(changed == .onDeviceOnly)
         #expect(OperatingModeStore(defaults: ud).mode == .onDeviceOnly)
         // Claude/Híbrido sin token: bloqueados con el porqué.
-        #expect(model.blocker(for: .claude) != nil)
+        #expect(model.blocker(for: .remote) != nil)
         model.select(.hybrid)
         #expect(model.mode == .onDeviceOnly)
         #expect(model.modeNotice != nil)
@@ -206,14 +206,14 @@ import Testing
         model.load()
         #expect(model.blocker(for: .onDeviceOnly) == OnDeviceAvailability.appleIntelligenceOff.reason)
         model.select(.onDeviceOnly)
-        #expect(model.mode == .claude)
+        #expect(model.mode == .remote)
     }
 
     @Test func placementShowsWhatRunsWhere() {
         let hybrid = SettingsViewModel.placement(for: .hybrid).map(\.backend)
-        #expect(hybrid == [.claude, .onDevice])
+        #expect(hybrid == [.remote, .onDevice])
         #expect(SettingsViewModel.placement(for: .onDeviceOnly).map(\.backend) == [.onDevice, .onDevice])
-        #expect(SettingsViewModel.placement(for: .claude).map(\.backend) == [.claude, .claude])
+        #expect(SettingsViewModel.placement(for: .remote).map(\.backend) == [.remote, .remote])
     }
 }
 #endif

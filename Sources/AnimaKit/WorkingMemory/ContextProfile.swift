@@ -35,6 +35,14 @@ public struct ContextProfile: Sendable, Equatable {
         contextBudgetTokens: 180_000, historyBudgetTokens: .max,
         maxActivatedMemories: 8, reliefMode: .serverSide)
 
+    /// OpenAI / Gemini (wire Chat Completions): contexto grande pero SIN las
+    /// betas de Anthropic (context-management/compaction no existen). El alivio
+    /// es el mecánico local, con un presupuesto conservador común a ambos
+    /// (gpt-5.x ~400k, gemini-3 ~1M): se alivia mucho antes de tocar el techo.
+    public static let openAICompat = ContextProfile(
+        contextBudgetTokens: 128_000, historyBudgetTokens: .max,
+        maxActivatedMemories: 8, reliefMode: .localMechanical)
+
     /// Apple Foundation Models (~4096 tokens, respuesta incluida): la history
     /// cabe en ~1k tokens y solo entran las 3 memorias más relevantes, para dejar
     /// sitio a instructions + tools + la respuesta.

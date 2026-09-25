@@ -132,7 +132,7 @@ import GRDB
         let queue = try AnimaDatabase.temporary()
         let other = OtherModel(queue: queue)
         _ = await other.ingestStated(statement: "entrenar", desiredState: .workoutsPerWeek(atLeast: 3), evidence: "e")
-        let selector = ProviderSelector(mode: .claude, claude: nil, local: nil, availability: { .available })
+        let selector = ProviderSelector(mode: .remote, remote: nil, local: nil, availability: { .available })
         let engine = DesireEngine(otherModel: other, environment: MockObservableEnvironment(), queue: queue,
                                   selector: selector)
         await #expect(throws: ClassifiedError.self) { _ = try await engine.pulse() }

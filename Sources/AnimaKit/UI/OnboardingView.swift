@@ -96,7 +96,7 @@ public final class OnboardingViewModel: ObservableObject {
     // Paso 3 — modo gratis on-device (§4.9): disponibilidad SIEMPRE por runtime.
     @Published public private(set) var onDeviceAvailability: OnDeviceAvailability
     /// Híbrido ("el sueño corre en tu teléfono, gratis"): se ofrece si eligió
-    /// Anthropic con token y el modelo local está disponible. Default ON entonces.
+    /// un provider remoto con token y el modelo local está disponible. Default ON entonces.
     @Published public var hybridEnabled: Bool
 
     // Paso 4 — API key
@@ -126,8 +126,9 @@ public final class OnboardingViewModel: ObservableObject {
     /// Paso "Tu cuenta": identidad opcional; sin proveedor queda `.unavailable`.
     public let account: AccountViewModel
 
-    private let keychain: KeychainStore
-    private let api: ProviderAPIConfig?
+    private let keychain: ProviderTokenStore
+    /// API de cada provider remoto (del snapshot de config) para validar la key.
+    private let apis: [ModelProvider: ProviderAPIConfig]
     private let validator: APIKeyValidator
     private let defaults: OnboardingDefaults
     private let selfModel: SelfModel?
@@ -135,8 +136,8 @@ public final class OnboardingViewModel: ObservableObject {
     private let availabilityProbe: () -> OnDeviceAvailability
     private var streamTask: Task<Void, Never>?
 
-    public init(keychain: KeychainStore,
-                api: ProviderAPIConfig?,
+    public init(keychain: ProviderTokenStore,
+                apis: [ModelProvider: ProviderAPIConfig] = [:],
                 selfModel: SelfModel?,
                 defaults: OnboardingDefaults = OnboardingDefaults(),
                 validator: APIKeyValidator = APIKeyValidator(),
@@ -149,14 +150,17 @@ public final class OnboardingViewModel: ObservableObject {
         let current = availability()
         self.onDeviceAvailability = current
         self.hybridEnabled = current.isAvailable
-        // Replay: arranca en el modo que ya tenía.
+        // Replay: arranca en el modo (y el provider remoto) que ya tenía.
         switch defaults.modeStore.storedMode {
         case .onDeviceOnly?: self.selectedProvider = .onDevice
-        case .claude?: self.hybridEnabled = false
-        default: break
+        case .remote?:
+            self.hybridEnabled = false
+            self.selectedProvider = defaults.remoteStore.provider
+        case .hybrid?: self.selectedProvider = defaults.remoteStore.provider
+        case nil: break
         }
         self.keychain = keychain
-        self.api = api
+        self.apis = apis
         self.selfModel = selfModel
         self.defaults = defaults
         self.validator = validator
@@ -165,9 +169,14 @@ public final class OnboardingViewModel: ObservableObject {
         self.permissionIntents = defaults.permissionIntents
         self.selectedBudget = defaults.monthlyBudgetUSD
         // Si ya hay token válido guardado (replay), el paso de la key arranca en verde.
-        if let token = try? keychain.read(), let mode = AuthMode.detect(fromToken: token) {
-            self.keyStatus = .valid(mode)
-        }
+        self.keyStatus = Self.savedStatus(keychain: keychain, provider: selectedProvider)
+    }
+
+    /// Estado del paso de la key según el token ya guardado para ese provider.
+    private static func savedStatus(keychain: ProviderTokenStore, provider: ModelProvider) -> KeyStatus {
+        guard provider.isRemote, let token = (try? keychain.read(provider)) ?? nil,
+              let mode = provider.authMode(forToken: token) else { return .idle }
+        return .valid(mode)
     }
 
     // MARK: Navegación
@@ -186,7 +195,8 @@ public final class OnboardingViewModel: ObservableObject {
                 return
             }
         case .apiKey:
-            defaults.modeStore.set(offersHybrid && hybridEnabled ? .hybrid : .claude)
+            defaults.modeStore.set(offersHybrid && hybridEnabled ? .hybrid : .remote)
+            defaults.remoteStore.set(selectedProvider)
         default:
             break
         }
@@ -222,21 +232,23 @@ public final class OnboardingViewModel: ObservableObject {
         }
     }
 
-    /// Selección de provider: on-device solo si está disponible; los "pronto" no.
+    /// Selección de provider: los remotos siempre; on-device solo si está disponible.
+    /// Cambiar de remoto re-lee el token guardado de ESE provider.
     public func selectProvider(_ provider: ModelProvider) {
         switch provider {
-        case .anthropic: selectedProvider = .anthropic
-        case .onDevice where onDeviceAvailability.isAvailable: selectedProvider = .onDevice
-        default: break
+        case .anthropic, .openai, .google:
+            guard provider != selectedProvider else { return }
+            selectedProvider = provider
+            keyStatus = Self.savedStatus(keychain: keychain, provider: provider)
+        case .onDevice where onDeviceAvailability.isAvailable:
+            selectedProvider = .onDevice
+        case .onDevice:
+            break
         }
     }
 
     public var canLeaveProviderStep: Bool {
-        switch selectedProvider {
-        case .anthropic: return true
-        case .onDevice: return onDeviceAvailability.isAvailable
-        default: return false
-        }
+        selectedProvider.isRemote || onDeviceAvailability.isAvailable
     }
 
     /// El toggle híbrido se ofrece con token válido y modelo local disponible.
@@ -265,28 +277,37 @@ public final class OnboardingViewModel: ObservableObject {
         AuthMode.detect(fromToken: keyInput.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Aviso (no gate) si el prefijo de la key sugiere OTRO provider.
+    public var tokenHint: String? {
+        guard let hinted = ModelProvider.hint(fromToken: keyInput), hinted != selectedProvider else { return nil }
+        return "Parece una key de \(hinted.displayName), no de \(selectedProvider.displayName)."
+    }
+
     public func validateKey() {
         let token = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else { return }
-        guard AuthMode.detect(fromToken: token) != nil else {
-            keyStatus = .rejected("Formato no reconocido (esperado sk-ant-api… o sk-ant-oat…).")
+        let provider = selectedProvider
+        guard !token.isEmpty, provider.isRemote else { return }
+        guard provider.acceptsTokenFormat(token) else {
+            keyStatus = .rejected(provider == .anthropic
+                ? "Formato no reconocido (esperado sk-ant-api… o sk-ant-oat…)."
+                : "Formato no reconocido (sin espacios).")
             return
         }
         keyStatus = .checking
         Task {
             let verdict: APIKeyValidator.Verdict
-            if let api {
-                verdict = await validator.validate(token: token, api: api)
+            if let api = apis[provider] {
+                verdict = await validator.validate(token: token, provider: provider, api: api)
             } else {
                 // Sin config del provider (sin red al arrancar): formato ok.
-                verdict = .offlineAccepted(AuthMode.detect(fromToken: token) ?? .apiKey)
+                verdict = .offlineAccepted(provider.authMode(forToken: token) ?? .apiKey)
             }
             switch verdict {
             case .valid(let mode):
-                saveToken(token)
+                saveToken(token, for: provider)
                 keyStatus = .valid(mode)
             case .offlineAccepted(let mode):
-                saveToken(token)
+                saveToken(token, for: provider)
                 keyStatus = .offline(mode)
             case .rejected(let reason):
                 keyStatus = .rejected(reason)
@@ -296,8 +317,8 @@ public final class OnboardingViewModel: ObservableObject {
         }
     }
 
-    private func saveToken(_ token: String) {
-        try? keychain.save(token)
+    private func saveToken(_ token: String, for provider: ModelProvider) {
+        try? keychain.save(token, for: provider)
     }
 
     public func selectBudget(_ usd: Int) {
@@ -536,8 +557,8 @@ struct ProviderStep: View {
     private let options: [Option] = [
         Option(provider: .anthropic, name: "Anthropic · Claude", comingSoon: false),
         Option(provider: .onDevice, name: "Solo este teléfono · gratis", comingSoon: false),
-        Option(provider: .openai, name: "OpenAI", comingSoon: true),
-        Option(provider: .google, name: "Google", comingSoon: true),
+        Option(provider: .openai, name: "OpenAI", comingSoon: false),
+        Option(provider: .google, name: "Google · Gemini", comingSoon: false),
     ]
 
     var body: some View {
@@ -593,11 +614,7 @@ struct ProviderStep: View {
     }
 
     private func isEnabled(_ option: Option) -> Bool {
-        switch option.provider {
-        case .anthropic: return true
-        case .onDevice: return model.onDeviceAvailability.isAvailable
-        default: return false
-        }
+        option.provider.isRemote || model.onDeviceAvailability.isAvailable
     }
 
     /// Línea bajo el nombre: el porqué cuando el modo local no se puede usar.
@@ -605,13 +622,15 @@ struct ProviderStep: View {
         switch option.provider {
         case .anthropic:
             return "Con tu API key o suscripción. Pagas por uso."
+        case .openai:
+            return "Con tu API key de OpenAI. Pagas por uso."
+        case .google:
+            return "Con tu API key de Google AI Studio. Pagas por uso."
         case .onDevice:
             if let reason = model.onDeviceAvailability.reason {
                 return model.onDeviceAvailability.label + ". " + reason
             }
             return "Apple Intelligence: sin red, sin costo, todo en el dispositivo."
-        default:
-            return nil
         }
     }
 }
@@ -625,12 +644,12 @@ struct APIKeyStep: View {
         StepScaffold(title: "Tu API key",
                      primary: ("Siguiente", model.canLeaveKeyStep, model.advance)) {
             VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
-                Text("La key vive solo en el Keychain de este teléfono; con ella Anima piensa.")
+                Text("La key de \(model.selectedProvider.displayName) vive solo en el Keychain de este teléfono; con ella Anima piensa.")
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.textMuted)
 
                 HStack(spacing: Theme.Space.stack) {
-                    TextField("sk-ant-…", text: $model.keyInput)
+                    TextField(model.selectedProvider.tokenPlaceholder, text: $model.keyInput)
                         .font(.system(size: 14, design: .monospaced))
                         .foregroundStyle(Theme.Colors.text)
                         .autocorrectionDisabled()
@@ -656,6 +675,12 @@ struct APIKeyStep: View {
                 }
 
                 statusLine
+
+                if let hint = model.tokenHint {
+                    Text(hint)
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                }
 
                 if model.offersHybrid {
                     hybridToggle
@@ -702,7 +727,7 @@ struct APIKeyStep: View {
                     Text("El sueño corre en tu teléfono, gratis")
                         .font(Theme.Type_.body)
                         .foregroundStyle(Theme.Colors.text)
-                    Text("Conversas con Claude; consolidación y pulsos en el modelo de Apple.")
+                    Text("Conversas con \(model.selectedProvider.displayName); consolidación y pulsos en el modelo de Apple.")
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
@@ -734,11 +759,15 @@ struct APIKeyStep: View {
             .font(Theme.Type_.meta)
             .foregroundStyle(Theme.Colors.textMuted)
         case .valid(let mode):
-            Text("Key válida · auth \(mode.rawValue) · guardada en Keychain")
+            Text(model.selectedProvider == .anthropic
+                 ? "Key válida · auth \(mode.rawValue) · guardada en Keychain"
+                 : "Key válida · guardada en Keychain")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.accentText)
         case .offline(let mode):
-            Text("Sin red: formato ok (auth \(mode.rawValue)), se validará en el primer turno.")
+            Text(model.selectedProvider == .anthropic
+                 ? "Sin red: formato ok (auth \(mode.rawValue)), se validará en el primer turno."
+                 : "Sin red: la key se guardó y se validará en el primer turno.")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textMuted)
         case .rejected(let reason):

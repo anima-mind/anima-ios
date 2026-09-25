@@ -71,6 +71,11 @@ public struct OnboardingDefaults: @unchecked Sendable {
     public var modeStore: OperatingModeStore {
         OperatingModeStore(defaults: defaults)
     }
+
+    /// Qué provider remoto está activo (Anthropic/OpenAI/Google).
+    public var remoteStore: RemoteProviderStore {
+        RemoteProviderStore(defaults: defaults)
+    }
 }
 
 // MARK: - Validación de la API key (paso 3)
@@ -130,6 +135,30 @@ public struct APIKeyValidator: Sendable {
         case 403: return .rejected("La key no tiene permiso (403).")
         case 400..<500: return .rejected("El API respondió \(status).")
         default: return .offlineAccepted(mode)  // 5xx/529: no es culpa de la key
+        }
+    }
+
+    /// Validación de una key OpenAI-compat (OpenAI y Gemini): GET {base}/models
+    /// con Bearer — gratis y exige auth.
+    public static func compatRequest(token: String, api: ProviderAPIConfig) -> URLRequest {
+        var req = URLRequest(url: api.baseURL.appendingPathComponent("models"))
+        req.httpMethod = "GET"
+        req.timeoutInterval = 15
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return req
+    }
+
+    /// Validación por provider: Anthropic por count_tokens; OpenAI/Google por
+    /// /models. Sin red → se acepta con warning (como Anthropic).
+    public func validate(token: String, provider: ModelProvider, api: ProviderAPIConfig) async -> Verdict {
+        guard provider.usesOpenAICompatWire else { return await validate(token: token, api: api) }
+        guard provider.acceptsTokenFormat(token) else { return .malformed }
+        do {
+            let (_, response) = try await session.data(for: Self.compatRequest(token: token, api: api))
+            guard let http = response as? HTTPURLResponse else { return .offlineAccepted(.apiKey) }
+            return Self.verdict(status: http.statusCode, mode: .apiKey)
+        } catch {
+            return .offlineAccepted(.apiKey)
         }
     }
 

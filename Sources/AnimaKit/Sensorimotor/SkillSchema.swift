@@ -1,7 +1,8 @@
 // SkillSchema.swift — migración GRDB v6 del SkillEngine (§5.7). Los skills viven
 // como markdown portable en un dir sandbox; aquí solo su práctica: contadores de
-// éxito/fallo por skill y el flag `practiced` (≥3 éxitos seguidos). La
-// desautomatización dirigida por lo Real resetea el streak al primer fallo.
+// éxito/fallo por skill y el flag `practiced` (≥3 éxitos seguidos); `automatized`
+// se deriva de la racha (≥K=5) sin columna propia. La desautomatización
+// dirigida por lo Real resetea el streak al primer fallo.
 
 import Foundation
 import GRDB
@@ -39,6 +40,13 @@ public enum SkillSchema {
                     ts REAL NOT NULL
                 );
                 """)
+        }
+        // Runner de automatize: por turno, si corrió el SkillRunner, cuántos
+        // aferentes ejecutó sin LLM y por qué abortó (nil = completó).
+        m.registerMigration("v8-skill-automation") { db in
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automatized INTEGER NOT NULL DEFAULT 0")
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automated_steps INTEGER NOT NULL DEFAULT 0")
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automation_abort TEXT")
         }
     }
 }

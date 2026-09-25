@@ -5,12 +5,14 @@
 // Arco declarativo→procedural: el AgentLoop INYECTA el skill que matchea como
 // conocimiento al contexto activado del turno; al cerrar el turno lo practica.
 //   bestMatch(_,_)    — el mejor skill por overlap léxico ponderado (0 LLM).
-//   practice(_,_)     — contador de éxitos/fallos; ≥3 éxitos seguidos ⇒ practiced.
-//   automatize(_)     — un skill practiced se compila a la secuencia de pasos
-//                       aferentes ejecutable sin re-consultar al LLM paso a paso.
-// Hook documentado: los pasos EFERENTES de un CompiledSkill SIEMPRE siguen pidiendo
-// ok (nunca se automatiza una escritura); en v1 `practiced` es el estado terminal
-// y el runner que ejecuta un CompiledSkill en el loop queda como extensión.
+//   practice(_,_)     — contador de éxitos/fallos. Racha de éxitos seguidos:
+//                       learned → practiced (3, estado intermedio visible) →
+//                       automatized (K=5, §5.7/§B.6). Un fallo resetea la racha.
+//   automatize(_)     — un skill automatized se compila a la secuencia de pasos
+//                       aferentes que el SkillRunner ejecuta sin re-consultar al
+//                       LLM paso a paso.
+// Los pasos EFERENTES de un CompiledSkill jamás se auto-ejecutan: el runner los
+// deja pendientes y el LLM los propone por el flujo normal (tool_use con ask).
 
 import Foundation
 import GRDB
@@ -67,11 +69,30 @@ public enum SkillOutcome: String, Sendable, Equatable {
     case neutral    // error del provider / refusal / max_tokens: no dice nada del skill
 }
 
-/// Estado del skill para la UI: learned (declarativo) → practiced.
+/// Nivel del arco declarativo→procedural (Kandel: la práctica compila el
+/// conocimiento en procedimiento).
+public enum SkillLevel: String, Sendable, Equatable, Comparable {
+    case learned        // declarativo: se inyecta como conocimiento
+    case practiced      // racha ≥3: visible en Ajustes, sigue inyectándose
+    case automatized    // racha ≥K=5: el runner corre sus aferentes solo
+
+    private var rank: Int {
+        switch self {
+        case .learned: return 0
+        case .practiced: return 1
+        case .automatized: return 2
+        }
+    }
+    public static func < (a: SkillLevel, b: SkillLevel) -> Bool { a.rank < b.rank }
+}
+
+/// Estado del skill para la UI: learned → practiced → automatized.
 public struct SkillOverview: Sendable, Equatable, Identifiable {
     public var name: String
     public var summary: String
-    public var practiced: Bool
+    public var level: SkillLevel
+    public var practiced: Bool { level >= .practiced }
+    public var automatized: Bool { level == .automatized }
     public var totalSuccess: Int
     public var totalFail: Int
     public var successStreak: Int
@@ -100,22 +121,28 @@ public struct SkillInjection: Sendable, Equatable {
             parts.append("Pasos:\n" + skill.steps.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n"))
         }
         if !skill.body.isEmpty { parts.append("Notas:\n" + skill.body) }
-        let full = parts.joined(separator: "\n")
-        let budget = max(budgetChars, header(skill.name).count + truncationMarker.count)
+        return truncated(name: skill.name, header: header(skill.name),
+                         full: parts.joined(separator: "\n"), budgetChars: budgetChars)
+    }
+
+    /// Recorta un bloque al presupuesto conservando SIEMPRE el header.
+    static func truncated(name: String, header: String, full: String, budgetChars: Int) -> SkillInjection {
+        let budget = max(budgetChars, header.count + truncationMarker.count)
         guard full.count > budget else {
-            return SkillInjection(skillName: skill.name, text: full, truncated: false)
+            return SkillInjection(skillName: name, text: full, truncated: false)
         }
         let kept = String(full.prefix(budget - truncationMarker.count))
-        return SkillInjection(skillName: skill.name, text: kept + truncationMarker, truncated: true)
+        return SkillInjection(skillName: name, text: kept + truncationMarker, truncated: true)
     }
 }
 
-/// Un skill practiced compilado: sus pasos aferentes corren sin LLM paso a paso;
-/// los eferentes se marcan aparte y SIEMPRE piden ok (§5.7).
+/// Un skill automatized compilado: sus pasos aferentes corren sin LLM paso a
+/// paso (SkillRunner); los eferentes se marcan aparte y JAMÁS se auto-ejecutan.
 public struct CompiledSkill: Sendable, Equatable {
     public var name: String
     public var afferentSteps: [String]
     public var efferentSteps: [String]
+    public var skill: Skill
 }
 
 public struct SkillStats: Sendable, Equatable {
@@ -124,6 +151,10 @@ public struct SkillStats: Sendable, Equatable {
     public var totalSuccess: Int
     public var totalFail: Int
     public var practiced: Bool
+    public var automatized: Bool
+    public var level: SkillLevel {
+        automatized ? .automatized : (practiced ? .practiced : .learned)
+    }
 }
 
 public actor SkillEngine {
@@ -132,28 +163,67 @@ public actor SkillEngine {
     public nonisolated let store: SkillStore?
     private let now: @Sendable () -> Date
     private let practiceThreshold: Int
+    private let automatizeThreshold: Int
     /// Score mínimo del match (overlap ponderado / min(|turno|, |gatillo|)).
     static let matchThreshold = 0.34
-    /// Prefijos de tool considerados eferentes (escriben): nunca se automatizan.
-    private static let efferentTools: Set<String> = ["calendar.create", "calendar.delete",
-                                                      "reminders.create", "reminders.complete",
-                                                      "notes.write", "notes.append"]
+    /// Score mínimo para AUTOMATIZAR (correr aferentes sin LLM): automatizar exige
+    /// más confianza que sugerir. 0.6 ≈ el turno cubre ≥60% de la masa
+    /// discriminante del lado corto (vs 34% para inyectar conocimiento): un match
+    /// tangencial solo sugiere, nunca dispara la macro.
+    public static let automationThreshold = 0.6
+    /// Racha de éxitos seguidos para `practiced` (estado intermedio visible).
+    public static let defaultPracticeThreshold = 3
+    /// K del §5.7/§B.6: racha de éxitos seguidos para `automatized`.
+    public static let defaultAutomatizeThreshold = 5
+
+    /// Operaciones aferentes (solo leen) de las tools reales, `tool.operation`
+    /// según el `operation(for:)` de cada una. Es la ÚNICA lista que el runner
+    /// auto-ejecuta: todo lo demás — incluida cualquier tool/operación que no
+    /// esté aquí — se trata como eferente (fail-closed, como la PermissionPolicy).
+    static let afferentOperations: Set<String> = [
+        "calendar.list", "calendar.search",
+        "reminders.list",
+        "notes.list", "notes.read",
+        "phone_context.location", "phone_context.contacts", "phone_context.health",
+    ]
+    /// Eferentes conocidas (escriben/actúan), explícitas para documentación y
+    /// tests. `notes.create`/`notes.append` son eferentes AQUÍ aunque la policy
+    /// las deje pasar sin ask (es la libreta propia): nunca se automatiza una
+    /// escritura.
+    static let efferentOperations: Set<String> = [
+        "calendar.create", "calendar.delete",
+        "reminders.create", "reminders.complete",
+        "notes.create", "notes.append",
+        "camera.capture_photo", "audio.record",
+    ]
+
+    /// ¿El paso escribe/actúa? `calendar.list(days_ahead=7)` → "calendar.list".
+    public static func isEfferent(step: String) -> Bool {
+        guard let op = SkillStep.operationKey(step) else { return true }
+        return !afferentOperations.contains(op)
+    }
 
     public init(queue: DatabaseQueue, directory: URL? = nil,
-                practiceThreshold: Int = 3,
+                practiceThreshold: Int = SkillEngine.defaultPracticeThreshold,
+                automatizeThreshold: Int = SkillEngine.defaultAutomatizeThreshold,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.init(queue: queue, store: directory.map { SkillStore(directory: $0) },
-                  practiceThreshold: practiceThreshold, now: now)
+                  practiceThreshold: practiceThreshold, automatizeThreshold: automatizeThreshold, now: now)
     }
 
     public init(queue: DatabaseQueue, store: SkillStore?,
-                practiceThreshold: Int = 3,
+                practiceThreshold: Int = SkillEngine.defaultPracticeThreshold,
+                automatizeThreshold: Int = SkillEngine.defaultAutomatizeThreshold,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.queue = queue
         self.store = store
         self.practiceThreshold = practiceThreshold
+        self.automatizeThreshold = max(automatizeThreshold, practiceThreshold)
         self.now = now
     }
+
+    /// El reloj del engine (inyectable): el runner resuelve `{hoy}` con él.
+    public func currentDate() -> Date { now() }
 
     // MARK: - Carga
 
@@ -233,14 +303,14 @@ public actor SkillEngine {
         }) ?? [])
     }
 
-    /// Lista para Ajustes: cada skill del dir con su estado learned/practiced.
+    /// Lista para Ajustes: cada skill del dir con su nivel learned/practiced/automatized.
     public func overview() -> [SkillOverview] {
         let disabled = disabledNames()
         return loadSkills().map { skill in
             let stats = stats(skill.name)
             return SkillOverview(name: skill.name,
                                  summary: skill.description.isEmpty ? skill.when : skill.description,
-                                 practiced: stats?.practiced ?? false,
+                                 level: stats?.level ?? .learned,
                                  totalSuccess: stats?.totalSuccess ?? 0,
                                  totalFail: stats?.totalFail ?? 0,
                                  successStreak: stats?.successStreak ?? 0,
@@ -291,30 +361,39 @@ public actor SkillEngine {
         }).flatMap { $0 } ?? false
     }
 
+    /// Racha ≥K=5 (y practiced): el runner puede correr sus aferentes solo.
+    /// Derivado de la racha — un fallo la resetea y desautomatiza sin columna extra.
+    public func isAutomatized(_ name: String) -> Bool {
+        stats(name)?.automatized ?? false
+    }
+
     public func stats(_ name: String) -> SkillStats? {
         try? queue.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM skill_practice WHERE skill_name=?", arguments: [name])
                 .map {
-                    SkillStats(name: name,
-                               successStreak: $0["success_streak"] ?? 0,
-                               totalSuccess: $0["total_success"] ?? 0,
-                               totalFail: $0["total_fail"] ?? 0,
-                               practiced: ($0["practiced"] as Int? ?? 0) == 1)
+                    let streak: Int = $0["success_streak"] ?? 0
+                    let practiced = ($0["practiced"] as Int? ?? 0) == 1
+                    return SkillStats(name: name,
+                                      successStreak: streak,
+                                      totalSuccess: $0["total_success"] ?? 0,
+                                      totalFail: $0["total_fail"] ?? 0,
+                                      practiced: practiced,
+                                      automatized: practiced && streak >= self.automatizeThreshold)
                 }
         } ?? nil
     }
 
-    /// Un skill practiced se compila: los pasos aferentes corren sin LLM paso a
-    /// paso; los eferentes se separan y SIEMPRE piden ok. nil si no está practiced.
+    /// Un skill automatized (racha ≥K=5) se compila: los pasos aferentes corren
+    /// sin LLM paso a paso; los eferentes se separan y JAMÁS se auto-ejecutan.
+    /// nil si no está automatized (practiced con racha 3–4 aún no alcanza).
     public func automatize(_ name: String) -> CompiledSkill? {
-        guard isPracticed(name), let skill = loadSkills().first(where: { $0.name == name }) else { return nil }
+        guard isAutomatized(name), let skill = loadSkills().first(where: { $0.name == name }) else { return nil }
         var afferent: [String] = []
         var efferent: [String] = []
         for step in skill.steps {
-            if Self.efferentTools.contains(where: { step.hasPrefix($0) }) { efferent.append(step) }
-            else { afferent.append(step) }
+            if Self.isEfferent(step: step) { efferent.append(step) } else { afferent.append(step) }
         }
-        return CompiledSkill(name: name, afferentSteps: afferent, efferentSteps: efferent)
+        return CompiledSkill(name: name, afferentSteps: afferent, efferentSteps: efferent, skill: skill)
     }
 
     /// Desautomatización explícita (el Consolidator la puede invocar si lo Real

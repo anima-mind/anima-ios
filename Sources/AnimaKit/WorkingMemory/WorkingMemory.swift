@@ -233,6 +233,15 @@ public actor WorkingMemory {
         return activatedSkill
     }
 
+    /// El skill automatizado del turno: el bloque `[SKILL AUTOMATIZADA: …]` con
+    /// los aferentes ya ejecutados, en la misma posición y presupuesto.
+    @discardableResult
+    public func setActivatedAutomation(_ run: SkillRun, skill: Skill) -> SkillInjection {
+        let injection = run.injection(for: skill, budgetChars: profile.maxSkillChars)
+        activatedSkill = injection
+        return injection
+    }
+
     /// Fase 3: el SelfModel vivo reemplaza al SelfView estático provisional.
     public func updateSelfView(_ view: ProvisionalSelfView) {
         selfView = view

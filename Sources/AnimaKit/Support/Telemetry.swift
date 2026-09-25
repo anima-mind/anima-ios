@@ -46,10 +46,17 @@ public final class Telemetry: Sendable {
         public var endReason: String        // endTurn / stopped:loopDetected / error …
         public var skillToolCalls: Int
         public var skillToolErrors: Int
+        /// El SkillRunner corrió (skill automatizado + match ≥ umbral alto).
+        public var automatized: Bool
+        /// Pasos aferentes que el runner ejecutó sin LLM.
+        public var automatedSteps: Int
+        /// AutomationAbort.rawValue si abortó; nil si completó o no corrió.
+        public var automationAbort: String?
 
         public init(sessionId: SessionID, skillName: String?, score: Double?, injectedChars: Int,
                     truncated: Bool, outcome: String, endReason: String,
-                    skillToolCalls: Int, skillToolErrors: Int) {
+                    skillToolCalls: Int, skillToolErrors: Int,
+                    automatized: Bool = false, automatedSteps: Int = 0, automationAbort: String? = nil) {
             self.sessionId = sessionId
             self.skillName = skillName
             self.score = score
@@ -59,6 +66,9 @@ public final class Telemetry: Sendable {
             self.endReason = endReason
             self.skillToolCalls = skillToolCalls
             self.skillToolErrors = skillToolErrors
+            self.automatized = automatized
+            self.automatedSteps = automatedSteps
+            self.automationAbort = automationAbort
         }
     }
 
@@ -68,11 +78,12 @@ public final class Telemetry: Sendable {
             try db.execute(sql: """
                 INSERT INTO skill_turn_telemetry
                 (session_id, skill_name, score, injected_chars, truncated, outcome, end_reason,
-                 skill_tool_calls, skill_tool_errors, ts)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                 skill_tool_calls, skill_tool_errors, automatized, automated_steps, automation_abort, ts)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, arguments: [row.sessionId, row.skillName, row.score, row.injectedChars,
                                  row.truncated ? 1 : 0, row.outcome, row.endReason,
-                                 row.skillToolCalls, row.skillToolErrors, now])
+                                 row.skillToolCalls, row.skillToolErrors,
+                                 row.automatized ? 1 : 0, row.automatedSteps, row.automationAbort, now])
         }
     }
 
@@ -82,7 +93,9 @@ public final class Telemetry: Sendable {
                 SkillTurnRow(sessionId: $0["session_id"], skillName: $0["skill_name"], score: $0["score"],
                              injectedChars: $0["injected_chars"], truncated: ($0["truncated"] as Int) == 1,
                              outcome: $0["outcome"], endReason: $0["end_reason"],
-                             skillToolCalls: $0["skill_tool_calls"], skillToolErrors: $0["skill_tool_errors"])
+                             skillToolCalls: $0["skill_tool_calls"], skillToolErrors: $0["skill_tool_errors"],
+                             automatized: ($0["automatized"] as Int) == 1, automatedSteps: $0["automated_steps"],
+                             automationAbort: $0["automation_abort"])
             }
         }
     }

@@ -3,7 +3,9 @@
 // Sensorimotor (permisos 2-capas §5.7), y el turno respeta las stop conditions
 // completas (maxIter, cancel, presupuesto de tokens, latencia y loop) + relieve
 // de presión ante overflow. §5.7 SkillEngine: el skill que matchea el turno se
-// inyecta como conocimiento al contexto activado y se practica al cerrar.
+// inyecta como conocimiento al contexto activado y se practica al cerrar; si
+// está AUTOMATIZADO y el match es de alta confianza, el SkillRunner corre antes
+// sus pasos aferentes (System 1) y el LLM redacta UNA vez con los resultados.
 
 import Foundation
 
@@ -14,6 +16,7 @@ public enum LoopEvent: Sendable, Equatable {
     case toolStarted(name: String)
     case toolFinished(name: String, isError: Bool)
     case assistantMessage([ContentBlock])   // mensaje del assistant persistido
+    case skillAutomated(SkillAutomationSummary)   // el runner ya corrió los aferentes
     case refused
     case turnFinished(stopReason: StopReason?)
     case stopped(StopConditions.Stop)
@@ -191,12 +194,21 @@ public actor AgentLoop {
             }
 
             // §5.7: el skill que matchea el turno entra como CONOCIMIENTO en la
-            // misma posición (máx 1, el de mejor score, truncado al perfil).
+            // misma posición (máx 1, el de mejor score, truncado al perfil). Si
+            // está automatizado y el match supera el umbral alto, entra en su
+            // lugar el bloque con los aferentes YA ejecutados.
             if let skillEngine {
                 skillTurn.wired = true
                 let available = Set(allSpecs.map(\.name))
                 skillTurn.match = await skillEngine.bestMatch(userText, availableTools: available)
-                skillTurn.injection = await workingMemory.setActivatedSkill(skillTurn.match?.skill)
+                if let match = skillTurn.match {
+                    skillTurn.injection = await runAutomation(match, engine: skillEngine, userText: userText,
+                                                              clientTools: Set(clientSpecs.map(\.name)),
+                                                              sessionId: sessionId, skillTurn: skillTurn, emit: emit)
+                }
+                if skillTurn.injection == nil {
+                    skillTurn.injection = await workingMemory.setActivatedSkill(skillTurn.match?.skill)
+                }
             }
 
             // Assemble con orden estable (§5.1). El turno del usuario se persiste
@@ -340,13 +352,44 @@ public actor AgentLoop {
         }
     }
 
+    /// System 1 con guardias de System 2 (§5.7, §B.6): corre los aferentes de un
+    /// skill automatizado. Devuelve el bloque inyectado, o nil ⇒ el turno cae a
+    /// inyección de conocimiento normal (abort neutral o desautomatización).
+    private func runAutomation(_ match: SkillMatch, engine: SkillEngine, userText: String,
+                               clientTools: Set<String>, sessionId: SessionID, skillTurn: SkillTurn,
+                               emit: @escaping @Sendable (LoopEvent) -> Void) async -> SkillInjection? {
+        guard match.score >= SkillEngine.automationThreshold,
+              let compiled = await engine.automatize(match.skill.name) else { return nil }
+        let context = SkillRunContext(turnText: userText, now: await engine.currentDate())
+        let sensorimotor = self.sensorimotor
+        let run = await SkillRunner.run(compiled, context: context, availableTools: clientTools) { name, input in
+            await sensorimotor.executePreauthorized(name: name, input: input)
+        }
+        skillTurn.automation = run
+        if run.completed {
+            emit(.skillAutomated(run.summary))
+            return await workingMemory.setActivatedAutomation(run, skill: compiled.skill)
+        }
+        // Desautomatización dirigida por lo Real: el fallo entra al RealRegister
+        // como patrón (la taxonomía de siempre); el practice(.failure) lo aplica
+        // concludeSkill al cerrar el turno.
+        if run.abort?.punishes == true, let call = run.failedCall, let result = run.failedResult {
+            await realRegister?.record(.tool(name: call.tool, input: call.input, result: result,
+                                             sessionId: sessionId, now: Date()))
+        }
+        return nil
+    }
+
     /// Cierre del turno para el SkillEngine: practice del skill inyectado según
     /// cómo terminó + telemetría de match/inyección/outcome (una fila por turno).
     private func concludeSkill(_ skillTurn: SkillTurn, end: TurnEnd, sessionId: SessionID) async {
         guard let skillEngine, skillTurn.wired else { return }
-        let outcome = skillTurn.match.map { _ in
+        var outcome = skillTurn.match.map { _ in
             SkillTurn.outcome(end: end, skillToolFailed: skillTurn.skillToolErrors > 0,
                               ownerRejected: skillTurn.skillToolRejections > 0) }
+        // Un aferente automatizado que falló (o un deny) rompe la racha aunque el
+        // turno luego cierre bien por inyección: el compilado ya no es confiable.
+        if skillTurn.automation?.abort?.punishes == true { outcome = .failure }
         if let name = skillTurn.match?.skill.name, let outcome {
             await skillEngine.practice(name, outcome: outcome)
         }
@@ -359,7 +402,10 @@ public actor AgentLoop {
             outcome: outcome?.rawValue ?? "none",
             endReason: end.label,
             skillToolCalls: skillTurn.skillToolCalls,
-            skillToolErrors: skillTurn.skillToolErrors))
+            skillToolErrors: skillTurn.skillToolErrors,
+            automatized: skillTurn.automation != nil,
+            automatedSteps: skillTurn.automation?.executed.count ?? 0,
+            automationAbort: skillTurn.automation?.abort?.rawValue))
     }
 
     /// Un intento de completar (con retry ante errores previos a cualquier delta).
@@ -454,6 +500,9 @@ final class SkillTurn {
     var wired = false
     var match: SkillMatch?
     var injection: SkillInjection?
+    /// El run del SkillRunner (nil ⇒ el skill no estaba automatizado o el match
+    /// no superó el umbral alto).
+    var automation: SkillRun?
     private(set) var skillToolCalls = 0
     private(set) var skillToolErrors = 0
     private(set) var skillToolRejections = 0

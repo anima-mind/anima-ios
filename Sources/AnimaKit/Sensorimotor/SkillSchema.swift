@@ -41,5 +41,12 @@ public enum SkillSchema {
                 );
                 """)
         }
+        // Runner de automatize: por turno, si corrió el SkillRunner, cuántos
+        // aferentes ejecutó sin LLM y por qué abortó (nil = completó).
+        m.registerMigration("v8-skill-automation") { db in
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automatized INTEGER NOT NULL DEFAULT 0")
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automated_steps INTEGER NOT NULL DEFAULT 0")
+            try db.execute(sql: "ALTER TABLE skill_turn_telemetry ADD COLUMN automation_abort TEXT")
+        }
     }
 }

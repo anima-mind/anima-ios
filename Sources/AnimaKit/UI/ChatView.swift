@@ -151,7 +151,7 @@ public final class ChatViewModel: ObservableObject {
                 if assistant.text.isEmpty { assistant.text = message }
             case .stopped(let stop):
                 errorText = "Turno detenido: \(stop)"
-            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
+            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished, .skillAutomated:
                 break
             }
             assistant.isStreaming = true

@@ -2,7 +2,8 @@
 // WorkingMemory (orden estable §5.1), la ejecución de tools pasa por el
 // Sensorimotor (permisos 2-capas §5.7), y el turno respeta las stop conditions
 // completas (maxIter, cancel, presupuesto de tokens, latencia y loop) + relieve
-// de presión ante overflow.
+// de presión ante overflow. §5.7 SkillEngine: el skill que matchea el turno se
+// inyecta como conocimiento al contexto activado y se practica al cerrar.
 
 import Foundation
 
@@ -39,6 +40,8 @@ public actor AgentLoop {
     // RealRegister recibe los fallos y demanda restructures (rutea a .restructure).
     private let selfModel: SelfModel?
     private let realRegister: RealRegister?
+    // §5.7: skills = conocimiento procedural; nil ⇒ el turno no cambia en nada.
+    private let skillEngine: SkillEngine?
 
     /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(
@@ -61,6 +64,7 @@ public actor AgentLoop {
         memoryBudget: Int = 8,
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
+        skillEngine: SkillEngine? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -70,7 +74,7 @@ public actor AgentLoop {
                   workingMemory: workingMemory, permissionPolicy: permissionPolicy, confirmation: confirmation,
                   toolTimeout: toolTimeout, stopConditions: stopConditions, retryPolicy: retryPolicy,
                   brain: brain, inbox: inbox, memoryBudget: memoryBudget, selfModel: selfModel,
-                  realRegister: realRegister, sleep: sleep)
+                  realRegister: realRegister, skillEngine: skillEngine, sleep: sleep)
     }
 
     /// Init por modo de operación: el selector decide el córtex de cada turno y
@@ -92,6 +96,7 @@ public actor AgentLoop {
         memoryBudget: Int = 8,
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
+        skillEngine: SkillEngine? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -110,6 +115,7 @@ public actor AgentLoop {
         self.memoryBudget = memoryBudget
         self.selfModel = selfModel
         self.realRegister = realRegister
+        self.skillEngine = skillEngine
         self.sleep = sleep
     }
 
@@ -132,6 +138,15 @@ public actor AgentLoop {
     }
 
     private func runTurn(sessionId: SessionID, content: [ContentBlock], emit: @escaping @Sendable (LoopEvent) -> Void) async {
+        let skillTurn = SkillTurn()
+        let end = await runTurnBody(sessionId: sessionId, content: content, emit: emit, skillTurn: skillTurn)
+        await concludeSkill(skillTurn, end: end, sessionId: sessionId)
+    }
+
+    /// El cuerpo del turno; cada salida devuelve CÓMO terminó (para practice).
+    private func runTurnBody(sessionId: SessionID, content: [ContentBlock],
+                             emit: @escaping @Sendable (LoopEvent) -> Void,
+                             skillTurn: SkillTurn) async -> TurnEnd {
         let turnStart = Date()
         do {
             let clientSpecs = await sensorimotor.toolSpecs()
@@ -153,7 +168,7 @@ public actor AgentLoop {
             }
             guard let binding = selector.binding(for: turnClass) else {
                 emit(.error("El modo \(selector.modeTitle) no tiene un modelo configurado (¿falta el token?)."))
-                return
+                return .error
             }
             let route = binding.router.route(turnClass)
             await workingMemory.updateRestructureBanner(restructureBanner)
@@ -175,6 +190,15 @@ public actor AgentLoop {
                 await workingMemory.setActivatedMemories(activated)
             }
 
+            // §5.7: el skill que matchea el turno entra como CONOCIMIENTO en la
+            // misma posición (máx 1, el de mejor score, truncado al perfil).
+            if let skillEngine {
+                skillTurn.wired = true
+                let available = Set(allSpecs.map(\.name))
+                skillTurn.match = await skillEngine.bestMatch(userText, availableTools: available)
+                skillTurn.injection = await workingMemory.setActivatedSkill(skillTurn.match?.skill)
+            }
+
             // Assemble con orden estable (§5.1). El turno del usuario se persiste
             // aparte; los bloques ephemeral (system, activado) no van al transcript.
             let turn = TurnInput(sessionId: sessionId, content: content)
@@ -193,13 +217,11 @@ public actor AgentLoop {
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
-                switch stopConditions.evaluate(iteration: iteration, tokensUsed: tokensUsed, elapsed: elapsed, isCancelled: Task.isCancelled) {
-                case .none: break
-                case .cancelled: emit(.stopped(.cancelled)); return
-                case .maxIterations: emit(.stopped(.maxIterations)); return
-                case .budgetExceeded: emit(.stopped(.budgetExceeded)); return
-                case .latencyExceeded: emit(.stopped(.latencyExceeded)); return
-                case .loopDetected: emit(.stopped(.loopDetected)); return
+                let stop = stopConditions.evaluate(iteration: iteration, tokensUsed: tokensUsed,
+                                                   elapsed: elapsed, isCancelled: Task.isCancelled)
+                if stop != .none {
+                    emit(.stopped(stop))
+                    return .stopped(stop)
                 }
 
                 // On-device (§4.9): relieve mecánico local ANTES de llamar si la
@@ -237,7 +259,7 @@ public actor AgentLoop {
                         continue
                     }
                     emit(.error("Contexto excedido aún tras aliviar la presión."))
-                    return
+                    return .error
                 } catch let error as ClassifiedError {
                     // Fatal del provider: lo Real lo registra (§5.6) antes de rendirse.
                     if case .fatal = error {
@@ -245,10 +267,10 @@ public actor AgentLoop {
                                                                sessionId: sessionId, now: Date()))
                     }
                     emit(.error(Self.describe(error)))
-                    return
+                    return .error
                 } catch {
                     emit(.error(error.localizedDescription))
-                    return
+                    return .error
                 }
 
                 lastUsage = response.usage
@@ -262,7 +284,7 @@ public actor AgentLoop {
                     emit(.refused)
                     try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
-                    return
+                    return .refused
                 }
 
                 let assistantMessage = Message.assistant(response.content)
@@ -284,12 +306,13 @@ public actor AgentLoop {
                             await realRegister?.record(.loop(name: call.name, input: call.input,
                                                              sessionId: sessionId, now: Date()))
                             emit(.stopped(.loopDetected))
-                            return
+                            return .stopped(.loopDetected)
                         }
                         emit(.toolStarted(name: call.name))
                         toolCallCount += 1
                         let result = await sensorimotor.execute(name: call.name, input: call.input)
                         emit(.toolFinished(name: call.name, isError: result.isError))
+                        skillTurn.recordTool(call.name, isError: result.isError)
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
                         if result.isError {
                             await realRegister?.record(.tool(name: call.name, input: call.input,
@@ -308,12 +331,33 @@ public actor AgentLoop {
                     try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
                                           usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
                     emit(.turnFinished(stopReason: response.stopReason))
-                    return
+                    return .finished(response.stopReason)
                 }
             }
         } catch {
             emit(.error(error.localizedDescription))
+            return .error
         }
+    }
+
+    /// Cierre del turno para el SkillEngine: practice del skill inyectado según
+    /// cómo terminó + telemetría de match/inyección/outcome (una fila por turno).
+    private func concludeSkill(_ skillTurn: SkillTurn, end: TurnEnd, sessionId: SessionID) async {
+        guard let skillEngine, skillTurn.wired else { return }
+        let outcome = skillTurn.match.map { _ in SkillTurn.outcome(end: end, skillToolFailed: skillTurn.skillToolErrors > 0) }
+        if let name = skillTurn.match?.skill.name, let outcome {
+            await skillEngine.practice(name, outcome: outcome)
+        }
+        try? telemetry.recordSkillTurn(.init(
+            sessionId: sessionId,
+            skillName: skillTurn.match?.skill.name,
+            score: skillTurn.match?.score,
+            injectedChars: skillTurn.injection?.text.count ?? 0,
+            truncated: skillTurn.injection?.truncated ?? false,
+            outcome: outcome?.rawValue ?? "none",
+            endReason: end.label,
+            skillToolCalls: skillTurn.skillToolCalls,
+            skillToolErrors: skillTurn.skillToolErrors))
     }
 
     /// Un intento de completar (con retry ante errores previos a cualquier delta).
@@ -382,6 +426,52 @@ public actor AgentLoop {
             where status == OnDeviceProvider.unavailableStatus || status == OnDeviceProvider.failureStatus:
             return message   // modelo local: el porqué ya viene legible
         case .fatal(let status, let message): return "Error \(status): \(message)"
+        }
+    }
+}
+
+/// Cómo terminó un turno (para el practice del skill inyectado).
+enum TurnEnd: Equatable {
+    case finished(StopReason?)
+    case stopped(StopConditions.Stop)
+    case refused
+    case error
+
+    var label: String {
+        switch self {
+        case .finished(let reason): return reason.map { "\($0)" } ?? "none"
+        case .stopped(let stop): return "stopped:\(stop)"
+        case .refused: return "refused"
+        case .error: return "error"
+        }
+    }
+}
+
+/// Estado del skill durante un turno. Vive dentro del actor (no cruza hilos).
+final class SkillTurn {
+    var wired = false
+    var match: SkillMatch?
+    var injection: SkillInjection?
+    private(set) var skillToolCalls = 0
+    private(set) var skillToolErrors = 0
+
+    /// Solo cuentan las tools que el skill toca (pasos + requires_tools).
+    func recordTool(_ name: String, isError: Bool) {
+        guard let match, match.skill.toolNames.contains(name) else { return }
+        skillToolCalls += 1
+        if isError { skillToolErrors += 1 }
+    }
+
+    /// Criterio de éxito (§5.7 practice): cerró endTurn y ninguna tool del skill
+    /// falló ⇒ success; una tool del skill falló o el turno se detuvo por stop
+    /// condition (loop, presupuesto, latencia, maxIter, cancel) ⇒ failure; lo
+    /// demás (error del provider, refusal, max_tokens) no dice nada del skill ⇒ neutral.
+    static func outcome(end: TurnEnd, skillToolFailed: Bool) -> SkillOutcome {
+        if skillToolFailed { return .failure }
+        switch end {
+        case .finished(.endTurn): return .success
+        case .stopped: return .failure
+        case .finished, .refused, .error: return .neutral
         }
     }
 }

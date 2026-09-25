@@ -21,13 +21,18 @@ public struct ContextProfile: Sendable, Equatable {
     /// Máximo de memorias activadas que entran al bloque etiquetado.
     public var maxActivatedMemories: Int
     public var reliefMode: ReliefMode
+    /// Tope (chars) del bloque [SKILL: …] inyectado al contexto activado: en
+    /// on-device el espacio es oro, el skill se trunca (pasos antes que notas).
+    public var maxSkillChars: Int
 
     public init(contextBudgetTokens: Int, historyBudgetTokens: Int,
-                maxActivatedMemories: Int, reliefMode: ReliefMode) {
+                maxActivatedMemories: Int, reliefMode: ReliefMode,
+                maxSkillChars: Int = 6000) {
         self.contextBudgetTokens = contextBudgetTokens
         self.historyBudgetTokens = historyBudgetTokens
         self.maxActivatedMemories = maxActivatedMemories
         self.reliefMode = reliefMode
+        self.maxSkillChars = maxSkillChars
     }
 
     /// Claude (Opus/Haiku): el comportamiento previo, sin cambios.
@@ -48,7 +53,8 @@ public struct ContextProfile: Sendable, Equatable {
     /// sitio a instructions + tools + la respuesta.
     public static let onDevice = ContextProfile(
         contextBudgetTokens: 4096, historyBudgetTokens: 1000,
-        maxActivatedMemories: 3, reliefMode: .localMechanical)
+        maxActivatedMemories: 3, reliefMode: .localMechanical,
+        maxSkillChars: 600)   // ~170 tokens: pasos sí, notas largas no
 }
 
 // MARK: - Relieve mecánico local (on-device)

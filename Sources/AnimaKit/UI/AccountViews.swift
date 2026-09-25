@@ -29,6 +29,7 @@ struct AppleSignInControl: View {
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
             .disabled(account.isWorking)
             .opacity(account.isWorking ? 0.5 : 1)
+            .accessibilityIdentifier("account.appleSignIn")
         #else
         Text("Sign in with Apple solo está disponible en iOS.")
             .font(Theme.Type_.meta)
@@ -141,6 +142,7 @@ struct AccountStep: View {
                     .foregroundStyle(Theme.Colors.textMuted)
                     .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("onboarding.account.skip")
             }
         }
     }
@@ -233,6 +235,8 @@ struct AccountSettingsSection: View {
         }
         .frame(minHeight: 48)
         .padding(.horizontal, Theme.Space.cardPad)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.account.status")
     }
 
     private var separator: some View {

@@ -17,6 +17,8 @@ public final class ChatViewModel: ObservableObject {
         public var isError: Bool = false
         public var isStreaming: Bool = false
         public var isRefusal: Bool = false
+        /// Skill automatizada del turno: pasos aferentes que el runner ya corrió.
+        public var automation: SkillAutomationSummary?
         // Fase 4 (§5.8): propuesta proactiva del deseo. resolved oculta las acciones.
         public var isProactive: Bool = false
         public var intentionId: String?
@@ -151,7 +153,9 @@ public final class ChatViewModel: ObservableObject {
                 if assistant.text.isEmpty { assistant.text = message }
             case .stopped(let stop):
                 errorText = "Turno detenido: \(stop)"
-            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished, .skillAutomated:
+            case .skillAutomated(let summary):
+                assistant.automation = summary
+            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
                 break
             }
             assistant.isStreaming = true
@@ -170,6 +174,7 @@ public final class ChatViewModel: ObservableObject {
 public struct ChatView: View {
     @ObservedObject private var model: ChatViewModel
     @State private var expandedThoughts: Set<UUID> = []
+    @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
     @State private var captureNotice: String?
 
@@ -298,6 +303,9 @@ public struct ChatView: View {
             if message.isProactive {
                 proactiveCard(message)
             } else {
+                if let automation = message.automation {
+                    automationLine(message.id, automation)
+                }
                 if !message.thinking.isEmpty || (message.isStreaming && message.text.isEmpty) {
                     thoughtLine(message)
                 }
@@ -368,6 +376,65 @@ public struct ChatView: View {
                             .fill(Theme.Colors.border)
                             .frame(width: 1)
                     }
+            }
+        }
+    }
+
+    /// Línea de skill automatizada: mismo patrón que la thought line —
+    /// "⚡ <skill> ejecutó N pasos", tap expande los pasos con su resultado.
+    /// Accent en línea y glow, jamás fill.
+    @ViewBuilder
+    private func automationLine(_ id: UUID, _ automation: SkillAutomationSummary) -> some View {
+        let expanded = expandedAutomations.contains(id)
+        let count = automation.steps.count
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if expanded { expandedAutomations.remove(id) } else { expandedAutomations.insert(id) }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .animation(.easeOut(duration: 0.2), value: expanded)
+                    Image(systemName: "bolt")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(Theme.Colors.accent)
+                        .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 3)
+                    Text("\(automation.skillName) ejecutó \(count) \(count == 1 ? "paso" : "pasos")")
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("chat.skillAutomation")
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(automation.steps.enumerated()), id: \.offset) { _, step in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(step.step)
+                                .font(Theme.Type_.meta)
+                                .foregroundStyle(Theme.Colors.textMuted)
+                            Text(step.isError ? "sin resultado" : step.result)
+                                .font(Theme.Type_.secondary)
+                                .foregroundStyle(step.isError ? Theme.Colors.textFaint : Theme.Colors.text)
+                                .lineLimit(4)
+                        }
+                    }
+                    ForEach(automation.pending, id: \.self) { pending in
+                        Text("Pendiente de tu ok: \(pending)")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                    }
+                }
+                .padding(.leading, Theme.Space.cardPad)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Theme.Colors.accent)
+                        .frame(width: 1)
+                        .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 3)
+                }
             }
         }
     }

@@ -1,5 +1,6 @@
 // SkillsSettingsSection.swift — sección Skills de Ajustes (§5.7): los skills del
-// dir sandbox (Documents/skills) con su estado learned → practiced y un toggle
+// dir sandbox (Documents/skills) con su nivel aprendida → practicada (3 éxitos
+// seguidos) → automatizada (5: corre sola sus lecturas) y un toggle
 // por skill. Import por Files/paste: "pronto" (Documents aún no se expone a
 // Files: haría visible también anima.sqlite).
 
@@ -27,10 +28,17 @@ public final class SkillsViewModel: ObservableObject {
         }
     }
 
+    public static func title(_ level: SkillLevel) -> String {
+        switch level {
+        case .learned: return "aprendida"
+        case .practiced: return "practicada"
+        case .automatized: return "automatizada"
+        }
+    }
+
     public static func status(_ row: SkillOverview) -> String {
-        let state = row.practiced ? "practicada" : "aprendida"
         let successes = row.totalSuccess == 1 ? "1 éxito" : "\(row.totalSuccess) éxitos"
-        return "\(state) · \(successes)"
+        return "\(title(row.level)) · \(successes)"
     }
 }
 
@@ -61,11 +69,19 @@ struct SkillsSettingsSection: View {
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
             }
-            Text("Conocimiento que Anima aplica cuando un pedido encaja; con 3 éxitos seguidos pasa a practicada. Importar desde Archivos o pegar una skill: pronto.")
+            Text("Conocimiento que Anima aplica cuando un pedido encaja. Con 3 éxitos seguidos pasa a practicada; con 5, a automatizada: corre sola sus lecturas y las escrituras siempre te piden ok. Un fallo la devuelve a aprendida. Importar desde Archivos o pegar una skill: pronto.")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textFaint)
         }
         .onAppear { model.load() }
+    }
+
+    private static func levelColor(_ level: SkillLevel) -> Color {
+        switch level {
+        case .learned: return Theme.Colors.textFaint
+        case .practiced: return Theme.Colors.textMuted
+        case .automatized: return Theme.Colors.accentText
+        }
     }
 
     private func skillRow(_ row: SkillOverview) -> some View {
@@ -74,9 +90,15 @@ struct SkillsSettingsSection: View {
                 Text(row.name)
                     .font(Theme.Type_.body)
                     .foregroundStyle(row.disabled ? Theme.Colors.textFaint : Theme.Colors.text)
-                Text(SkillsViewModel.status(row))
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(row.practiced ? Theme.Colors.accentText : Theme.Colors.textFaint)
+                HStack(spacing: 4) {
+                    if row.automatized {
+                        Image(systemName: "bolt")
+                            .font(.system(size: 10, weight: .light))
+                    }
+                    Text(SkillsViewModel.status(row))
+                }
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Self.levelColor(row.level))
             }
         }
         .tint(Theme.Colors.accent)

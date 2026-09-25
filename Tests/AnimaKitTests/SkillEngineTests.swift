@@ -149,3 +149,17 @@ import Testing
         #expect(AudioTool().operation(for: .null) == "record")
     }
 }
+
+#if canImport(SwiftUI)
+@Suite struct SkillsSettingsStatusTests {
+    @Test @MainActor func statusShowsThreeLevels() {
+        func row(_ level: SkillLevel, _ n: Int) -> SkillOverview {
+            SkillOverview(name: "x", summary: "", level: level, totalSuccess: n, totalFail: 0,
+                          successStreak: n, disabled: false)
+        }
+        #expect(SkillsViewModel.status(row(.learned, 0)) == "aprendida · 0 éxitos")
+        #expect(SkillsViewModel.status(row(.practiced, 3)) == "practicada · 3 éxitos")
+        #expect(SkillsViewModel.status(row(.automatized, 1)) == "automatizada · 1 éxito")
+    }
+}
+#endif

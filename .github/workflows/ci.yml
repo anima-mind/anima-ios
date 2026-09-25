@@ -50,3 +50,48 @@ jobs:
           -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm-ci
           build CODE_SIGNING_ALLOWED=NO
+
+  ui-test:
+    name: App shell — XCUITest (iOS Simulator)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Cache SPM (Xcode)
+        uses: actions/cache@v4
+        with:
+          path: .spm-ci
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('App/project.yml', 'Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
+      - name: Simulador iOS 26
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          cands = [d for rt, ds in devices.items() if "iOS-26" in rt for d in ds if d["name"].startswith("iPhone")]
+          print(cands[0]["udid"] if cands else "")')
+          if [ -z "$UDID" ]; then
+            RUNTIME=$(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          rts = [r for r in json.load(sys.stdin)["runtimes"] if r["isAvailable"] and r["version"].startswith("26")]
+          print(rts[-1]["identifier"] if rts else "")')
+            [ -n "$RUNTIME" ] || { echo "Sin runtime iOS 26 en el runner" >&2; exit 1; }
+            UDID=$(xcrun simctl create "Anima UITest" "iPhone 17 Pro" "$RUNTIME")
+          fi
+          xcrun simctl boot "$UDID" || true
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: XCUITest
+        env:
+          SPM_DIR: .spm-ci
+          RESULT_BUNDLE: build/AnimaUITests.xcresult
+        run: ./scripts/ui-test.sh "${{ steps.sim.outputs.udid }}"
+      - name: Subir .xcresult (fallo)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimaUITests-xcresult
+          path: build/AnimaUITests.xcresult
+          retention-days: 7

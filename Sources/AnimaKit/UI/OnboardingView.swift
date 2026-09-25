@@ -54,6 +54,7 @@ public struct LandingView: View {
                 Spacer()
                 VStack(spacing: Theme.Space.stack) {
                     PrimaryOutlineButton(title: "Dar vida a una mente", action: onBegin)
+                        .accessibilityIdentifier("landing.begin")
                     // v1: restaurar aún no está cableado — deshabilitado, honesto.
                     VStack(spacing: 2) {
                         Text("Restaurar una mente exportada")
@@ -447,6 +448,7 @@ public struct OnboardingFlowView: View {
                     .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("onboarding.back")
             ProgressSegments(count: OnboardingViewModel.stepCount, index: model.progressIndex)
             Spacer(minLength: Theme.minHitTarget)
         }
@@ -580,6 +582,8 @@ struct ProviderStep: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!enabled)
+                    .accessibilityIdentifier("onboarding.provider.\(option.provider.rawValue)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                     if index < options.count - 1 {
                         Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
                     }
@@ -642,6 +646,7 @@ struct APIKeyStep: View {
                             RoundedRectangle(cornerRadius: Theme.Radius.control)
                                 .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
                         .onSubmit { model.validateKey() }
+                        .accessibilityIdentifier("onboarding.apiKey.field")
                     Button("Pegar") {
                         #if os(iOS)
                         if let pasted = UIPasteboard.general.string {
@@ -653,9 +658,11 @@ struct APIKeyStep: View {
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.accentText)
                     .frame(height: Theme.minHitTarget)
+                    .accessibilityIdentifier("onboarding.apiKey.paste")
                 }
 
                 statusLine
+                    .accessibilityIdentifier("onboarding.apiKey.status")
 
                 if model.offersHybrid {
                     hybridToggle
@@ -671,6 +678,7 @@ struct APIKeyStep: View {
                         ForEach(OnboardingDefaults.budgetOptions, id: \.self) { usd in
                             let selected = model.selectedBudget == usd
                             Button("$\(usd)") { model.selectBudget(usd) }
+                                .accessibilityIdentifier("onboarding.budget.\(usd)")
                                 .font(Theme.Type_.tabular(Theme.Type_.secondary))
                                 .foregroundStyle(selected ? Theme.Colors.accentText : Theme.Colors.textMuted)
                                 .padding(.horizontal, 14)
@@ -719,6 +727,7 @@ struct APIKeyStep: View {
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("onboarding.apiKey.hybrid")
     }
 
     @ViewBuilder
@@ -812,6 +821,8 @@ struct PermissionsStep: View {
                         .padding(.horizontal, Theme.Space.cardPad)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("onboarding.permission.\(permission.id)")
+                    .accessibilityAddTraits(on ? .isSelected : [])
                     if index < Self.permissions.count - 1 {
                         Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
                     }
@@ -872,6 +883,7 @@ struct BirthStep: View {
                 Spacer()
                 if !model.birthComplete {
                     Button("Saltar el resto") { model.skipRest() }
+                        .accessibilityIdentifier("birth.skipRest")
                         .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.textMuted)
                 }
@@ -887,6 +899,8 @@ struct BirthStep: View {
                         }
                         if model.birthComplete {
                             summaryCard.id("summary")
+                                .accessibilityElement(children: .contain)
+                                .accessibilityIdentifier("birth.summary")
                         }
                     }
                     .padding(Theme.Space.screenInset)
@@ -904,6 +918,7 @@ struct BirthStep: View {
             if model.birthComplete {
                 VStack(spacing: Theme.Space.stack) {
                     PrimaryOutlineButton(title: "Comenzar") { model.begin() }
+                        .accessibilityIdentifier("birth.begin")
                 }
                 .padding(.horizontal, Theme.Space.screenInset)
                 .padding(.bottom, Theme.Space.sectionGap)
@@ -981,6 +996,7 @@ struct BirthStep: View {
                     HStack(spacing: 8) {
                         ForEach(model.currentChips, id: \.self) { chip in
                             Button(chip) { model.answerBirth(chip) }
+                                .accessibilityIdentifier("birth.chip.\(chip)")
                                 .font(Theme.Type_.secondary)
                                 .foregroundStyle(Theme.Colors.accentText)
                                 .padding(.horizontal, 12)
@@ -1007,6 +1023,7 @@ struct BirthStep: View {
                         RoundedRectangle(cornerRadius: Theme.Radius.control)
                             .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
                     .onSubmit { model.answerBirth(model.birthInput) }
+                    .accessibilityIdentifier("birth.input")
                 Button {
                     model.answerBirth(model.birthInput)
                 } label: {
@@ -1020,6 +1037,7 @@ struct BirthStep: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.birthInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityIdentifier("birth.send")
             }
             .padding(.horizontal, Theme.Space.screenInset)
             .padding(.bottom, Theme.Space.stack)
@@ -1114,6 +1132,7 @@ struct StepScaffold<Content: View>: View {
 
             PrimaryOutlineButton(title: primary.title, enabled: primary.enabled,
                                  action: primary.action)
+                .accessibilityIdentifier("onboarding.next")
                 .padding(.horizontal, Theme.Space.screenInset)
                 .padding(.bottom, Theme.Space.sectionGap)
         }

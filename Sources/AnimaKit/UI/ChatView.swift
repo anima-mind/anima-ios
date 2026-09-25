@@ -247,6 +247,7 @@ public struct ChatView: View {
                     PlasticityBadge(mind: model.mind)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("chat.plasticityBadge")
             }
             LinearGradient(colors: [Theme.Colors.border, Theme.Colors.border.opacity(0)],
                            startPoint: .leading, endPoint: .trailing)
@@ -285,6 +286,7 @@ public struct ChatView: View {
                 .containerRelativeFrame(.horizontal, count: 5, span: 4, spacing: 0,
                                         alignment: .trailing)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("chat.userMessage")
         }
     }
 
@@ -323,6 +325,9 @@ public struct ChatView: View {
                 StreamCaret()
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.assistantMessage")
+        .accessibilityValue(message.isStreaming ? "streaming" : "done")
     }
 
     /// Thought line: chevron que rota + "Pensando…" pulsante mientras razona,
@@ -481,6 +486,7 @@ public struct ChatView: View {
                             .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("chat.camera")
 
             TextField("Mensaje", text: $model.input, axis: .vertical)
                 .font(Theme.Type_.body)
@@ -496,6 +502,7 @@ public struct ChatView: View {
                     RoundedRectangle(cornerRadius: Theme.Radius.control)
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
                 .onSubmit { Task { await model.send() } }
+                .accessibilityIdentifier("chat.input")
 
             Button {
                 if hasDraft {
@@ -514,6 +521,7 @@ public struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.isStreaming && hasDraft)
+            .accessibilityIdentifier("chat.send")
         }
         .padding(Theme.Space.screenInset)
     }
@@ -571,6 +579,9 @@ public struct MindSheet: View {
             Theme.Colors.bg.ignoresSafeArea()
             VStack(spacing: Theme.Space.stack) {
                 BreathMark(size: 104, p: mind.p, phase: .breathing)
+                    .accessibilityElement()
+                    .accessibilityLabel("marca de la mente")
+                    .accessibilityIdentifier("mind.mark")
                 Text("p \(String(format: "%.2f", mind.p))")
                     .font(Theme.Type_.tabular(Theme.Type_.cardTitle))
                     .foregroundStyle(Theme.Colors.accentText)
@@ -588,11 +599,11 @@ public struct MindSheet: View {
                     .foregroundStyle(Theme.Colors.textFaint)
 
                 VStack(spacing: 0) {
-                    keyValueRow("cuerpo", "solo teléfono")
+                    keyValueRow("cuerpo", "solo teléfono", id: "body")
                     Divider().background(Theme.Colors.border)
-                    keyValueRow("régimen", mind.regimeLabel)
+                    keyValueRow("régimen", mind.regimeLabel, id: "regime")
                     Divider().background(Theme.Colors.border)
-                    keyValueRow("ciclos vividos", "\(mind.cycles)")
+                    keyValueRow("ciclos vividos", "\(mind.cycles)", id: "cycles")
                 }
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
@@ -607,9 +618,11 @@ public struct MindSheet: View {
             }
             .padding(.top, Theme.Space.sectionGap)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("mind.sheet")
     }
 
-    private func keyValueRow(_ key: String, _ value: String) -> some View {
+    private func keyValueRow(_ key: String, _ value: String, id: String) -> some View {
         HStack {
             Text(key)
                 .font(Theme.Type_.secondary)
@@ -621,6 +634,8 @@ public struct MindSheet: View {
         }
         .frame(height: 40)
         .padding(.horizontal, Theme.Space.cardPad)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("mind.row.\(id)")
     }
 }
 #endif

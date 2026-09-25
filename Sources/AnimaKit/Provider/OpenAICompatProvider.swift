@@ -42,7 +42,8 @@ public enum OpenAICompatRequestBuilder {
             "stream": .bool(true),
             "stream_options": .object(["include_usage": .bool(true)]),
             "max_completion_tokens": .int(opts.route.maxTokens),
-            "messages": .array(encodeMessages(context.messages, systemBase: opts.systemPromptBase)),
+            "messages": .array(encodeMessages(context.messages, systemBase: opts.systemPromptBase,
+                                              model: opts.route.model)),
         ]
         // Solo tools client-side, orden alfabético fijo. Array vacío → se omite
         // (el API rechaza `tools: []`).
@@ -66,10 +67,11 @@ public enum OpenAICompatRequestBuilder {
         ])
     }
 
-    static func encodeMessages(_ messages: [Message], systemBase: String) -> [JSONValue] {
+    static func encodeMessages(_ messages: [Message], systemBase: String, model: String = "") -> [JSONValue] {
         var out: [JSONValue] = [.object(["role": .string("system"), "content": .string(systemBase)])]
+        let gemini = model.lowercased().hasPrefix("gemini-")
         for message in messages {
-            out.append(contentsOf: encode(message))
+            out.append(contentsOf: encode(message, geminiModel: gemini))
         }
         return out
     }
@@ -77,7 +79,7 @@ public enum OpenAICompatRequestBuilder {
     /// Un Message neutro puede abrirse en varios mensajes del wire: los
     /// tool_result de un turno user van como mensajes role:tool (deben seguir
     /// inmediatamente al assistant con tool_calls) y el resto como role:user.
-    static func encode(_ message: Message) -> [JSONValue] {
+    static func encode(_ message: Message, geminiModel: Bool = false) -> [JSONValue] {
         switch message.role {
         case .system:
             let text = texts(message.content).joined(separator: "\n\n")
@@ -85,13 +87,26 @@ public enum OpenAICompatRequestBuilder {
 
         case .assistant:
             let text = texts(message.content).joined()
+            // En llamadas paralelas Gemini firma solo la primera: el comodín va
+            // únicamente si NINGUNA trae firma propia (historia de otro modelo).
+            let anySigned = message.content.contains {
+                if case .toolUse(let id, _, _) = $0 { return ThoughtSignature.split(id).signature != nil }
+                return false
+            }
+            let fallbackSignature = (geminiModel && !anySigned) ? ThoughtSignature.skipValidator : nil
             let calls: [JSONValue] = message.content.compactMap { block in
-                guard case .toolUse(let id, let name, let input) = block else { return nil }
-                return .object([
+                guard case .toolUse(let rawID, let name, let input) = block else { return nil }
+                let (id, signature) = ThoughtSignature.split(rawID)
+                var call: [String: JSONValue] = [
                     "id": .string(id),
                     "type": .string("function"),
                     "function": .object(["name": .string(name), "arguments": .string(argumentsString(input))]),
-                ])
+                ]
+                // Gemini 3 exige de vuelta la firma de pensamiento de cada function call.
+                if let signature = signature ?? (callIndex(rawID, in: message) == 0 ? fallbackSignature : nil) {
+                    call["extra_content"] = .object(["google": .object(["thought_signature": .string(signature)])])
+                }
+                return .object(call)
             }
             guard !text.isEmpty || !calls.isEmpty else { return [] }  // p.ej. solo thinking
             var obj: [String: JSONValue] = [
@@ -107,7 +122,7 @@ public enum OpenAICompatRequestBuilder {
                 guard case .toolResult(let id, let content, let isError) = block else { continue }
                 out.append(.object([
                     "role": .string("tool"),
-                    "tool_call_id": .string(id),
+                    "tool_call_id": .string(ThoughtSignature.split(id).id),
                     "content": .string(isError ? "[error] " + content : content),
                 ]))
             }
@@ -121,6 +136,12 @@ public enum OpenAICompatRequestBuilder {
             }
             return out
         }
+    }
+
+    /// Posición del tool call dentro del mensaje (el comodín solo va en el primero).
+    static func callIndex(_ id: String, in message: Message) -> Int? {
+        message.content.compactMap { if case .toolUse(let i, _, _) = $0 { return i } else { return nil } }
+            .firstIndex(of: id)
     }
 
     /// Parte de un content multiparte (text | image_url). Tool results/thinking/tool_use: nil.
@@ -152,6 +173,31 @@ public enum OpenAICompatRequestBuilder {
     }
 }
 
+// MARK: - Firma de pensamiento de Gemini (thought_signature)
+
+/// Gemini 3 adjunta a cada function call una `thought_signature` opaca que DEBE
+/// volver en el replay (si no: 400). El wire neutro (ContentBlock.toolUse) no
+/// tiene dónde guardarla, así que viaja pegada al id del tool call — invisible
+/// para la UI, persistida con el transcript, y se separa al reenviar. Los ids
+/// no cruzan de provider: cambiar de córtex re-cablea con sesión nueva.
+enum ThoughtSignature {
+    static let separator = "#ts="
+    /// Firma comodín documentada por Google para calls sin firma propia (p.ej.
+    /// historia creada por otro modelo).
+    static let skipValidator = "skip_thought_signature_validator"
+
+    static func embed(_ signature: String?, in id: String) -> String {
+        guard let signature, !signature.isEmpty else { return id }
+        return id + separator + signature
+    }
+
+    static func split(_ raw: String) -> (id: String, signature: String?) {
+        guard let range = raw.range(of: separator) else { return (raw, nil) }
+        let signature = String(raw[range.upperBound...])
+        return (String(raw[..<range.lowerBound]), signature.isEmpty ? nil : signature)
+    }
+}
+
 // MARK: - Parser SSE de Chat Completions → ProviderEvent
 
 /// Traduce los chunks `data: {json}` a ProviderEvent. Con estado: los tool_calls
@@ -165,6 +211,7 @@ public struct OpenAICompatSSEParser: Sendable {
         var name: String?
         var pendingArgs = ""
         var started = false
+        var signature: String?
     }
 
     private var started = false
@@ -216,7 +263,12 @@ public struct OpenAICompatSSEParser: Sendable {
         if let reason = choice.finishReason {
             events.append(contentsOf: closeText())
             events.append(contentsOf: closeTool())
-            if stopReason != .refusal { stopReason = Self.stopReason(reason) }
+            if stopReason != .refusal {
+                // Gemini cierra con "stop" aunque haya llamado tools: si hubo
+                // tool_calls, el turno es tool_use (si no, el loop no las ejecuta).
+                let mapped = Self.stopReason(reason)
+                stopReason = (mapped == .endTurn && tools.values.contains { $0.started }) ? .toolUse : mapped
+            }
         }
         return events
     }
@@ -233,7 +285,7 @@ public struct OpenAICompatSSEParser: Sendable {
     }
 
     private mutating func handle(_ call: RawCompatToolCall) -> [ProviderEvent] {
-        let index = call.index ?? currentTool ?? 0
+        let index = resolveIndex(call)
         var events: [ProviderEvent] = []
         if currentTool != index {
             events.append(contentsOf: closeText())
@@ -242,6 +294,9 @@ public struct OpenAICompatSSEParser: Sendable {
         }
         var state = tools[index] ?? ToolState()
         if let id = call.id, !id.isEmpty { state.id = id }
+        if let signature = call.extraContent?.google?.thoughtSignature, !signature.isEmpty {
+            state.signature = signature
+        }
         if state.name == nil, let name = call.function?.name, !name.isEmpty { state.name = name }
         state.pendingArgs += call.function?.arguments ?? ""
         // El bloque abre cuando ya hay nombre; los argumentos previos se retienen.
@@ -249,7 +304,7 @@ public struct OpenAICompatSSEParser: Sendable {
             state.started = true
             let id = state.id ?? "call_\(messageID)_\(index)"
             state.id = id
-            events.append(.toolUseStart(id: id, name: name))
+            events.append(.toolUseStart(id: ThoughtSignature.embed(state.signature, in: id), name: name))
         }
         if state.started, !state.pendingArgs.isEmpty {
             events.append(.toolUseInputDelta(state.pendingArgs))
@@ -257,6 +312,16 @@ public struct OpenAICompatSSEParser: Sendable {
         }
         tools[index] = state
         return events
+    }
+
+    /// Gemini no manda `index`: cada entrada con un id nuevo es otra llamada
+    /// (paralelas en el mismo chunk); sin index ni id, continúa la actual.
+    private func resolveIndex(_ call: RawCompatToolCall) -> Int {
+        if let index = call.index { return index }
+        if let id = call.id, !id.isEmpty, currentTool.flatMap({ tools[$0]?.id }) != id {
+            return (tools.keys.max() ?? -1) + 1
+        }
+        return currentTool ?? 0
     }
 
     private mutating func closeText() -> [ProviderEvent] {
@@ -400,6 +465,19 @@ struct RawCompatToolCall: Decodable {
     let index: Int?
     let id: String?
     let function: RawCompatFunction?
+    let extraContent: Extra?
+
+    struct Extra: Decodable {
+        let google: Google?
+        struct Google: Decodable {
+            let thoughtSignature: String?
+            enum CodingKeys: String, CodingKey { case thoughtSignature = "thought_signature" }
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case index, id, function, extraContent = "extra_content"
+    }
 }
 
 struct RawCompatFunction: Decodable {

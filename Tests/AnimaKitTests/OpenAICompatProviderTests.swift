@@ -155,6 +155,31 @@ enum CompatTestConfig {
         #expect(wire[5].at("tool_calls")?[0]?.at("function", "arguments") == .string("{}"))
     }
 
+    @Test func geminiReplayCarriesThoughtSignatures() throws {
+        let signed = Message.assistant([
+            .toolUse(id: "call_1#ts=SIG1", name: "notes", input: .object([:])),
+            .toolUse(id: "call_2", name: "calendar", input: .object([:])),
+        ])
+        let results = Message.user([.toolResult(toolUseId: "call_1#ts=SIG1", content: "ok", isError: false)])
+        let wire = OpenAICompatRequestBuilder.encodeMessages([signed, results], systemBase: "B", model: "gemini-3.1-pro-preview")
+        let calls = try #require(wire[1]["tool_calls"])
+        #expect(calls[0]?["id"] == .string("call_1"))
+        #expect(calls[0]?.at("extra_content", "google", "thought_signature") == .string("SIG1"))
+        #expect(calls[1]?["extra_content"] == nil)          // paralela: solo la primera firma
+        #expect(wire[2]["tool_call_id"] == .string("call_1"))
+
+        // Historia sin firmas (otro modelo): Gemini recibe el comodín en la primera.
+        let unsigned = Message.assistant([.toolUse(id: "call_x", name: "notes", input: .object([:])),
+                                          .toolUse(id: "call_y", name: "notes", input: .object([:]))])
+        let g = OpenAICompatRequestBuilder.encodeMessages([unsigned], systemBase: "B", model: "gemini-3.8-flash")
+        #expect(g[1]["tool_calls"]?[0]?.at("extra_content", "google", "thought_signature")
+                == .string(ThoughtSignature.skipValidator))
+        #expect(g[1]["tool_calls"]?[1]?["extra_content"] == nil)
+        // OpenAI jamás recibe extra_content.
+        let o = OpenAICompatRequestBuilder.encodeMessages([unsigned], systemBase: "B", model: "gpt-5.2")
+        #expect(!o[1].allObjectKeys().contains("extra_content"))
+    }
+
     @Test func imagesGoAsMultipartDataURLs() {
         let wire = OpenAICompatRequestBuilder.encode(
             .user([.text("¿qué ves?"), .image(mediaType: "image/jpeg", base64: "AAAA")]))
@@ -277,9 +302,40 @@ enum CompatTestConfig {
             .blockStop(index: 0),
             .textDelta("listo"),
             .blockStop(index: 1),
-            .messageDelta(stopReason: .endTurn, usage: Usage()),
+            // Hubo tool_call: aunque cierre con "stop", el turno es tool_use.
+            .messageDelta(stopReason: .toolUse, usage: Usage()),
             .messageStop,
         ])
+    }
+
+    /// Forma real de Gemini 3 (verificada en vivo): tool_calls SIN index, con
+    /// thought_signature en extra_content y finish_reason "stop".
+    @Test func geminiToolCallsWithoutIndexAndStopFinish() throws {
+        let events = try OpenAICompatSSEParser.parse(lines: [
+            #"data: {"id":"g1","model":"gemini-3.1-pro-preview","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"extra_content":{"google":{"thought_signature":"SIG1"}},"function":{"arguments":"{\"action\":\"read\"}","name":"notes"},"id":"call_1","type":"function"},{"function":{"arguments":"{}","name":"calendar"},"id":"call_2","type":"function"}]}}]}"#,
+            #"data: {"id":"g1","model":"gemini-3.1-pro-preview","choices":[{"delta":{"role":"assistant"},"finish_reason":"stop","index":0}],"usage":{"completion_tokens":20,"prompt_tokens":93}}"#,
+            "data: [DONE]",
+        ])
+        #expect(events == [
+            .messageStart(id: "g1", model: "gemini-3.1-pro-preview"),
+            .toolUseStart(id: "call_1#ts=SIG1", name: "notes"),
+            .toolUseInputDelta(#"{"action":"read"}"#),
+            .blockStop(index: 0),
+            .toolUseStart(id: "call_2", name: "calendar"),
+            .toolUseInputDelta("{}"),
+            .blockStop(index: 1),
+            .messageDelta(stopReason: .toolUse, usage: Usage(inputTokens: 93, outputTokens: 20)),
+            .messageStop,
+        ])
+    }
+
+    @Test func thoughtSignatureEmbedAndSplit() {
+        #expect(ThoughtSignature.embed(nil, in: "c") == "c")
+        #expect(ThoughtSignature.embed("", in: "c") == "c")
+        #expect(ThoughtSignature.embed("S/+=", in: "c") == "c#ts=S/+=")
+        #expect(ThoughtSignature.split("c#ts=S/+=") == ("c", "S/+="))
+        #expect(ThoughtSignature.split("c").signature == nil)
+        #expect(ThoughtSignature.split("c#ts=").signature == nil)
     }
 
     @Test func finishReasonMapping() {

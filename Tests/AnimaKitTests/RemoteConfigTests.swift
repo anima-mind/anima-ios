@@ -33,8 +33,8 @@ import Testing
       "google": {
         "api": { "base_url": "https://generativelanguage.googleapis.com/v1beta/openai" },
         "routes": {
-          "interactive":   { "model": "gemini-3-pro",   "max_tokens": 16000 },
-          "consolidation": { "model": "gemini-3-flash", "max_tokens": 8000 }
+          "interactive":   { "model": "gemini-3.1-pro-preview",   "max_tokens": 16000 },
+          "consolidation": { "model": "gemini-3.8-flash", "max_tokens": 8000 }
         }
       },
       "provider_del_futuro": {
@@ -63,8 +63,8 @@ import Testing
 
         let google = try #require(parsed[.google])
         #expect(google.api.baseURL.absoluteString == "https://generativelanguage.googleapis.com/v1beta/openai")
-        #expect(google.routes[.interactive]?.model == "gemini-3-pro")
-        #expect(google.routes[.consolidation]?.model == "gemini-3-flash")
+        #expect(google.routes[.interactive]?.model == "gemini-3.1-pro-preview")
+        #expect(google.routes[.consolidation]?.model == "gemini-3.8-flash")
     }
 
     @Test func authModeBetas() throws {

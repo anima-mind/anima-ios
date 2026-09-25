@@ -140,7 +140,7 @@ import Testing
         let google = try #require(parsed[.google])
         #expect(openai.api.baseURL.absoluteString == "https://api.openai.com/v1")
         #expect(google.api.baseURL.absoluteString == "https://generativelanguage.googleapis.com/v1beta/openai")
-        for (entry, big, cheap) in [(openai, "gpt-5.2", "gpt-5-mini"), (google, "gemini-3-pro", "gemini-3-flash")] {
+        for (entry, big, cheap) in [(openai, "gpt-5.2", "gpt-5-mini"), (google, "gemini-3.1-pro-preview", "gemini-3.8-flash")] {
             #expect(Set(entry.routes.keys) == Set(TurnClass.allCases))
             #expect(entry.routes[.interactive]?.model == big)
             #expect(entry.routes[.consolidation]?.model == cheap)

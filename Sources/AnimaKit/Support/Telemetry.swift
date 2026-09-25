@@ -136,15 +136,57 @@ public final class Telemetry: Sendable {
 
 /// Precios USD por millón de tokens (§7). Cache reads ~0.1× del input.
 public enum Pricing {
-    struct Rate { let input: Double; let output: Double }
+    public struct Rate: Sendable, Equatable {
+        public let input: Double
+        public let output: Double
+        public init(input: Double, output: Double) { self.input = input; self.output = output }
+    }
+
+    /// Tarifas por prefijo de modelo (USD por MTok). Los precios ROTAN igual que
+    /// los model ids: la tabla se sobreescribe desde Remote Config (param
+    /// `model_pricing`, clave "pricing" dentro de provider_config); esto es solo
+    /// el fallback bundled. Verificados 2026-09-25 contra pricing oficial.
+    nonisolated(unsafe) private static var table: [(prefix: String, rate: Rate)] = defaults
+    private static let defaults: [(prefix: String, rate: Rate)] = [
+        ("claude-opus", Rate(input: 5, output: 25)),
+        ("claude-sonnet", Rate(input: 3, output: 15)),
+        ("claude-haiku", Rate(input: 1, output: 5)),
+        ("gpt-5.2", Rate(input: 1.75, output: 14)),
+        ("gpt-5-mini", Rate(input: 0.25, output: 2)),
+        ("gemini-3.1-pro", Rate(input: 2, output: 12)),
+        // Promo hasta 2026-12-31 (luego 1.50/7.50) — razón de que viva en RC.
+        ("gemini-3.8-flash", Rate(input: 0.75, output: 3.75)),
+    ]
+
+    /// Sobreescribe la tabla desde config remota: {"<prefijo>": {"in": x, "out": y}}.
+    /// Claves/formas desconocidas se ignoran (forward-compatible, como todo RC).
+    public static func load(_ json: JSONValue) {
+        guard case .object(let entries) = json else { return }
+        var parsed: [(String, Rate)] = []
+        for (prefix, value) in entries {
+            guard case .object(let o) = value,
+                  let i = Self.number(o["in"]), let out = Self.number(o["out"]) else { continue }
+            parsed.append((prefix, Rate(input: i, output: out)))
+        }
+        // Prefijos más largos primero: "gpt-5-mini" gana sobre "gpt-5".
+        if !parsed.isEmpty { table = parsed.sorted { $0.0.count > $1.0.count } }
+    }
+
+    private static func number(_ v: JSONValue?) -> Double? {
+        switch v {
+        case .double(let d): return d
+        case .int(let i): return Double(i)
+        default: return nil
+        }
+    }
+
+    static func resetForTests() { table = defaults }
 
     static func rate(for model: String) -> Rate {
         // Modelo local de Apple (§4.9): gratis, cero red.
         if model == OnDeviceProvider.modelName { return Rate(input: 0, output: 0) }
-        if model.hasPrefix("claude-opus") { return Rate(input: 5, output: 25) }
-        if model.hasPrefix("claude-sonnet") { return Rate(input: 3, output: 15) }
-        if model.hasPrefix("claude-haiku") { return Rate(input: 1, output: 5) }
-        return Rate(input: 5, output: 25)
+        if let hit = table.first(where: { model.hasPrefix($0.prefix) }) { return hit.rate }
+        return Rate(input: 5, output: 25)  // desconocido: asumir caro, jamás barato
     }
 
     static func cost(model: String, input: Int, output: Int, cacheRead: Int) -> Double {

@@ -44,3 +44,34 @@ import Testing
         #expect(abs(cached - 0.5) < 1e-6)
     }
 }
+
+
+@Suite struct PricingTests {
+    @Test func bundledDefaultsCoverAllDialModels() {
+        defer { Pricing.resetForTests() }
+        #expect(Pricing.rate(for: "gpt-5.2").input == 1.75)
+        #expect(Pricing.rate(for: "gpt-5-mini").output == 2)
+        #expect(Pricing.rate(for: "gemini-3.1-pro-preview").output == 12)  // prefijo cubre -preview
+        #expect(Pricing.rate(for: "gemini-3.8-flash").input == 0.75)
+        #expect(Pricing.rate(for: "claude-haiku-4-5").input == 1)
+        #expect(Pricing.rate(for: "modelo-desconocido").output == 25)  // caro, jamás barato
+    }
+
+    @Test func remoteOverrideWinsAndLongestPrefixFirst() throws {
+        defer { Pricing.resetForTests() }
+        let json = try JSONDecoder().decode(JSONValue.self, from: Data("""
+        {"gpt-5": {"in": 9, "out": 90}, "gpt-5-mini": {"in": 0.1, "out": 1}, "rota": "ignorada"}
+        """.utf8))
+        Pricing.load(json)
+        #expect(Pricing.rate(for: "gpt-5-mini-2027").input == 0.1)  // el largo gana
+        #expect(Pricing.rate(for: "gpt-5.9").input == 9)
+        #expect(Pricing.rate(for: "system_language_model").input == 0)  // el local SIEMPRE es gratis, tabla aparte
+    }
+
+    @Test func pricingKeyExtractedFromProviderConfig() {
+        let data = Data(#"{"anthropic":{"api":{"base_url":"https://x.com"},"routes":{}},"pricing":{"a":{"in":1,"out":2}}}"#.utf8)
+        #expect(ProviderConfigParser.pricing(data) != nil)
+        // y parse() sigue ignorando la clave sin crashear
+        #expect((try? ProviderConfigParser.parse(data))?.count == 1)
+    }
+}

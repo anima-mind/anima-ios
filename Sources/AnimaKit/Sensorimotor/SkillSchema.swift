@@ -20,5 +20,25 @@ public enum SkillSchema {
                 );
                 """)
         }
+        // Cableado del SkillEngine al turno: toggle por skill (Ajustes) y la
+        // telemetría de match/inyección/outcome por turno (eval futuro: ¿ayudan?).
+        m.registerMigration("v7-skill-wiring") { db in
+            try db.execute(sql: "ALTER TABLE skill_practice ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+            try db.execute(sql: """
+                CREATE TABLE skill_turn_telemetry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    skill_name TEXT,
+                    score REAL,
+                    injected_chars INTEGER NOT NULL DEFAULT 0,
+                    truncated INTEGER NOT NULL DEFAULT 0,
+                    outcome TEXT NOT NULL,
+                    end_reason TEXT NOT NULL,
+                    skill_tool_calls INTEGER NOT NULL DEFAULT 0,
+                    skill_tool_errors INTEGER NOT NULL DEFAULT 0,
+                    ts REAL NOT NULL
+                );
+                """)
+        }
     }
 }

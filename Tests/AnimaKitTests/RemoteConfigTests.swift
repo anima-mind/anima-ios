@@ -24,8 +24,18 @@ import Testing
         }
       },
       "openai": {
-        "api": { "base_url": "https://api.openai.com" },
-        "routes": { "interactive": { "model": "gpt-5", "max_tokens": 16000 } }
+        "api": { "base_url": "https://api.openai.com/v1" },
+        "routes": {
+          "interactive":   { "model": "gpt-5.2",    "max_tokens": 16000 },
+          "consolidation": { "model": "gpt-5-mini", "max_tokens": 8000 }
+        }
+      },
+      "google": {
+        "api": { "base_url": "https://generativelanguage.googleapis.com/v1beta/openai" },
+        "routes": {
+          "interactive":   { "model": "gemini-3.1-pro-preview",   "max_tokens": 16000 },
+          "consolidation": { "model": "gemini-3.8-flash", "max_tokens": 8000 }
+        }
       },
       "provider_del_futuro": {
         "api": { "base_url": "https://example.com" },
@@ -48,6 +58,13 @@ import Testing
         let openai = try #require(parsed[.openai])
         #expect(openai.api.version == nil)
         #expect(openai.api.betas.isEmpty)
+        #expect(openai.routes[.interactive]?.model == "gpt-5.2")
+        #expect(openai.routes[.consolidation]?.model == "gpt-5-mini")
+
+        let google = try #require(parsed[.google])
+        #expect(google.api.baseURL.absoluteString == "https://generativelanguage.googleapis.com/v1beta/openai")
+        #expect(google.routes[.interactive]?.model == "gemini-3.1-pro-preview")
+        #expect(google.routes[.consolidation]?.model == "gemini-3.8-flash")
     }
 
     @Test func authModeBetas() throws {
@@ -83,7 +100,7 @@ import Testing
         // Un provider o turn class agregado en la consola el año que viene
         // no puede crashear la app de hoy.
         let parsed = try ProviderConfigParser.parse(Self.consoleJSON)
-        #expect(parsed.count == 2)  // provider_del_futuro ignorado
+        #expect(parsed.count == 3)  // provider_del_futuro ignorado
         let anthropic = try #require(parsed[.anthropic])
         #expect(anthropic.routes.count == 3)
     }

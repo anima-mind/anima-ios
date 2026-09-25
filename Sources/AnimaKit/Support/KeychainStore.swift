@@ -92,3 +92,58 @@ public struct KeychainStore: Sendable {
         }
     }
 }
+
+// MARK: - Un token por provider remoto
+
+/// Una entrada de Keychain por provider remoto (`anima.token.<provider>`), en el
+/// mismo service. La entrada legacy (account "default", previa a los providers
+/// intercambiables) era SIEMPRE Anthropic: se migra en la primera lectura.
+public struct ProviderTokenStore: Sendable {
+    public static let defaultService = "dev.joshua.anima.provider-token"
+    static let legacyAccount = "default"
+
+    private let service: String
+    private let backend: KeychainBackend
+
+    public init(service: String = ProviderTokenStore.defaultService) {
+        self.init(service: service, backend: SystemKeychainBackend())
+    }
+
+    init(service: String, backend: KeychainBackend) {
+        self.service = service
+        self.backend = backend
+    }
+
+    public static func account(for provider: ModelProvider) -> String {
+        "anima.token.\(provider.rawValue)"
+    }
+
+    private func store(_ provider: ModelProvider) -> KeychainStore {
+        KeychainStore(service: service, account: Self.account(for: provider), backend: backend)
+    }
+
+    private var legacy: KeychainStore {
+        KeychainStore(service: service, account: Self.legacyAccount, backend: backend)
+    }
+
+    public func save(_ token: String, for provider: ModelProvider) throws {
+        try store(provider).save(token)
+    }
+
+    /// Token del provider; nil si no hay. Anthropic migra la entrada legacy.
+    public func read(_ provider: ModelProvider) throws -> String? {
+        if let token = try store(provider).read() { return token }
+        guard provider == .anthropic, let old = try legacy.read(), !old.isEmpty else { return nil }
+        try store(.anthropic).save(old)
+        try legacy.delete()
+        return old
+    }
+
+    public func hasToken(_ provider: ModelProvider) -> Bool {
+        ((try? read(provider)) ?? nil)?.isEmpty == false
+    }
+
+    public func delete(_ provider: ModelProvider) throws {
+        try store(provider).delete()
+    }
+}

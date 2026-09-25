@@ -1,6 +1,6 @@
 // AnimaApp.swift — @main del app shell iOS (§3, §6 Fase 1). FirebaseApp.configure,
 // snapshot de config congelado por sesión, y el cableado real del harness:
-// KeychainStore → ProviderSelector (Claude / on-device, §4.9) → SymbolicStore → WorkingMemory → Sensorimotor
+// ProviderTokenStore → ProviderSelector (remoto Claude/OpenAI/Gemini u on-device, §4.9) → SymbolicStore → WorkingMemory → Sensorimotor
 // (7 tools) → AgentLoop → ChatView. El `ask` in-chat pasa por ConfirmationCenter.
 
 import SwiftUI
@@ -58,7 +58,9 @@ final class AppModel: ObservableObject {
     /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
     private(set) var account: AccountViewModel?
 
-    private let keychain = UITestMode.isActive ? KeychainStore(service: UITestMode.keychainService) : KeychainStore()
+    private let keychain = UITestMode.isActive
+        ? ProviderTokenStore(service: UITestMode.keychainService)
+        : ProviderTokenStore()
     private var store: SymbolicStore?
     private var telemetry: Telemetry?
     private var configProvider: (any RemoteConfigProviding)?
@@ -149,10 +151,15 @@ final class AppModel: ObservableObject {
     /// Keychain para la key, config del provider para validar contra el API,
     /// y el SelfModel para sembrar el Birth.
     func makeOnboardingModel() -> OnboardingViewModel {
-        OnboardingViewModel(
+        let snapshot = configProvider?.snapshot()
+        var apis: [ModelProvider: ProviderAPIConfig] = [:]
+        for provider in ModelProvider.remoteCases {
+            if let api = snapshot?.config(for: provider)?.api { apis[provider] = api }
+        }
+        return OnboardingViewModel(
             keychain: keychain,
-            // `--uitest`: sin api → el validador acepta offline con warning (sin red).
-            api: UITestMode.isActive ? nil : configProvider?.snapshot().config(for: .anthropic)?.api,
+            // `--uitest`: sin apis → el validador acepta offline con warning (sin red).
+            apis: UITestMode.isActive ? [:] : apis,
             selfModel: selfModel,
             defaults: Self.onboardingDefaults,
             isReplay: replayingOnboarding,
@@ -188,15 +195,18 @@ final class AppModel: ObservableObject {
         guard let store, let telemetry, let configProvider else { return }
         let snapshot = configProvider.snapshot()
         let mode = Self.onboardingDefaults.modeStore.mode
+        let remoteKind = Self.onboardingDefaults.remoteStore.provider
 
-        // Córtex remoto (Claude): solo si hay token con modo de auth reconocible.
-        let token = (try? keychain.read()) ?? ""
-        let authMode = AuthMode.detect(fromToken: token)
-        var claude: ProviderSelector.ClaudeCortex?
-        if let authMode, let config = snapshot.config(for: .anthropic) {
-            let cortex: Provider = UITestMode.isActive ? UITestScriptedProvider() : ClaudeProvider()
-            claude = .init(provider: cortex, router: ModelRouter(config: config),
-                           authMode: authMode, token: token)
+        // Córtex remoto (Claude / OpenAI / Gemini): solo con token reconocible
+        // para el provider activo. En `--uitest` el córtex es el guionado.
+        let token = ((try? keychain.read(remoteKind)) ?? nil) ?? ""
+        var remote: ProviderSelector.RemoteCortex?
+        if UITestMode.isActive, let config = snapshot.config(for: remoteKind) {
+            remote = .init(provider: UITestScriptedProvider(), router: ModelRouter(config: config),
+                           authMode: .apiKey, token: "uitest", kind: remoteKind)
+        } else {
+            remote = RemoteCortexFactory.make(kind: remoteKind, config: snapshot.config(for: remoteKind),
+                                              token: token)
         }
         // Córtex local (Apple Foundation Models): sin red, sin auth. La
         // disponibilidad se consulta en cada turno, jamás se asume.
@@ -206,11 +216,11 @@ final class AppModel: ObservableObject {
             local = .init(provider: cortex, router: ModelRouter(config: config))
         }
 
-        if mode.requiresToken, claude == nil {
-            if authMode == nil {
+        if mode.requiresToken, remote == nil {
+            if remoteKind.authMode(forToken: token) == nil {
                 phase = .needsToken
             } else {
-                phase = .misconfigured("Falta la config del provider anthropic (Remote Config / defaults).")
+                phase = .misconfigured("Falta la config del provider \(remoteKind.rawValue) (Remote Config / defaults).")
             }
             return
         }
@@ -219,7 +229,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let selector = ProviderSelector(mode: mode, claude: claude, local: local,
+        let selector = ProviderSelector(mode: mode, remote: remote, local: local,
                                         availability: Self.availability)
         sleepScheduler = SleepScheduler(selector: selector)
 

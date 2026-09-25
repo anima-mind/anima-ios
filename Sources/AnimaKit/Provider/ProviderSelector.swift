@@ -3,10 +3,14 @@
 // córtex intercambiable:
 //
 //   Solo teléfono (gratis) → OnDeviceProvider para TODO, conversación incluida.
-//   Claude                 → ClaudeProvider para todo (§4.7).
-//   Híbrido                → conversación/restructure en Claude; sueño, pulsos y
-//                            destilado en el teléfono (con caída a Claude si el
-//                            modelo local deja de estar disponible).
+//   Remoto                 → el córtex remoto activo (Claude, OpenAI o Gemini)
+//                            para todo (§4.7).
+//   Híbrido                → conversación/restructure en el remoto; sueño, pulsos
+//                            y destilado en el teléfono (con caída al remoto si
+//                            el modelo local deja de estar disponible).
+//
+// QUÉ remoto (Anthropic/OpenAI/Google) es ortogonal al modo: lo guarda
+// RemoteProviderStore y lo lleva el RemoteCortex.
 
 import Foundation
 
@@ -14,29 +18,34 @@ import Foundation
 
 public enum OperatingMode: String, Sendable, CaseIterable, Codable {
     case onDeviceOnly = "on_device_only"
-    case claude
+    /// Córtex remoto para todo. rawValue "claude" por compatibilidad con los
+    /// UserDefaults persistidos antes de que el remoto fuera intercambiable.
+    case remote = "claude"
     case hybrid
 
-    public var title: String {
+    public var title: String { title(remote: .anthropic) }
+    public var summary: String { summary(remote: .anthropic) }
+
+    public func title(remote: ModelProvider) -> String {
         switch self {
         case .onDeviceOnly: return "Solo este teléfono · gratis"
-        case .claude: return "Claude"
+        case .remote: return remote.displayName
         case .hybrid: return "Híbrido"
         }
     }
 
-    public var summary: String {
+    public func summary(remote: ModelProvider) -> String {
         switch self {
         case .onDeviceOnly: return "Todo corre en el modelo de Apple: sin red, sin costo."
-        case .claude: return "Todo corre en Claude con tu token."
-        case .hybrid: return "Conversas con Claude; el sueño corre en tu teléfono, gratis."
+        case .remote: return "Todo corre en \(remote.displayName) con tu key."
+        case .hybrid: return "Conversas con \(remote.displayName); el sueño corre en tu teléfono, gratis."
         }
     }
 
-    /// Necesita el token de Anthropic en Keychain.
+    /// Necesita el token del provider remoto en Keychain.
     public var requiresToken: Bool { self != .onDeviceOnly }
     /// Necesita el modelo local (Apple Intelligence).
-    public var requiresOnDevice: Bool { self != .claude }
+    public var requiresOnDevice: Bool { self != .remote }
 }
 
 /// Persistencia del modo (UserDefaults; jamás secretos). @unchecked: UserDefaults
@@ -54,8 +63,8 @@ public struct OperatingModeStore: @unchecked Sendable {
         defaults.string(forKey: Self.key).flatMap(OperatingMode.init(rawValue:))
     }
 
-    /// El modo efectivo: instalaciones previas a §4.9 (sin modo guardado) son Claude.
-    public var mode: OperatingMode { storedMode ?? .claude }
+    /// El modo efectivo: instalaciones previas a §4.9 (sin modo guardado) son remotas.
+    public var mode: OperatingMode { storedMode ?? .remote }
 
     public func set(_ mode: OperatingMode) {
         defaults.set(mode.rawValue, forKey: Self.key)
@@ -66,19 +75,24 @@ public struct OperatingModeStore: @unchecked Sendable {
 
 public enum ProviderBackend: String, Sendable, Equatable {
     case onDevice
-    case claude
+    case remote
 
-    public var label: String {
+    public var label: String { label(remote: .anthropic) }
+
+    public func label(remote: ModelProvider) -> String {
         switch self {
-        case .onDevice: return "este teléfono"
-        case .claude: return "Claude"
+        case .onDevice: return ModelProvider.onDevice.displayName
+        case .remote: return remote.displayName
         }
     }
 }
 
 extension ContextProfile {
-    public static func forBackend(_ backend: ProviderBackend) -> ContextProfile {
-        backend == .onDevice ? .onDevice : .claude
+    public static func forBackend(_ backend: ProviderBackend, remote: ModelProvider = .anthropic) -> ContextProfile {
+        switch backend {
+        case .onDevice: return .onDevice
+        case .remote: return remote.usesOpenAICompatWire ? .openAICompat : .claude
+        }
     }
 }
 
@@ -86,6 +100,8 @@ extension ContextProfile {
 /// para llamar al córtex de una clase de turno.
 public struct ProviderBinding: Sendable {
     public let backend: ProviderBackend
+    /// Qué provider atiende la llamada (el remoto activo u on_device).
+    public var kind: ModelProvider = .anthropic
     public let provider: Provider
     public let router: ModelRouter
     public let authMode: AuthMode
@@ -101,17 +117,20 @@ public struct ProviderBinding: Sendable {
 // MARK: - Selector
 
 public struct ProviderSelector: Sendable {
-    /// Córtex remoto: Claude con el token del dueño.
-    public struct ClaudeCortex: Sendable {
+    /// Córtex remoto con la key del dueño: Claude, OpenAI o Gemini (`kind`).
+    public struct RemoteCortex: Sendable {
         public let provider: Provider
         public let router: ModelRouter
         public let authMode: AuthMode
         public let token: String
-        public init(provider: Provider, router: ModelRouter, authMode: AuthMode, token: String) {
+        public let kind: ModelProvider
+        public init(provider: Provider, router: ModelRouter, authMode: AuthMode, token: String,
+                    kind: ModelProvider = .anthropic) {
             self.provider = provider
             self.router = router
             self.authMode = authMode
             self.token = token
+            self.kind = kind
         }
     }
 
@@ -129,14 +148,14 @@ public struct ProviderSelector: Sendable {
     public static let hybridLocalClasses: Set<TurnClass> = [.consolidation, .reconsolidation, .desirePulse, .distill]
 
     public let mode: OperatingMode
-    public let claude: ClaudeCortex?
+    public let remote: RemoteCortex?
     public let local: LocalCortex?
     private let availability: @Sendable () -> OnDeviceAvailability
 
-    public init(mode: OperatingMode, claude: ClaudeCortex?, local: LocalCortex?,
+    public init(mode: OperatingMode, remote: RemoteCortex?, local: LocalCortex?,
                 availability: @escaping @Sendable () -> OnDeviceAvailability) {
         self.mode = mode
-        self.claude = claude
+        self.remote = remote
         self.local = local
         self.availability = availability
     }
@@ -144,70 +163,79 @@ public struct ProviderSelector: Sendable {
     /// Selector de un solo córtex Claude (el comportamiento previo a §4.9).
     public static func claudeOnly(provider: Provider, router: ModelRouter,
                                   authMode: AuthMode, token: String) -> ProviderSelector {
-        ProviderSelector(mode: .claude,
-                         claude: ClaudeCortex(provider: provider, router: router, authMode: authMode, token: token),
+        ProviderSelector(mode: .remote,
+                         remote: RemoteCortex(provider: provider, router: router, authMode: authMode, token: token),
                          local: nil, availability: { .deviceNotEligible })
     }
+
+    /// El provider remoto activo (Anthropic si no hay córtex remoto cableado).
+    public var remoteKind: ModelProvider { remote?.kind ?? .anthropic }
+
+    /// Título del modo con el nombre del remoto activo.
+    public var modeTitle: String { mode.title(remote: remoteKind) }
 
     /// Backend PLANEADO por modo y clase (tabla del §4.9, sin mirar availability).
     public static func plannedBackend(mode: OperatingMode, turn: TurnClass) -> ProviderBackend {
         switch mode {
         case .onDeviceOnly: return .onDevice
-        case .claude: return .claude
-        case .hybrid: return hybridLocalClasses.contains(turn) ? .onDevice : .claude
+        case .remote: return .remote
+        case .hybrid: return hybridLocalClasses.contains(turn) ? .onDevice : .remote
         }
     }
 
     /// Backend EFECTIVO: en Híbrido, si el modelo local no está (o no se cableó),
-    /// la clase cae a Claude. En Solo teléfono no hay caída: sin modelo local el
+    /// la clase cae al remoto. En Solo teléfono no hay caída: sin modelo local el
     /// turno falla con el porqué (jamás gasta el token del dueño a escondidas).
     public func backend(for turn: TurnClass) -> ProviderBackend {
         let planned = Self.plannedBackend(mode: mode, turn: turn)
         guard mode == .hybrid, planned == .onDevice else { return planned }
-        guard local != nil, availability().isAvailable else { return claude != nil ? .claude : .onDevice }
+        guard local != nil, availability().isAvailable else { return remote != nil ? .remote : .onDevice }
         return .onDevice
     }
 
     /// El córtex para una clase de turno; `nil` si el modo pide un córtex que no
-    /// está cableado (p.ej. Claude sin token).
+    /// está cableado (p.ej. remoto sin token).
     public func binding(for turn: TurnClass) -> ProviderBinding? {
         switch backend(for: turn) {
-        case .claude:
-            guard let claude else { return nil }
-            return ProviderBinding(backend: .claude, provider: claude.provider, router: claude.router,
-                                   authMode: claude.authMode, token: claude.token)
+        case .remote:
+            guard let remote else { return nil }
+            return ProviderBinding(backend: .remote, kind: remote.kind, provider: remote.provider,
+                                   router: remote.router, authMode: remote.authMode, token: remote.token)
         case .onDevice:
             guard let local else { return nil }
             // Híbrido: si la disponibilidad cae A MITAD (entre el check y la
-            // llamada, o assets desaparecidos), la llamada cae a Claude.
-            let provider: Provider = (mode == .hybrid && claude != nil)
-                ? FallbackProvider(primary: local.provider, fallback: claude!, turn: turn)
-                : local.provider
+            // llamada, o assets desaparecidos), la llamada cae al remoto.
+            let provider: Provider
+            if mode == .hybrid, let remote {
+                provider = FallbackProvider(primary: local.provider, fallback: remote, turn: turn)
+            } else {
+                provider = local.provider
+            }
             // Sin red, sin auth: el token/AuthMode no se usan en local.
-            return ProviderBinding(backend: .onDevice, provider: provider, router: local.router,
-                                   authMode: .apiKey, token: "")
+            return ProviderBinding(backend: .onDevice, kind: .onDevice, provider: provider,
+                                   router: local.router, authMode: .apiKey, token: "")
         }
     }
 
     /// Perfil de contexto de la conversación (lo que ve la WorkingMemory del loop).
     public var conversationProfile: ContextProfile {
-        .forBackend(Self.plannedBackend(mode: mode, turn: .interactive))
+        .forBackend(Self.plannedBackend(mode: mode, turn: .interactive), remote: remoteKind)
     }
 
-    /// El sueño necesita red solo si corre en Claude (BGProcessingTask).
+    /// El sueño necesita red solo si corre en el remoto (BGProcessingTask).
     public var sleepRequiresNetwork: Bool {
-        backend(for: .consolidation) == .claude
+        backend(for: .consolidation) == .remote
     }
 }
 
-// MARK: - Caída a Claude (Híbrido)
+// MARK: - Caída al remoto (Híbrido)
 
 /// Provider del Híbrido para las clases locales: intenta el modelo local y, si
-/// reporta no-disponible ANTES de emitir contenido, repite la llamada en Claude
-/// con la ruta y credenciales de Claude (el system prompt de la tarea se conserva).
+/// reporta no-disponible ANTES de emitir contenido, repite la llamada en el
+/// remoto con su ruta y credenciales (el system prompt de la tarea se conserva).
 public struct FallbackProvider: Provider {
     let primary: Provider
-    let fallback: ProviderSelector.ClaudeCortex
+    let fallback: ProviderSelector.RemoteCortex
     let turn: TurnClass
 
     public func complete(_ ctx: AssembledContext, tools: [ToolSpec], opts: CallOpts)

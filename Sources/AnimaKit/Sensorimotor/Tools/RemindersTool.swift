@@ -1,11 +1,29 @@
 // RemindersTool.swift — tool `reminders` (§5.7) sobre EventKit reminders. Leer =
-// aferente (allow); crear/completar = eferente (ask). Schema y clasificación
-// puros; EKEventStore tras #if canImport(EventKit), degrada sin permiso (§8).
+// aferente (allow); crear/completar = eferente (ask). Schema, clasificación y
+// lógica de acciones puros contra `RemindersStore`; el adaptador EKEventStore va
+// tras #if canImport(EventKit), degrada sin permiso (§8).
 
 import Foundation
 
 public struct RemindersTool: SensorimotorTool {
-    public init() {}
+    private let makeStore: @Sendable () -> (any RemindersStore)?
+
+    public init() {
+        self.init(makeStore: RemindersTool.systemStore)
+    }
+
+    /// Inyección para tests: el store se crea por ejecución (como EKEventStore).
+    init(makeStore: @escaping @Sendable () -> (any RemindersStore)?) {
+        self.makeStore = makeStore
+    }
+
+    static let systemStore: @Sendable () -> (any RemindersStore)? = {
+        #if canImport(EventKit)
+        return EventKitRemindersStore()
+        #else
+        return nil
+        #endif
+    }
 
     private static let readOps: Set<String> = ["list"]
 
@@ -69,23 +87,40 @@ public struct RemindersTool: SensorimotorTool {
         guard let action = input["action"]?.stringValue else {
             return ToolResult(content: "Error: falta 'action'.", isError: true)
         }
-        #if canImport(EventKit)
-        return await RemindersBackend.run(action: action, input: input)
-        #else
-        return ToolResult(content: "Los recordatorios no están disponibles en esta plataforma.", isError: true)
-        #endif
+        guard let store = makeStore() else {
+            return ToolResult(content: "Los recordatorios no están disponibles en esta plataforma.", isError: true)
+        }
+        return await RemindersActions.run(action: action, input: input, store: store)
     }
 }
 
-#if canImport(EventKit)
-import EventKit
+// MARK: - Store (frontera con EventKit)
 
-enum RemindersBackend {
-    static func run(action: String, input: JSONValue) async -> ToolResult {
-        let store = EKEventStore()
+/// Recordatorio reducido a valores (EKReminder no es Sendable).
+struct ReminderRecord: Sendable, Equatable {
+    var id: String
+    var title: String?
+    var due: Date?
+}
+
+protocol RemindersStore: Sendable {
+    func requestAccess() async throws -> Bool
+    func incompleteReminders() async -> [ReminderRecord]
+    /// Devuelve el identificador del recordatorio creado.
+    func createReminder(title: String, due: DateComponents?) throws -> String
+    /// false si no existe un recordatorio con ese id.
+    func completeReminder(id: String) throws -> Bool
+}
+
+// MARK: - Lógica de acciones (pura respecto a EventKit)
+
+enum RemindersActions {
+    static let maxListed = 50
+
+    static func run(action: String, input: JSONValue, store: any RemindersStore) async -> ToolResult {
         let granted: Bool
         do {
-            granted = try await store.requestFullAccessToReminders()
+            granted = try await store.requestAccess()
         } catch {
             return ToolResult(content: "Sin acceso a recordatorios: \(error.localizedDescription)", isError: true)
         }
@@ -105,18 +140,11 @@ enum RemindersBackend {
         }
     }
 
-    private static func list(store: EKEventStore) async -> ToolResult {
-        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
-        // Formatea a [String] (Sendable) DENTRO del completion: EKReminder no es Sendable.
-        let lines: [String] = await withCheckedContinuation { continuation in
-            store.fetchReminders(matching: predicate) { reminders in
-                let df = ISO8601DateFormatter()
-                let formatted = (reminders ?? []).prefix(50).map { reminder -> String in
-                    let due = reminder.dueDateComponents?.date.map { " (vence \(df.string(from: $0)))" } ?? ""
-                    return "- [\(reminder.calendarItemIdentifier)] \(reminder.title ?? "(sin título)")\(due)"
-                }
-                continuation.resume(returning: Array(formatted))
-            }
+    static func list(store: any RemindersStore) async -> ToolResult {
+        let df = ISO8601DateFormatter()
+        let lines = await store.incompleteReminders().prefix(maxListed).map { reminder -> String in
+            let due = reminder.due.map { " (vence \(df.string(from: $0)))" } ?? ""
+            return "- [\(reminder.id)] \(reminder.title ?? "(sin título)")\(due)"
         }
         guard !lines.isEmpty else {
             return ToolResult(content: "No hay recordatorios pendientes.")
@@ -124,37 +152,76 @@ enum RemindersBackend {
         return ToolResult(content: lines.joined(separator: "\n"))
     }
 
-    private static func create(store: EKEventStore, input: JSONValue) -> ToolResult {
+    static func create(store: any RemindersStore, input: JSONValue) -> ToolResult {
         guard let title = input["title"]?.stringValue, !title.isEmpty else {
             return ToolResult(content: "Error: falta 'title'.", isError: true)
         }
-        let reminder = EKReminder(eventStore: store)
-        reminder.title = title
-        reminder.calendar = store.defaultCalendarForNewReminders()
-        if let dueStr = input["due"]?.stringValue, let due = ISO8601DateFormatter().date(from: dueStr) {
-            reminder.dueDateComponents = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: due)
-        }
+        let due = dueComponents(input["due"]?.stringValue)
         do {
-            try store.save(reminder, commit: true)
-            return ToolResult(content: "Recordatorio '\(title)' creado (id \(reminder.calendarItemIdentifier)).")
+            let id = try store.createReminder(title: title, due: due)
+            return ToolResult(content: "Recordatorio '\(title)' creado (id \(id)).")
         } catch {
             return ToolResult(content: "No se pudo crear el recordatorio: \(error.localizedDescription)", isError: true)
         }
     }
 
-    private static func complete(store: EKEventStore, reminderId: String?) -> ToolResult {
-        guard let reminderId,
-              let reminder = store.calendarItem(withIdentifier: reminderId) as? EKReminder else {
-            return ToolResult(content: "No se encontró el recordatorio indicado.", isError: true)
-        }
-        reminder.isCompleted = true
+    /// ISO 8601 → componentes a minuto (EventKit guarda el due como componentes).
+    /// Fecha ausente o inválida → sin vencimiento.
+    static func dueComponents(_ iso: String?, calendar: Calendar = .current) -> DateComponents? {
+        guard let iso, let due = ISO8601DateFormatter().date(from: iso) else { return nil }
+        return calendar.dateComponents([.year, .month, .day, .hour, .minute], from: due)
+    }
+
+    static func complete(store: any RemindersStore, reminderId: String?) -> ToolResult {
+        let notFound = ToolResult(content: "No se encontró el recordatorio indicado.", isError: true)
+        guard let reminderId else { return notFound }
         do {
-            try store.save(reminder, commit: true)
-            return ToolResult(content: "Recordatorio marcado como completado.")
+            return try store.completeReminder(id: reminderId)
+                ? ToolResult(content: "Recordatorio marcado como completado.") : notFound
         } catch {
             return ToolResult(content: "No se pudo actualizar el recordatorio: \(error.localizedDescription)", isError: true)
         }
+    }
+}
+
+// MARK: - Adaptador EventKit (solo device/Mac con permiso real)
+
+#if canImport(EventKit)
+import EventKit
+
+final class EventKitRemindersStore: RemindersStore, @unchecked Sendable {
+    private let store = EKEventStore()
+
+    func requestAccess() async throws -> Bool {
+        try await store.requestFullAccessToReminders()
+    }
+
+    func incompleteReminders() async -> [ReminderRecord] {
+        let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: nil)
+        // Reduce a valores Sendable DENTRO del completion: EKReminder no es Sendable.
+        return await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: predicate) { reminders in
+                continuation.resume(returning: (reminders ?? []).map {
+                    ReminderRecord(id: $0.calendarItemIdentifier, title: $0.title, due: $0.dueDateComponents?.date)
+                })
+            }
+        }
+    }
+
+    func createReminder(title: String, due: DateComponents?) throws -> String {
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.calendar = store.defaultCalendarForNewReminders()
+        reminder.dueDateComponents = due
+        try store.save(reminder, commit: true)
+        return reminder.calendarItemIdentifier
+    }
+
+    func completeReminder(id: String) throws -> Bool {
+        guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else { return false }
+        reminder.isCompleted = true
+        try store.save(reminder, commit: true)
+        return true
     }
 }
 #endif

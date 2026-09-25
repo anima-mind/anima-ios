@@ -71,7 +71,7 @@ public actor Sensorimotor {
                 summary: tool.confirmationSummary(for: input), input: input)
             let approved = await confirmation.confirm(request)
             guard approved else {
-                return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true)
+                return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }
         case .allow:
             break

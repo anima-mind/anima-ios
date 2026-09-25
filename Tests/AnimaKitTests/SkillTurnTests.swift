@@ -96,6 +96,9 @@ import Testing
         #expect(SkillTurn.outcome(end: .stopped(.loopDetected), skillToolFailed: false) == .failure)
         #expect(SkillTurn.outcome(end: .stopped(.maxIterations), skillToolFailed: false) == .failure)
         #expect(SkillTurn.outcome(end: .finished(.maxTokens), skillToolFailed: false) == .neutral)
+        // Rechazo del dueño: neutral SIEMPRE, incluso con endTurn limpio.
+        #expect(SkillTurn.outcome(end: .finished(.endTurn), skillToolFailed: false, ownerRejected: true) == .neutral)
+        #expect(SkillTurn.outcome(end: .stopped(.maxIterations), skillToolFailed: false, ownerRejected: true) == .neutral)  // ni el stop posterior castiga
         #expect(SkillTurn.outcome(end: .refused, skillToolFailed: false) == .neutral)
         #expect(SkillTurn.outcome(end: .error, skillToolFailed: false) == .neutral)
         #expect(SkillTurn.outcome(end: .error, skillToolFailed: true) == .failure)

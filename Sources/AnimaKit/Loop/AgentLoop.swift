@@ -312,7 +312,7 @@ public actor AgentLoop {
                         toolCallCount += 1
                         let result = await sensorimotor.execute(name: call.name, input: call.input)
                         emit(.toolFinished(name: call.name, isError: result.isError))
-                        skillTurn.recordTool(call.name, isError: result.isError)
+                        skillTurn.recordTool(call.name, isError: result.isError && !result.isRejection, rejected: result.isRejection)
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
                         if result.isError {
                             await realRegister?.record(.tool(name: call.name, input: call.input,
@@ -344,7 +344,9 @@ public actor AgentLoop {
     /// cómo terminó + telemetría de match/inyección/outcome (una fila por turno).
     private func concludeSkill(_ skillTurn: SkillTurn, end: TurnEnd, sessionId: SessionID) async {
         guard let skillEngine, skillTurn.wired else { return }
-        let outcome = skillTurn.match.map { _ in SkillTurn.outcome(end: end, skillToolFailed: skillTurn.skillToolErrors > 0) }
+        let outcome = skillTurn.match.map { _ in
+            SkillTurn.outcome(end: end, skillToolFailed: skillTurn.skillToolErrors > 0,
+                              ownerRejected: skillTurn.skillToolRejections > 0) }
         if let name = skillTurn.match?.skill.name, let outcome {
             await skillEngine.practice(name, outcome: outcome)
         }
@@ -454,20 +456,25 @@ final class SkillTurn {
     var injection: SkillInjection?
     private(set) var skillToolCalls = 0
     private(set) var skillToolErrors = 0
+    private(set) var skillToolRejections = 0
 
     /// Solo cuentan las tools que el skill toca (pasos + requires_tools).
-    func recordTool(_ name: String, isError: Bool) {
+    func recordTool(_ name: String, isError: Bool, rejected: Bool = false) {
         guard let match, match.skill.toolNames.contains(name) else { return }
         skillToolCalls += 1
         if isError { skillToolErrors += 1 }
+        if rejected { skillToolRejections += 1 }
     }
 
     /// Criterio de éxito (§5.7 practice): cerró endTurn y ninguna tool del skill
     /// falló ⇒ success; una tool del skill falló o el turno se detuvo por stop
     /// condition (loop, presupuesto, latencia, maxIter, cancel) ⇒ failure; lo
     /// demás (error del provider, refusal, max_tokens) no dice nada del skill ⇒ neutral.
-    static func outcome(end: TurnEnd, skillToolFailed: Bool) -> SkillOutcome {
+    static func outcome(end: TurnEnd, skillToolFailed: Bool, ownerRejected: Bool = false) -> SkillOutcome {
         if skillToolFailed { return .failure }
+        // "No quiero" ≠ "falló": un rechazo del dueño no castiga NI refuerza la
+        // racha — el turno completo queda neutral aunque cierre en endTurn.
+        if ownerRejected { return .neutral }
         switch end {
         case .finished(.endTurn): return .success
         case .stopped: return .failure

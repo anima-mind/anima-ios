@@ -69,6 +69,8 @@ final class AppModel: ObservableObject {
     // Fase 4: el deseo del Otro y el motor del pulso.
     private var otherModel: OtherModel?
     private var desireEngine: DesireEngine?
+    // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
+    private var skillEngine: SkillEngine?
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -107,6 +109,13 @@ final class AppModel: ObservableObject {
             settings.account = account
             // Cambio de modo en Ajustes (§4.9): re-cablea el harness sin re-onboarding.
             settings.onModeChanged = { [weak self] _ in self?.refreshAfterToken() }
+            // Skills: siembra de los ejemplos del bundle al primer arranque (dir vacío).
+            let skillsDir = Self.skillsDirectory()
+            try? SkillSeeder.seedIfEmpty(from: Bundle.main.url(forResource: "Skills", withExtension: nil),
+                                         to: skillsDir)
+            let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
+            self.skillEngine = skillEngine
+            settings.skills = SkillsViewModel(engine: skillEngine)
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -213,7 +222,8 @@ final class AppModel: ObservableObject {
             brain: brain,
             inbox: inbox,
             selfModel: selfModel,
-            realRegister: realRegister)
+            realRegister: realRegister,
+            skillEngine: skillEngine)
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -291,6 +301,12 @@ final class AppModel: ObservableObject {
             CameraTool(),
             AudioTool(),
         ]
+    }
+
+    private static func skillsDirectory() -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("skills", isDirectory: true)
     }
 
     private static func databasePath() -> String {

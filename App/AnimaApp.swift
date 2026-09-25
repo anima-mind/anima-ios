@@ -13,7 +13,12 @@ struct AnimaApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        FirebaseApp.configure()
+        // `--uitest` (XCUITest): sin Firebase ni red; estado aislado (UITestSupport).
+        if UITestMode.isActive {
+            UITestMode.resetIfRequested()
+        } else {
+            FirebaseApp.configure()
+        }
         AppModel.registerConsolidationTask()
     }
 
@@ -40,7 +45,7 @@ final class AppModel: ObservableObject {
 
     @Published var phase: Phase = .loading
     /// Primer arranque (handoff): landing → onboarding hasta que el Birth corra.
-    @Published var onboarded: Bool = OnboardingDefaults().hasOnboarded
+    @Published var onboarded: Bool = AppModel.onboardingDefaults.hasOnboarded
     /// "Repetir onboarding" desde Ajustes (re-corre el flujo sin borrar memoria).
     @Published var replayingOnboarding = false
     @Published private(set) var chatModel: ChatViewModel?
@@ -53,10 +58,10 @@ final class AppModel: ObservableObject {
     /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
     private(set) var account: AccountViewModel?
 
-    private let keychain = KeychainStore()
+    private let keychain = UITestMode.isActive ? KeychainStore(service: UITestMode.keychainService) : KeychainStore()
     private var store: SymbolicStore?
     private var telemetry: Telemetry?
-    private var configProvider: FirebaseConfigProvider?
+    private var configProvider: (any RemoteConfigProviding)?
     // Fase 2: el brain, la cola de candidatos y el sueño.
     private var brain: Brain?
     private var inbox: ConsolidationInbox?
@@ -74,12 +79,26 @@ final class AppModel: ObservableObject {
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
     static let shared = ConsolidatorHolder()
 
-    func bootstrap() async {
-        account = AccountViewModel(provider: FirebaseAccountProvider())
+    /// Defaults del onboarding/modo: `.standard`, o la suite efímera en `--uitest`.
+    static let onboardingDefaults = OnboardingDefaults(
+        defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
 
-        // Config congelada por sesión (fetch+activate una vez).
-        let provider = await FirebaseConfigProvider.bootstrap()
-        configProvider = provider
+    /// Disponibilidad del modelo local: en vivo, o forzada a `.available` en `--uitest`.
+    static let availability: @Sendable () -> OnDeviceAvailability = {
+        UITestMode.isActive ? UITestMode.forcedAvailability : OnDeviceAvailability.current()
+    }
+
+    func bootstrap() async {
+        if UITestMode.isActive {
+            account = AccountViewModel(provider: PreviewAccountProvider(state: .signedOut),
+                                       profile: AccountProfileStore(defaults: UITestMode.defaults))
+            configProvider = UITestMode.bundledConfig()
+        } else {
+            account = AccountViewModel(provider: FirebaseAccountProvider())
+            // Config congelada por sesión (fetch+activate una vez).
+            let provider: FirebaseConfigProvider = await FirebaseConfigProvider.bootstrap()
+            configProvider = provider
+        }
 
         // Base de datos única (GRDB) en el sandbox.
         do {
@@ -102,7 +121,9 @@ final class AppModel: ObservableObject {
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
-            let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry)
+            let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry,
+                                             onboardingDefaults: Self.onboardingDefaults,
+                                             availability: Self.availability)
             settings.onReplayOnboarding = { [weak self] in self?.startOnboardingReplay() }
             settings.account = account
             // Cambio de modo en Ajustes (§4.9): re-cablea el harness sin re-onboarding.
@@ -130,10 +151,13 @@ final class AppModel: ObservableObject {
     func makeOnboardingModel() -> OnboardingViewModel {
         OnboardingViewModel(
             keychain: keychain,
-            api: configProvider?.snapshot().config(for: .anthropic)?.api,
+            // `--uitest`: sin api → el validador acepta offline con warning (sin red).
+            api: UITestMode.isActive ? nil : configProvider?.snapshot().config(for: .anthropic)?.api,
             selfModel: selfModel,
+            defaults: Self.onboardingDefaults,
             isReplay: replayingOnboarding,
-            account: account
+            account: account,
+            availability: Self.availability
         ) { [weak self] in
             self?.completeOnboarding()
         }
@@ -154,7 +178,7 @@ final class AppModel: ObservableObject {
     func exitOnboardingFlow() {
         if replayingOnboarding {
             // Cancela el replay: la mente ya había nacido.
-            OnboardingDefaults().markOnboarded()
+            Self.onboardingDefaults.markOnboarded()
             onboarded = true
             replayingOnboarding = false
         }
@@ -163,21 +187,23 @@ final class AppModel: ObservableObject {
     private func buildIfPossible() async {
         guard let store, let telemetry, let configProvider else { return }
         let snapshot = configProvider.snapshot()
-        let mode = OperatingModeStore().mode
+        let mode = Self.onboardingDefaults.modeStore.mode
 
         // Córtex remoto (Claude): solo si hay token con modo de auth reconocible.
         let token = (try? keychain.read()) ?? ""
         let authMode = AuthMode.detect(fromToken: token)
         var claude: ProviderSelector.ClaudeCortex?
         if let authMode, let config = snapshot.config(for: .anthropic) {
-            claude = .init(provider: ClaudeProvider(), router: ModelRouter(config: config),
+            let cortex: Provider = UITestMode.isActive ? UITestScriptedProvider() : ClaudeProvider()
+            claude = .init(provider: cortex, router: ModelRouter(config: config),
                            authMode: authMode, token: token)
         }
         // Córtex local (Apple Foundation Models): sin red, sin auth. La
         // disponibilidad se consulta en cada turno, jamás se asume.
         var local: ProviderSelector.LocalCortex?
         if let config = snapshot.config(for: .onDevice) {
-            local = .init(provider: OnDeviceProvider.system(), router: ModelRouter(config: config))
+            let cortex: Provider = UITestMode.isActive ? UITestScriptedProvider() : OnDeviceProvider.system()
+            local = .init(provider: cortex, router: ModelRouter(config: config))
         }
 
         if mode.requiresToken, claude == nil {
@@ -194,7 +220,7 @@ final class AppModel: ObservableObject {
         }
 
         let selector = ProviderSelector(mode: mode, claude: claude, local: local,
-                                        availability: { OnDeviceAvailability.current() })
+                                        availability: Self.availability)
         sleepScheduler = SleepScheduler(selector: selector)
 
         let loop = AgentLoop(
@@ -220,7 +246,8 @@ final class AppModel: ObservableObject {
                                             realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
-            await runForegroundFallbackIfNeeded(consolidator)
+            // `--uitest`: sin sueño en foreground (turnos deterministas).
+            if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
@@ -234,7 +261,9 @@ final class AppModel: ObservableObject {
             desireEngine = engine
             // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.
             let sid = sessionId
-            Task.detached { _ = try? await engine.pulse(sessionId: sid) }
+            if !UITestMode.isActive {
+                Task.detached { _ = try? await engine.pulse(sessionId: sid) }
+            }
         }
 
         chatModel = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
@@ -292,7 +321,7 @@ final class AppModel: ObservableObject {
     private static func databasePath() -> String {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return dir.appendingPathComponent("anima.sqlite").path
+        return dir.appendingPathComponent(UITestMode.isActive ? UITestMode.databaseName : "anima.sqlite").path
     }
 
     /// Protección del .sqlite alineada con el token del Keychain (AfterFirstUnlock):
@@ -348,24 +377,24 @@ struct RootView: View {
             if let chat = app.chatModel {
                 ChatView(model: chat)
                     .confirmationOverlay(app.confirmation)
-                    .tabItem { Label("Chat", systemImage: "bubble.left") }
+                    .tabItem { Label("Chat", systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
             }
             if let memory = app.memoryModel {
                 MemoryBrowserView(model: memory)
-                    .tabItem { Label("Memoria", systemImage: "brain") }
+                    .tabItem { Label("Memoria", systemImage: "brain").accessibilityIdentifier("tab.memory") }
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
-                    .tabItem { Label("Metas", systemImage: "target") }
+                    .tabItem { Label("Metas", systemImage: "target").accessibilityIdentifier("tab.goals") }
             }
             if let approvals = app.approvalsModel {
                 ApprovalsInboxView(model: approvals)
-                    .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal") }
+                    .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
                     .badge(approvals.badgeCount)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
-                    .tabItem { Label("Ajustes", systemImage: "gearshape") }
+                    .tabItem { Label("Ajustes", systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
             }
         }
         .tint(Theme.Colors.accent)

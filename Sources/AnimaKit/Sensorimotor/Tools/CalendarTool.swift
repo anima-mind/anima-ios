@@ -6,7 +6,24 @@
 import Foundation
 
 public struct CalendarTool: SensorimotorTool {
-    public init() {}
+    private let makeStore: @Sendable () -> (any CalendarStore)?
+
+    public init() {
+        self.init(makeStore: CalendarTool.systemStore)
+    }
+
+    /// Inyección para tests: el store se crea por ejecución (como EKEventStore).
+    init(makeStore: @escaping @Sendable () -> (any CalendarStore)?) {
+        self.makeStore = makeStore
+    }
+
+    static let systemStore: @Sendable () -> (any CalendarStore)? = {
+        #if canImport(EventKit)
+        return EventKitCalendarStore()
+        #else
+        return nil
+        #endif
+    }
 
     private static let readOps: Set<String> = ["list", "search"]
 
@@ -82,23 +99,42 @@ public struct CalendarTool: SensorimotorTool {
         guard let action = input["action"]?.stringValue else {
             return ToolResult(content: "Error: falta 'action'.", isError: true)
         }
-        #if canImport(EventKit)
-        return await CalendarBackend.run(action: action, input: input)
-        #else
-        return ToolResult(content: "El calendario no está disponible en esta plataforma.", isError: true)
-        #endif
+        guard let store = makeStore() else {
+            return ToolResult(content: "El calendario no está disponible en esta plataforma.", isError: true)
+        }
+        return await CalendarActions.run(action: action, input: input, store: store, now: Date())
     }
 }
 
-#if canImport(EventKit)
-import EventKit
+// MARK: - Store (frontera con EventKit)
 
-enum CalendarBackend {
-    static func run(action: String, input: JSONValue) async -> ToolResult {
-        let store = EKEventStore()
+/// Evento reducido a valores: EKEvent no es Sendable ni instanciable sin store.
+struct CalendarEventRecord: Sendable, Equatable {
+    var id: String?
+    var title: String?
+    var notes: String?
+    var start: Date
+}
+
+protocol CalendarStore: Sendable {
+    func requestAccess() async throws -> Bool
+    func events(from start: Date, to end: Date) -> [CalendarEventRecord]
+    /// Devuelve el identificador del evento creado.
+    func createEvent(title: String, start: Date, end: Date) throws -> String?
+    /// false si no existe un evento con ese id.
+    func deleteEvent(id: String) throws -> Bool
+}
+
+// MARK: - Lógica de acciones (pura respecto a EventKit)
+
+enum CalendarActions {
+    static let searchWindowDays = 90
+    static let maxListed = 50
+
+    static func run(action: String, input: JSONValue, store: any CalendarStore, now: Date) async -> ToolResult {
         let granted: Bool
         do {
-            granted = try await store.requestFullAccessToEvents()
+            granted = try await store.requestAccess()
         } catch {
             return ToolResult(content: "Sin acceso al calendario: \(error.localizedDescription)", isError: true)
         }
@@ -109,9 +145,9 @@ enum CalendarBackend {
         switch action {
         case "list":
             let days = intValue(input["days_ahead"]) ?? 7
-            return list(store: store, daysAhead: days, query: nil)
+            return list(store: store, now: now, daysAhead: days, query: nil)
         case "search":
-            return list(store: store, daysAhead: 90, query: input["query"]?.stringValue)
+            return list(store: store, now: now, daysAhead: searchWindowDays, query: input["query"]?.stringValue)
         case "create":
             return create(store: store, input: input)
         case "delete":
@@ -121,11 +157,9 @@ enum CalendarBackend {
         }
     }
 
-    private static func list(store: EKEventStore, daysAhead: Int, query: String?) -> ToolResult {
-        let now = Date()
+    static func list(store: any CalendarStore, now: Date, daysAhead: Int, query: String?) -> ToolResult {
         let end = Calendar.current.date(byAdding: .day, value: max(1, daysAhead), to: now) ?? now
-        let predicate = store.predicateForEvents(withStart: now, end: end, calendars: nil)
-        var events = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
+        var events = store.events(from: now, to: end).sorted { $0.start < $1.start }
         if let query, !query.isEmpty {
             let q = query.lowercased()
             events = events.filter {
@@ -136,14 +170,13 @@ enum CalendarBackend {
             return ToolResult(content: "No hay eventos en el rango solicitado.")
         }
         let df = ISO8601DateFormatter()
-        let lines = events.prefix(50).map { event -> String in
-            let start = df.string(from: event.startDate)
-            return "- [\(event.eventIdentifier ?? "?")] \(event.title ?? "(sin título)") @ \(start)"
+        let lines = events.prefix(maxListed).map { event -> String in
+            "- [\(event.id ?? "?")] \(event.title ?? "(sin título)") @ \(df.string(from: event.start))"
         }
         return ToolResult(content: lines.joined(separator: "\n"))
     }
 
-    private static func create(store: EKEventStore, input: JSONValue) -> ToolResult {
+    static func create(store: any CalendarStore, input: JSONValue) -> ToolResult {
         guard let title = input["title"]?.stringValue, !title.isEmpty else {
             return ToolResult(content: "Error: falta 'title'.", isError: true)
         }
@@ -153,26 +186,19 @@ enum CalendarBackend {
         }
         let end = input["end"]?.stringValue.flatMap { df.date(from: $0) }
             ?? start.addingTimeInterval(3600)
-        let event = EKEvent(eventStore: store)
-        event.title = title
-        event.startDate = start
-        event.endDate = end
-        event.calendar = store.defaultCalendarForNewEvents
         do {
-            try store.save(event, span: .thisEvent)
-            return ToolResult(content: "Evento '\(title)' creado (id \(event.eventIdentifier ?? "?")).")
+            let id = try store.createEvent(title: title, start: start, end: end)
+            return ToolResult(content: "Evento '\(title)' creado (id \(id ?? "?")).")
         } catch {
             return ToolResult(content: "No se pudo crear el evento: \(error.localizedDescription)", isError: true)
         }
     }
 
-    private static func delete(store: EKEventStore, eventId: String?) -> ToolResult {
-        guard let eventId, let event = store.event(withIdentifier: eventId) else {
-            return ToolResult(content: "No se encontró el evento indicado.", isError: true)
-        }
+    static func delete(store: any CalendarStore, eventId: String?) -> ToolResult {
+        let notFound = ToolResult(content: "No se encontró el evento indicado.", isError: true)
+        guard let eventId else { return notFound }
         do {
-            try store.remove(event, span: .thisEvent)
-            return ToolResult(content: "Evento borrado.")
+            return try store.deleteEvent(id: eventId) ? ToolResult(content: "Evento borrado.") : notFound
         } catch {
             return ToolResult(content: "No se pudo borrar el evento: \(error.localizedDescription)", isError: true)
         }
@@ -181,6 +207,42 @@ enum CalendarBackend {
     private static func intValue(_ value: JSONValue?) -> Int? {
         if case .int(let n) = value { return n }
         return nil
+    }
+}
+
+// MARK: - Adaptador EventKit (solo device/Mac con permiso real)
+
+#if canImport(EventKit)
+import EventKit
+
+final class EventKitCalendarStore: CalendarStore, @unchecked Sendable {
+    private let store = EKEventStore()
+
+    func requestAccess() async throws -> Bool {
+        try await store.requestFullAccessToEvents()
+    }
+
+    func events(from start: Date, to end: Date) -> [CalendarEventRecord] {
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: predicate).map {
+            CalendarEventRecord(id: $0.eventIdentifier, title: $0.title, notes: $0.notes, start: $0.startDate)
+        }
+    }
+
+    func createEvent(title: String, start: Date, end: Date) throws -> String? {
+        let event = EKEvent(eventStore: store)
+        event.title = title
+        event.startDate = start
+        event.endDate = end
+        event.calendar = store.defaultCalendarForNewEvents
+        try store.save(event, span: .thisEvent)
+        return event.eventIdentifier
+    }
+
+    func deleteEvent(id: String) throws -> Bool {
+        guard let event = store.event(withIdentifier: id) else { return false }
+        try store.remove(event, span: .thisEvent)
+        return true
     }
 }
 #endif

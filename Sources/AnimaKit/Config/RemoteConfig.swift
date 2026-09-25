@@ -176,11 +176,26 @@ public enum ProviderConfigParser {
         public let routes: [String: ModelRoute]
     }
 
+    /// Clave reservada dentro de provider_config: tarifas por prefijo de modelo
+    /// ({"pricing": {"gpt-5.2": {"in": 1.75, "out": 14}, …}}). El parser de
+    /// providers la ignora (no es un provider); se extrae aparte.
+    public static let pricingKey = "pricing"
+
+    public static func pricing(_ data: Data) -> JSONValue? {
+        guard let raw = try? JSONDecoder().decode(JSONValue.self, from: data),
+              case .object(let o) = raw else { return nil }
+        return o[pricingKey]
+    }
+
     public static func parse(_ data: Data) throws -> [ModelProvider: (api: ProviderAPIConfig, routes: [TurnClass: ModelRoute])] {
-        let raw = try JSONDecoder().decode([String: Entry].self, from: data)
+        // Tolerancia POR CLAVE: una clave reservada (pricing) o con forma futura
+        // no puede tumbar el parse completo — se decodifica entrada por entrada.
+        let rawValues = try JSONDecoder().decode([String: JSONValue].self, from: data)
         var out: [ModelProvider: (api: ProviderAPIConfig, routes: [TurnClass: ModelRoute])] = [:]
-        for (key, entry) in raw {
-            guard let provider = ModelProvider(rawValue: key) else { continue }  // provider futuro: ignorar
+        for (key, value) in rawValues {
+            guard let provider = ModelProvider(rawValue: key) else { continue }  // provider futuro/pricing: ignorar
+            guard let entryData = try? JSONEncoder().encode(value),
+                  let entry = try? JSONDecoder().decode(Entry.self, from: entryData) else { continue }
             var routes: [TurnClass: ModelRoute] = [:]
             for (routeKey, route) in entry.routes {
                 guard let turn = TurnClass(rawValue: routeKey) else { continue } // clase futura: ignorar

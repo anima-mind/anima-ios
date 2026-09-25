@@ -123,9 +123,13 @@ public enum ToolSpec: Sendable, Equatable {
 public struct ToolResult: Sendable, Equatable {
     public var content: String
     public var isError: Bool
-    public init(content: String, isError: Bool = false) {
+    /// El dueño rechazó la confirmación: no es un fallo de la tool ni del
+    /// conocimiento — "no quiero" ≠ "falló" (decisión 2026-09-25).
+    public var isRejection: Bool
+    public init(content: String, isError: Bool = false, isRejection: Bool = false) {
         self.content = content
         self.isError = isError
+        self.isRejection = isRejection
     }
 }
 

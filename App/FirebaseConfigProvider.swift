@@ -42,6 +42,10 @@ final class FirebaseConfigProvider: RemoteConfigProviding {
                               stringLookup: (String) -> String) -> ConfigSnapshot {
         let providerConfigData = dataLookup("provider_config")
         let parsed = (try? ProviderConfigParser.parse(providerConfigData)) ?? [:]
+        // Tarifas remotas (clave "pricing" del mismo JSON): los precios rotan
+        // sin release, igual que betas y model ids. Sin la clave, quedan los
+        // defaults bundled de Pricing.
+        if let pricing = ProviderConfigParser.pricing(providerConfigData) { Pricing.load(pricing) }
         var providers: [ModelProvider: ProviderConfig] = [:]
         for (provider, entry) in parsed {
             let base = stringLookup(ProviderConfigParser.promptKey(for: provider))

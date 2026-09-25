@@ -18,6 +18,14 @@ schemes:
     build:
       targets:
         Anima: all
+        AnimaUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: AnimaUITests
+          parallelizable: false
+          randomExecutionOrder: false
 
 targets:
   Anima:
@@ -32,6 +40,7 @@ targets:
           - "*.entitlements"
           - "Anima.xcodeproj"
           - "Skills"
+          - "UITests"
       # Skills de ejemplo (markdown portable, doc 05): folder reference en el
       # bundle; el shell los copia a Documents/skills al primer arranque.
       - path: Skills
@@ -73,3 +82,26 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # Sign in with Apple (identidad vía Firebase Auth, proveedor apple.com).
         CODE_SIGN_ENTITLEMENTS: Anima.entitlements
+
+  # UI tests (XCUITest) contra el simulador. La app se lanza con `--uitest`
+  # (dobles deterministas sin red, ver App/UITestSupport.swift). Categoría aparte
+  # del gate de cobertura del package.
+  AnimaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: UITests
+        excludes:
+          - "*.md"
+    dependencies:
+      - target: Anima
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joshuamoreno1.anima.uitests
+        TEST_TARGET_NAME: Anima
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 97VRP2W6B6
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES

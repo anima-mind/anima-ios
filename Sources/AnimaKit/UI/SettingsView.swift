@@ -227,6 +227,8 @@ public struct SettingsView: View {
                         .padding(.horizontal, Theme.Space.cardPad)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.mode.\(mode.rawValue)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                     if index < OperatingMode.allCases.count - 1 {
                         Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
                     }
@@ -259,6 +261,7 @@ public struct SettingsView: View {
                 Text(notice)
                     .font(Theme.Type_.meta)
                     .foregroundStyle(Theme.Colors.textMuted)
+                    .accessibilityIdentifier("settings.mode.notice")
             }
         }
     }
@@ -344,6 +347,7 @@ public struct SettingsView: View {
                     .padding(.horizontal, Theme.Space.cardPad)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.replayOnboarding")
             }
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)

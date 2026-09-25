@@ -32,6 +32,8 @@ public final class SettingsViewModel: ObservableObject {
     public var onReplayOnboarding: (() -> Void)?
     /// Sección Cuenta (Sign in with Apple); la inyecta el shell.
     public var account: AccountViewModel?
+    /// Sección Skills (§5.7); la inyecta el shell con el SkillEngine vivo.
+    public var skills: SkillsViewModel?
     /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
     public var onModeChanged: ((OperatingMode) -> Void)?
     private let availabilityProbe: () -> OnDeviceAvailability
@@ -184,6 +186,9 @@ public struct SettingsView: View {
                     modeSection
                     tokenSection
                     costsSection
+                    if let skills = model.skills {
+                        SkillsSettingsSection(model: skills)
+                    }
                     mindSection
                 }
                 .padding(Theme.Space.screenInset)

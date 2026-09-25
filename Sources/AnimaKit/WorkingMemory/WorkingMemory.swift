@@ -7,7 +7,8 @@
 //   1. bloques compaction   — re-anexados cada turno si el server los emitió
 //   2. history window       — la ventana del SymbolicStore
 //   3. role:system mid-conv — SelfModel view (§4.5); Fase 1: SelfView estático
-//   4. role:user activado   — memorias del Brain.retrieve() (Fase 2: hook vacío)
+//   4. role:user activado   — memorias del Brain.retrieve() + el skill que matcheó
+//                             el turno ([SKILL: …], conocimiento activado)
 //   5. turn input           — el mensaje del dueño (+ image blocks si hay foto)
 //
 // Lo volátil (3, 4) va al final: el caché cubre el prefijo, moverlo al frente
@@ -58,6 +59,8 @@ public actor WorkingMemory {
     private var compactionBlocks: [ContentBlock] = []
     // Hook Fase 2: el Brain inyecta aquí las memorias activadas del turno.
     private var activatedMemories: [ContentBlock] = []
+    // El skill del turno (SkillEngine.bestMatch), ya renderizado y truncado.
+    private var activatedSkill: SkillInjection?
 
     // Estimación de presión: chars del último ensamblado × ratio de corrección.
     private var lastAssembledChars = 0
@@ -119,8 +122,11 @@ public actor WorkingMemory {
     /// Hook Fase 2: formatea las memorias activadas como bloque etiquetado
     /// "[MEMORIAS ACTIVADAS — pueden estar desactualizadas]". Vacío en Fase 1.
     private func assembleActivatedContext() -> [Message] {
-        guard !activatedMemories.isEmpty else { return [] }
-        return [Message(role: .user, content: activatedMemories)]
+        // El skill es conocimiento activado, misma naturaleza que las memorias:
+        // mismo mensaje, después de ellas (más cerca del turn input).
+        let content = activatedMemories + (activatedSkill.map { [ContentBlock.text($0.text)] } ?? [])
+        guard !content.isEmpty else { return [] }
+        return [Message(role: .user, content: content)]
     }
 
     // MARK: - Presión y relieve
@@ -217,6 +223,14 @@ public actor WorkingMemory {
         // On-device: solo las top-N (el retrieve ya viene ordenado por relevancia).
         let body = memories.prefix(profile.maxActivatedMemories).map { "- \($0.content)" }.joined(separator: "\n")
         activatedMemories = [.text(Self.activatedMemoriesHeader + "\n" + body)]
+    }
+
+    /// El skill que matcheó el turno (nil lo limpia), renderizado como bloque
+    /// `[SKILL: …]` y truncado al presupuesto del perfil activo.
+    @discardableResult
+    public func setActivatedSkill(_ skill: Skill?) -> SkillInjection? {
+        activatedSkill = skill.map { SkillInjection.render($0, budgetChars: profile.maxSkillChars) }
+        return activatedSkill
     }
 
     /// Fase 3: el SelfModel vivo reemplaza al SelfView estático provisional.

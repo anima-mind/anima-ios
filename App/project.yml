@@ -39,7 +39,13 @@ targets:
           - "*.template.plist"
           - "*.entitlements"
           - "Anima.xcodeproj"
+          - "Skills"
           - "UITests"
+      # Skills de ejemplo (markdown portable, doc 05): folder reference en el
+      # bundle; el shell los copia a Documents/skills al primer arranque.
+      - path: Skills
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: AnimaKit
         product: AnimaKit

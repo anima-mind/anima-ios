@@ -32,6 +32,61 @@ public final class Telemetry: Sendable {
         }
     }
 
+    // MARK: - Skills (match / inyección / outcome por turno)
+
+    /// Una fila por turno con el SkillEngine cableado — también sin match
+    /// (skillName nil): el eval futuro compara turnos con y sin skill.
+    public struct SkillTurnRow: Sendable, Equatable {
+        public var sessionId: SessionID
+        public var skillName: String?
+        public var score: Double?
+        public var injectedChars: Int
+        public var truncated: Bool
+        public var outcome: String          // SkillOutcome.rawValue o "none"
+        public var endReason: String        // endTurn / stopped:loopDetected / error …
+        public var skillToolCalls: Int
+        public var skillToolErrors: Int
+
+        public init(sessionId: SessionID, skillName: String?, score: Double?, injectedChars: Int,
+                    truncated: Bool, outcome: String, endReason: String,
+                    skillToolCalls: Int, skillToolErrors: Int) {
+            self.sessionId = sessionId
+            self.skillName = skillName
+            self.score = score
+            self.injectedChars = injectedChars
+            self.truncated = truncated
+            self.outcome = outcome
+            self.endReason = endReason
+            self.skillToolCalls = skillToolCalls
+            self.skillToolErrors = skillToolErrors
+        }
+    }
+
+    public func recordSkillTurn(_ row: SkillTurnRow) throws {
+        let now = Date().timeIntervalSince1970
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO skill_turn_telemetry
+                (session_id, skill_name, score, injected_chars, truncated, outcome, end_reason,
+                 skill_tool_calls, skill_tool_errors, ts)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """, arguments: [row.sessionId, row.skillName, row.score, row.injectedChars,
+                                 row.truncated ? 1 : 0, row.outcome, row.endReason,
+                                 row.skillToolCalls, row.skillToolErrors, now])
+        }
+    }
+
+    public func skillTurns() throws -> [SkillTurnRow] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM skill_turn_telemetry ORDER BY id").map {
+                SkillTurnRow(sessionId: $0["session_id"], skillName: $0["skill_name"], score: $0["score"],
+                             injectedChars: $0["injected_chars"], truncated: ($0["truncated"] as Int) == 1,
+                             outcome: $0["outcome"], endReason: $0["end_reason"],
+                             skillToolCalls: $0["skill_tool_calls"], skillToolErrors: $0["skill_tool_errors"])
+            }
+        }
+    }
+
     // MARK: - Agregados de costos
 
     public struct CostRow: Sendable, Equatable {

@@ -79,6 +79,7 @@ print("-" * (width + 22))
 pct = 100.0 * covered / total
 print(f"{'TOTAL (recorte)'.ljust(width)}  {covered:>5}/{total:<5}  {pct:>6.2f}%")
 
+sys.stdout.flush()
 if pct < minimum:
     print(f"\n❌ coverage-gate: {pct:.2f}% de líneas < mínimo {minimum:.0f}%. "
           "Sube la cobertura de los archivos de arriba (los más bajos primero).", file=sys.stderr)

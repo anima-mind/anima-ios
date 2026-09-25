@@ -25,6 +25,13 @@ extension SensorimotorTool {
     }
 }
 
+/// Resultado de una ejecución sin prompt (SkillRunner): la policy decide igual.
+public enum PreauthorizedExecution: Sendable, Equatable {
+    case executed(ToolResult)
+    case needsConfirmation(ConfirmationRequest)   // la policy pidió ask: NO se ejecutó
+    case denied(ToolResult)                       // deny / tool desconocida (fail-closed)
+}
+
 public actor Sensorimotor {
     private var tools: [String: any SensorimotorTool]
     private let policy: PermissionPolicy
@@ -56,28 +63,39 @@ public actor Sensorimotor {
     /// Ejecuta una tool aplicando la capa 1 (PermissionPolicy) y un timeout.
     /// Fail-closed: tool desconocida = deny; eferente sin confirmación = no ejecuta.
     public func execute(name: String, input: JSONValue) async -> ToolResult {
-        guard let tool = tools[name] else {
-            return ToolResult(content: "Tool desconocida o no permitida: \(name)", isError: true)
-        }
-        let kind = tool.kind(for: input)
-        let operation = tool.operation(for: input)
-
-        switch policy.decide(tool: name, known: true, kind: kind, operation: operation) {
-        case .deny:
-            return ToolResult(content: "Acción no permitida por la política de permisos.", isError: true)
-        case .ask:
-            let request = ConfirmationRequest(
-                tool: name, operation: operation,
-                summary: tool.confirmationSummary(for: input), input: input)
-            let approved = await confirmation.confirm(request)
-            guard approved else {
+        switch await executePreauthorized(name: name, input: input) {
+        case .executed(let result), .denied(let result):
+            return result
+        case .needsConfirmation(let request):
+            guard await confirmation.confirm(request) else {
                 return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }
-        case .allow:
-            break
+            guard let tool = tools[name] else { return Self.unknown(name) }
+            return await runWithTimeout(tool: tool, input: input)
         }
+    }
 
-        return await runWithTimeout(tool: tool, input: input)
+    /// Camino del SkillRunner (System 1): MISMA capa 1 que `execute` — los
+    /// invariantes no se delegan — pero SIN pedir confirmación: si la policy dice
+    /// `ask`, devuelve `.needsConfirmation` sin ejecutar ni molestar al dueño.
+    public func executePreauthorized(name: String, input: JSONValue) async -> PreauthorizedExecution {
+        guard let tool = tools[name] else { return .denied(Self.unknown(name)) }
+        let kind = tool.kind(for: input)
+        let operation = tool.operation(for: input)
+        switch policy.decide(tool: name, known: true, kind: kind, operation: operation) {
+        case .deny:
+            return .denied(ToolResult(content: "Acción no permitida por la política de permisos.", isError: true))
+        case .ask:
+            return .needsConfirmation(ConfirmationRequest(
+                tool: name, operation: operation,
+                summary: tool.confirmationSummary(for: input), input: input))
+        case .allow:
+            return .executed(await runWithTimeout(tool: tool, input: input))
+        }
+    }
+
+    private static func unknown(_ name: String) -> ToolResult {
+        ToolResult(content: "Tool desconocida o no permitida: \(name)", isError: true)
     }
 
     private func runWithTimeout(tool: any SensorimotorTool, input: JSONValue) async -> ToolResult {

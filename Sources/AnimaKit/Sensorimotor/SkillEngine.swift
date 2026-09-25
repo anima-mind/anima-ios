@@ -121,13 +121,18 @@ public struct SkillInjection: Sendable, Equatable {
             parts.append("Pasos:\n" + skill.steps.enumerated().map { "\($0 + 1). \($1)" }.joined(separator: "\n"))
         }
         if !skill.body.isEmpty { parts.append("Notas:\n" + skill.body) }
-        let full = parts.joined(separator: "\n")
-        let budget = max(budgetChars, header(skill.name).count + truncationMarker.count)
+        return truncated(name: skill.name, header: header(skill.name),
+                         full: parts.joined(separator: "\n"), budgetChars: budgetChars)
+    }
+
+    /// Recorta un bloque al presupuesto conservando SIEMPRE el header.
+    static func truncated(name: String, header: String, full: String, budgetChars: Int) -> SkillInjection {
+        let budget = max(budgetChars, header.count + truncationMarker.count)
         guard full.count > budget else {
-            return SkillInjection(skillName: skill.name, text: full, truncated: false)
+            return SkillInjection(skillName: name, text: full, truncated: false)
         }
         let kept = String(full.prefix(budget - truncationMarker.count))
-        return SkillInjection(skillName: skill.name, text: kept + truncationMarker, truncated: true)
+        return SkillInjection(skillName: name, text: kept + truncationMarker, truncated: true)
     }
 }
 

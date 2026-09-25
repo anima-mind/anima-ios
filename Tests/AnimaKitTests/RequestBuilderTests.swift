@@ -26,6 +26,33 @@ import Testing
         }
     }
 
+    @Test func volatileSystemGoesToTopLevelBlocks() throws {
+        // Verificado EN VIVO (400 real): la API rechaza role:system con texto dentro
+        // de messages[]. El SelfView/banner van como bloque extra del system top-level
+        // con su propio cache_control (el prefijo base conserva su hit).
+        let opts = try TestConfig.callOpts(authMode: .apiKey)
+        let req = try ClaudeRequestBuilder.build(
+            context: AssembledContext(messages: [
+                Message(role: .system, content: [.text("SELF: te llamas Anima")]),
+                .user("hola"),
+            ]),
+            tools: [], opts: opts)
+        let body = try decodedBody(req)
+        // ningún role:system dentro de messages
+        if case .array(let msgs) = body["messages"]! {
+            #expect(msgs.count == 1)
+            #expect(msgs.allSatisfy { $0.at("role") != .string("system") })
+        } else { Issue.record("messages no es array") }
+        // el system top-level termina con el bloque volátil, con su propio breakpoint
+        if case .array(let sys) = body["system"]! {
+            #expect(sys.count >= 2)
+            #expect(sys.last?.at("text") == .string("SELF: te llamas Anima"))
+            #expect(sys.last?.at("cache_control", "type") == .string("ephemeral"))
+            // y el bloque anterior (fin del prefijo estable) TAMBIÉN conserva el suyo
+            #expect(sys[sys.count - 2].at("cache_control", "type") == .string("ephemeral"))
+        } else { Issue.record("system no es array") }
+    }
+
     @Test func opusInteractiveBodyShape() throws {
         let opts = try TestConfig.callOpts(authMode: .apiKey)
         let req = try ClaudeRequestBuilder.build(

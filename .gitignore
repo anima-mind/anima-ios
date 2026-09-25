@@ -13,3 +13,5 @@ GoogleService-Info.plist
 .spm-ci/
 App/Info.plist
 /build/
+.dd-sim/
+build/

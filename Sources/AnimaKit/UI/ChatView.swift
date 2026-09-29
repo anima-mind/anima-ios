@@ -56,6 +56,12 @@ public final class ChatViewModel: ObservableObject {
     @Published public var isStreaming: Bool = false
     @Published public var errorText: String?
     @Published public private(set) var mind = MindState()
+    /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
+    @Published public var focusedMessageId: UUID?
+    /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
+    public private(set) var lastMirroredTurnID: UUID?
+    public let events: AsyncStream<SurfaceEvent>
+    private let eventSink: AsyncStream<SurfaceEvent>.Continuation
 
     private let loop: AgentLoop
     private let sessionId: SessionID
@@ -72,6 +78,7 @@ public final class ChatViewModel: ObservableObject {
         self.sessionId = sessionId
         self.desireEngine = desireEngine
         self.selfModel = selfModel
+        (events, eventSink) = AsyncStream<SurfaceEvent>.makeStream()
     }
 
     /// Refresca p/ciclos/régimen para el badge (anima 600 ms al cambiar).
@@ -117,6 +124,7 @@ public final class ChatViewModel: ObservableObject {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
         input = ""
+        eventSink.yield(.userText(text))
         await run(text: text, addUserBubble: true)
     }
 
@@ -171,6 +179,36 @@ public final class ChatViewModel: ObservableObject {
     }
 }
 
+// MARK: - PhoneChatSurface (doc 05 §3.2): MISMO contrato que el HUD
+
+extension ChatViewModel: PhoneChatSurface {
+    public nonisolated var id: SurfaceID { .phoneChat }
+    public nonisolated var capabilities: SurfaceCapabilities { .phoneChat }
+
+    /// Espejo de los turnos que llegaron por otra superficie (gafas): la
+    /// conversación es una sola y el teléfono la muestra completa.
+    public func render(_ content: SurfaceContent) async {
+        switch content {
+        case .userTurn(let text, let origin) where origin != .phoneChat:
+            messages.append(DisplayMessage(role: .user, text: text))
+        case .assistantTurn(let text, let origin) where origin != .phoneChat:
+            let message = DisplayMessage(role: .assistant, text: text)
+            messages.append(message)
+            lastMirroredTurnID = message.id
+        case .declined(let text, let origin) where origin != .phoneChat:
+            let message = DisplayMessage(role: .assistant, text: text, isRefusal: true)
+            messages.append(message)
+            lastMirroredTurnID = message.id
+        default:
+            break
+        }
+    }
+
+    public func focus(turn: UUID?) {
+        focusedMessageId = turn ?? messages.last?.id
+    }
+}
+
 // MARK: - Vista
 
 public struct ChatView: View {
@@ -205,6 +243,9 @@ public struct ChatView: View {
                         if let last = model.messages.last {
                             proxy.scrollTo(last.id, anchor: .bottom)
                         }
+                    }
+                    .onChange(of: model.focusedMessageId) { _, id in
+                        if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
                 }
                 composer

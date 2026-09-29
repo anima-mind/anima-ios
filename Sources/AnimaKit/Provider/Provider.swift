@@ -126,10 +126,16 @@ public struct ToolResult: Sendable, Equatable {
     /// El dueño rechazó la confirmación: no es un fallo de la tool ni del
     /// conocimiento — "no quiero" ≠ "falló" (decisión 2026-09-25).
     public var isRejection: Bool
-    public init(content: String, isError: Bool = false, isRejection: Bool = false) {
+    /// Bloques que acompañan al tool_result en el mismo mensaje user (p.ej. la
+    /// foto POV de `glasses_camera` como image block ≤1568px). Todos los córtex
+    /// ya soportan user = [tool_result…, image…].
+    public var attachments: [ContentBlock]
+    public init(content: String, isError: Bool = false, isRejection: Bool = false,
+                attachments: [ContentBlock] = []) {
         self.content = content
         self.isError = isError
         self.isRejection = isRejection
+        self.attachments = attachments
     }
 }
 

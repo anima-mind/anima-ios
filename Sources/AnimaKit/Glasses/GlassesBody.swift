@@ -44,6 +44,9 @@ public struct GlassesStatus: Sendable, Equatable {
     public var deviceName: String?
     public var batteryPercent: Int?
     public var lastError: String?
+    /// La última sesión la terminó el mundo (back físico, doff, apagado, dolencia),
+    /// no el harness. La política de activación NO re-abre sola en ese caso.
+    public var endedByDevice: Bool = false
 
     public init(body: GlassesBodyState = .absent, configured: Bool = false,
                 registration: GlassesRegistration = .unavailable, deviceName: String? = nil,
@@ -273,6 +276,7 @@ public actor GlassesBody {
             throw GlassesBodyError.unavailable("gafas no conectadas")
         }
         ailment = nil
+        status.endedByDevice = false
         generation += 1
         let gen = generation
         let session: any GlassesSessionPort
@@ -331,8 +335,8 @@ public actor GlassesBody {
         case .stopped:
             // Back físico, doff o apagado: la sesión murió. Teardown + aviso.
             let wasLive = session != nil
+            if wasLive { status.endedByDevice = true }
             teardown()
-            recompute()
             if wasLive { exitHandler?() }
         default:
             break
@@ -385,8 +389,8 @@ public actor GlassesBody {
         case .hingesClosed:
             // Se quitó las gafas: fin de sesión limpio, no es un fallo.
             let wasLive = session != nil
+            if wasLive { status.endedByDevice = true }
             teardown()
-            recompute()
             if wasLive { exitHandler?() }
         case .noEligibleDevice:
             await record(errorClass: "glasses_unavailable", raw: "noEligibleDevice")
@@ -402,8 +406,8 @@ public actor GlassesBody {
         self.ailment = ailment
         await record(errorClass: ailment.errorClass, raw: raw)
         let wasLive = session != nil
+        if wasLive { status.endedByDevice = true }
         teardown()
-        recompute()
         if wasLive { exitHandler?() }
     }
 

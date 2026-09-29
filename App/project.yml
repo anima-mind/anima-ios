@@ -12,6 +12,13 @@ packages:
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk.git
     from: "11.0.0"
+  # Meta Wearables DAT SDK (gafas, track G). Pin EXACTO calzado con la DAT app
+  # instalada en las gafas (doc 05 §2.1): antes de bumpear, actualizar primero
+  # la DAT app de las gafas. Solo se linkean Core + Display + Camera (MockDevice
+  # JAMÁS en el target de producción: duplica clases objc).
+  MetaWearablesDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    exactVersion: "0.9.0"
 
 schemes:
   Anima:
@@ -38,6 +45,7 @@ targets:
           - project.yml
           - "*.template.plist"
           - "*.entitlements"
+          - "*.xcconfig"
           - "Anima.xcodeproj"
           - "Skills"
           - "UITests"
@@ -46,6 +54,10 @@ targets:
       - path: Skills
         type: folder
         buildPhase: resources
+    # MetaAppID / ClientToken del Wearables Developer Center: ver Glasses.xcconfig.
+    configFiles:
+      Debug: Glasses.xcconfig
+      Release: Glasses.xcconfig
     dependencies:
       - package: AnimaKit
         product: AnimaKit
@@ -53,6 +65,12 @@ targets:
         product: FirebaseRemoteConfig
       - package: Firebase
         product: FirebaseAuth
+      - package: MetaWearablesDAT
+        product: MWDATCore
+      - package: MetaWearablesDAT
+        product: MWDATDisplay
+      - package: MetaWearablesDAT
+        product: MWDATCamera
     info:
       path: Info.plist
       properties:
@@ -61,10 +79,25 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         # Sueño (§5.4): el ciclo corre como BGProcessingTask; sin este array el
         # register(forTaskWithIdentifier:) crashea al lanzar (auditoría v1 gap #1).
-        UIBackgroundModes: [processing]
+        # + gafas (DAT, calcado de Relay verificado en hardware): accesorio + BT.
+        UIBackgroundModes: [processing, external-accessory, bluetooth-peripheral]
+        UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
+        # URL scheme propio: callback de Meta AI en el registro DAT (handleUrl) y
+        # deep link del handoff "ver en el teléfono" (anima://chat?turn=…).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.joshuamoreno1.anima
+            CFBundleURLSchemes: [anima]
+        MWDAT:
+          AppLinkURLScheme: "anima://"
+          MetaAppID: $(MWDAT_META_APP_ID)
+          ClientToken: $(MWDAT_CLIENT_TOKEN)
+          TeamID: $(DEVELOPMENT_TEAM)
+        NSBluetoothAlwaysUsageDescription: "Anima se conecta a tus gafas Meta para mostrarte respuestas en la cara y escucharte manos libres."
+        NSLocalNetworkUsageDescription: "Las gafas Meta envían la foto que autorizas por Wi-Fi local al teléfono."
+        NSBonjourServices: [_bonjour._tcp]
         BGTaskSchedulerPermittedIdentifiers: [mind.anima.consolidate]
         NSCameraUsageDescription: "Anima usa la cámara solo cuando tú se lo pides o confirmas, para ver y comentar una foto que le muestras."
-        NSMicrophoneUsageDescription: "Anima usa el micrófono para grabar notas de voz que tú inicias; el audio se transcribe en el teléfono."
+        NSMicrophoneUsageDescription: "Anima usa el micrófono (del teléfono o de tus gafas) para escucharte cuando tú lo inicias; el audio se transcribe en el teléfono."
         NSSpeechRecognitionUsageDescription: "La transcripción de tus notas de voz ocurre en el dispositivo (es-CO); el audio no sale del teléfono."
         NSCalendarsFullAccessUsageDescription: "Anima lee tu calendario para responder qué tienes agendado y crea eventos solo tras tu confirmación."
         NSRemindersFullAccessUsageDescription: "Anima lee tus recordatorios para ayudarte a no olvidar pendientes y crea nuevos solo tras tu confirmación."

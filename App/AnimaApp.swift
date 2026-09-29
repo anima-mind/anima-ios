@@ -26,10 +26,12 @@ struct AnimaApp: App {
         WindowGroup {
             RootView(app: app)
                 .task { await app.bootstrap() }
+                .onOpenURL { app.handleOpenURL($0) }
                 .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { app.scheduleConsolidation() }
+            app.glassesForeground(phase == .active)
         }
     }
 }
@@ -78,6 +80,10 @@ final class AppModel: ObservableObject {
     private var desireEngine: DesireEngine?
     // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
     private var skillEngine: SkillEngine?
+    // Track G (doc 05): el segundo cuerpo opcional. Sin gafas todo sigue igual.
+    private var glassesBody: GlassesBody?
+    private var glassesActivation: GlassesActivation?
+    @Published private(set) var glassesModel: GlassesViewModel?
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -118,7 +124,19 @@ final class AppModel: ObservableObject {
             // Fase 3 (§5.5, §5.6): identidad viva + registro de lo Real.
             let selfModel = SelfModel(queue: queue, notifier: UserNotificationApprovalNotifier())
             self.selfModel = selfModel
-            self.realRegister = RealRegister(queue: queue)
+            let realRegister = RealRegister(queue: queue)
+            self.realRegister = realRegister
+            // Track G: el cuerpo-gafas (DAT) — selector y sesión únicos en GlassesBody.
+            let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
+            let activation = GlassesActivation(body: glassesBody)
+            self.glassesBody = glassesBody
+            self.glassesActivation = activation
+            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation)
+            Task {
+                await glassesBody.setHandlers(onAction: nil, onExit: { Task { await activation.userExited() } })
+                await glassesBody.start()
+                await activation.start()
+            }
             // Fase 4 (§5.8): el modelo del deseo del Otro y su vista de metas.
             let otherModel = OtherModel(queue: queue)
             self.otherModel = otherModel
@@ -139,6 +157,7 @@ final class AppModel: ObservableObject {
             let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
             self.skillEngine = skillEngine
             settings.skills = SkillsViewModel(engine: skillEngine)
+            settings.glasses = glassesModel
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -165,7 +184,7 @@ final class AppModel: ObservableObject {
         for provider in ModelProvider.remoteCases {
             if let api = snapshot?.config(for: provider)?.api { apis[provider] = api }
         }
-        return OnboardingViewModel(
+        let model = OnboardingViewModel(
             keychain: keychain,
             // `--uitest`: sin apis → el validador acepta offline con warning (sin red).
             apis: UITestMode.isActive ? [:] : apis,
@@ -177,6 +196,8 @@ final class AppModel: ObservableObject {
         ) { [weak self] in
             self?.completeOnboarding()
         }
+        model.glasses = glassesModel
+        return model
     }
 
     func completeOnboarding() {
@@ -242,6 +263,10 @@ final class AppModel: ObservableObject {
                                         availability: Self.availability)
         sleepScheduler = SleepScheduler(selector: selector)
 
+        var bodyStatus: (@Sendable () async -> String?)?
+        if let body = glassesBody {
+            bodyStatus = { await body.currentStatus().statusLine }
+        }
         let loop = AgentLoop(
             selector: selector,
             store: store,
@@ -255,7 +280,8 @@ final class AppModel: ObservableObject {
             inbox: inbox,
             selfModel: selfModel,
             realRegister: realRegister,
-            skillEngine: skillEngine)
+            skillEngine: skillEngine,
+            bodyStatus: bodyStatus)
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -286,7 +312,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        chatModel = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        chat.glasses = glassesModel
+        chatModel = chat
         phase = .ready
     }
 
@@ -336,6 +364,29 @@ final class AppModel: ObservableObject {
             CameraTool(),
             AudioTool(),
         ]
+    }
+
+    // MARK: - Gafas (track G)
+
+    /// SDK real en device/simulador; runtime nulo en `--uitest` (sin BT ni Meta AI).
+    static func makeGlassesRuntime() -> any GlassesRuntime {
+        if UITestMode.isActive { return AbsentGlassesRuntime() }
+        #if canImport(MWDATCore) && canImport(MWDATDisplay)
+        return DATGlassesRuntime()
+        #else
+        return AbsentGlassesRuntime()
+        #endif
+    }
+
+    /// Callback de Meta AI (registro DAT).
+    func handleOpenURL(_ url: URL) {
+        guard let glassesBody else { return }
+        Task { _ = try? await glassesBody.handleURL(url) }
+    }
+
+    func glassesForeground(_ active: Bool) {
+        guard let glassesActivation else { return }
+        Task { await glassesActivation.setForeground(active) }
     }
 
     private static func skillsDirectory() -> URL {

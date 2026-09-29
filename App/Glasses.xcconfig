@@ -1,0 +1,19 @@
+// Glasses.xcconfig — identidad de Anima en el Wearables Developer Center (DAT SDK).
+//
+// MetaAppID y ClientToken los genera el portal https://wearables.developer.meta.com
+// (proyecto de Anima → iOS, bundle com.joshuamoreno1.anima, Team 97VRP2W6B6).
+// NO son secretos de runtime, pero tampoco se versionan (mismo patrón que Relay,
+// que los tiene en un Info.plist gitignored): ponlos en App/Secrets.xcconfig
+// (gitignored por `Secrets.*`) con este formato:
+//
+//   MWDAT_META_APP_ID = 1234567890
+//   MWDAT_CLIENT_TOKEN = AR|1234567890|abcdef…
+//
+// Sin ellos la app compila y funciona completa sin gafas: Wearables.configure()
+// falla y el cuerpo queda en "solo teléfono". En Modo desarrollador de las gafas
+// la atestación no se usa, pero el portal igual debe tener el proyecto creado.
+
+MWDAT_META_APP_ID =
+MWDAT_CLIENT_TOKEN =
+
+#include? "Secrets.xcconfig"

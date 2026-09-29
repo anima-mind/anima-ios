@@ -62,6 +62,8 @@ public final class ChatViewModel: ObservableObject {
     private let desireEngine: DesireEngine?
     private let selfModel: SelfModel?
     private var shownIntentionIds: Set<String> = []
+    /// Track G: el cuerpo-gafas (línea de cuerpo del header + Mind sheet). nil ⇒ solo teléfono.
+    public var glasses: GlassesViewModel?
     private var lastUserText: String?
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
@@ -213,7 +215,7 @@ public struct ChatView: View {
             await model.loadProactiveIntentions()
         }
         .sheet(isPresented: $showMindSheet) {
-            MindSheet(mind: model.mind)
+            MindSheet(mind: model.mind, glasses: model.glasses)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
@@ -232,15 +234,7 @@ public struct ChatView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Theme.Colors.accent)
-                    .frame(width: 6, height: 6)
-                Text("solo teléfono")
-                    .font(Theme.Type_.label)
-                    .kerning(0.66)
-                    .foregroundStyle(Theme.Colors.textFaint)
-            }
+            BodyLine(glasses: model.glasses)
             HStack(alignment: .firstTextBaseline) {
                 Text("Anima")
                     .font(Theme.Type_.screenTitle)
@@ -594,6 +588,65 @@ public struct ChatView: View {
     }
 }
 
+// MARK: - Línea de cuerpo (header): "solo teléfono" | "gafas conectadas"…
+
+struct BodyLine: View {
+    let glasses: GlassesViewModel?
+
+    var body: some View {
+        if let glasses {
+            ObservedBodyLine(model: glasses)
+        } else {
+            BodyLineLabel(text: "solo teléfono", active: false)
+        }
+    }
+}
+
+private struct ObservedBodyLine: View {
+    @ObservedObject var model: GlassesViewModel
+    var body: some View { BodyLineLabel(text: model.bodyLabel, active: model.status.isActive) }
+}
+
+private struct BodyLineLabel: View {
+    let text: String
+    let active: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.Colors.accent)
+                .frame(width: 6, height: 6)
+                .shadow(color: Theme.Colors.accent.opacity(active ? 0.8 : 0), radius: 3)
+            Text(text)
+                .font(Theme.Type_.label)
+                .kerning(0.66)
+                .foregroundStyle(Theme.Colors.textFaint)
+        }
+        .accessibilityIdentifier("chat.bodyLine")
+    }
+}
+
+/// Acción del Mind sheet: "Vincular gafas" | "Mostrar en las gafas" + "Desconectar gafas".
+struct MindGlassesAction: View {
+    @ObservedObject var model: GlassesViewModel
+
+    var body: some View {
+        HStack(spacing: Theme.Space.sectionGap) {
+            if model.isRegistered {
+                Button("Mostrar en las gafas") { model.showOnGlasses() }
+                    .foregroundStyle(Theme.Colors.accentText)
+                Button("Desconectar gafas") { model.unpair() }
+                    .foregroundStyle(Theme.Colors.textFaint)
+            } else {
+                Button("Vincular gafas") { model.pair() }
+                    .foregroundStyle(Theme.Colors.accentText)
+            }
+        }
+        .font(Theme.Type_.secondary)
+        .frame(minHeight: Theme.minHitTarget)
+        .accessibilityIdentifier("mind.glasses")
+    }
+}
+
 // MARK: - "Pensando…" con pulso
 
 struct ThinkingPulseLabel: View {
@@ -636,9 +689,11 @@ public struct PlasticityBadge: View {
 
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
+    let glasses: GlassesViewModel?
 
-    public init(mind: ChatViewModel.MindState) {
+    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
         self.mind = mind
+        self.glasses = glasses
     }
 
     public var body: some View {
@@ -666,7 +721,7 @@ public struct MindSheet: View {
                     .foregroundStyle(Theme.Colors.textFaint)
 
                 VStack(spacing: 0) {
-                    keyValueRow("cuerpo", "solo teléfono", id: "body")
+                    keyValueRow("cuerpo", glasses?.bodyLabel ?? "solo teléfono", id: "body")
                     Divider().background(Theme.Colors.border)
                     keyValueRow("régimen", mind.regimeLabel, id: "regime")
                     Divider().background(Theme.Colors.border)
@@ -677,10 +732,10 @@ public struct MindSheet: View {
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
                 .padding(.horizontal, Theme.Space.screenInset)
 
-                Text("Vincular gafas · pronto")
-                    .font(Theme.Type_.secondary)
-                    .foregroundStyle(Theme.Colors.textFaint)
-                    .padding(.top, 4)
+                if let glasses {
+                    MindGlassesAction(model: glasses)
+                        .padding(.top, 4)
+                }
                 Spacer(minLength: 0)
             }
             .padding(.top, Theme.Space.sectionGap)

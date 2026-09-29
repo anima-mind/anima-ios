@@ -124,6 +124,8 @@ public final class OnboardingViewModel: ObservableObject {
     @Published public var askReseedConfirmation: Bool = false
 
     public let isReplay: Bool
+    /// Paso "Gafas" (track G): vínculo DAT opcional; nil ⇒ paso informativo.
+    public var glasses: GlassesViewModel?
     /// Paso "Tu cuenta": identidad opcional; sin proveedor queda `.unavailable`.
     public let account: AccountViewModel
 
@@ -485,7 +487,7 @@ public struct OnboardingFlowView: View {
         case .provider: ProviderStep(model: model)
         case .apiKey: APIKeyStep(model: model)
         case .permissions: PermissionsStep(model: model)
-        case .glasses: GlassesStep(onNext: model.advance)
+        case .glasses: GlassesStep(glasses: model.glasses, onNext: model.advance)
         case .birth: BirthStep(model: model)
         }
     }
@@ -864,14 +866,24 @@ struct PermissionsStep: View {
     }
 }
 
-// MARK: - Paso 6 · Gafas (v1 sin gafas)
+// MARK: - Paso 6 · Gafas (vínculo DAT opcional; "Ahora no" sigue siendo el default)
 
 struct GlassesStep: View {
+    let glasses: GlassesViewModel?
     let onNext: () -> Void
 
     var body: some View {
+        if let glasses {
+            GlassesPairingStep(model: glasses, onNext: onNext)
+        } else {
+            scaffold(pairing: nil, registered: false, notice: nil)
+        }
+    }
+
+    @ViewBuilder
+    fileprivate func scaffold(pairing: (() -> Void)?, registered: Bool, notice: String?) -> some View {
         StepScaffold(title: "Un cuerpo en tu cara",
-                     primary: ("Ahora no", true, onNext)) {
+                     primary: (registered ? "Siguiente" : "Ahora no", true, onNext)) {
             VStack(spacing: Theme.Space.sectionGap) {
                 Image(systemName: "eyeglasses")
                     .font(.system(size: 44, weight: .ultraLight))
@@ -881,20 +893,51 @@ struct GlassesStep: View {
                     .font(Theme.Type_.body)
                     .foregroundStyle(Theme.Colors.textMuted)
                     .multilineTextAlignment(.center)
-                VStack(spacing: 2) {
+                if let pairing, !registered {
+                    Button(action: pairing) {
+                        Text("Vincular gafas")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.Colors.accentText)
+                            .frame(minHeight: Theme.minHitTarget)
+                            .padding(.horizontal, Theme.Space.cardPad)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                    .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("onboarding.glasses.pair")
+                } else if registered {
+                    Label("Gafas vinculadas", systemImage: "checkmark")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .frame(minHeight: Theme.minHitTarget)
+                } else {
                     Text("Vincular gafas")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.Colors.textFaint)
-                    Text("pronto")
-                        .font(Theme.Type_.label)
-                        .textCase(.uppercase)
-                        .kerning(0.66)
-                        .foregroundStyle(Theme.Colors.textFaint.opacity(0.7))
+                        .frame(minHeight: Theme.minHitTarget)
                 }
-                .frame(minHeight: Theme.minHitTarget)
+                if let notice {
+                    Text(notice)
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("onboarding.glasses.notice")
+                }
             }
             .frame(maxWidth: .infinity)
         }
+    }
+}
+
+private struct GlassesPairingStep: View {
+    @ObservedObject var model: GlassesViewModel
+    let onNext: () -> Void
+
+    var body: some View {
+        GlassesStep(glasses: nil, onNext: onNext)
+            .scaffold(pairing: { model.pair() }, registered: model.isRegistered,
+                      notice: model.notice ?? "Opcional. Necesitas la app Meta AI con las gafas emparejadas.")
     }
 }
 

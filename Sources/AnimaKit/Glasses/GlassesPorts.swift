@@ -105,6 +105,7 @@ public protocol GlassesRuntime: Sendable {
 /// Todo reporta "no disponible" y nada lanza en silencio.
 public struct AbsentGlassesRuntime: GlassesRuntime {
     public struct Unavailable: Error, Equatable, CustomStringConvertible {
+        public init() {}
         public var description: String { "gafas no disponibles en esta build" }
     }
     public init() {}

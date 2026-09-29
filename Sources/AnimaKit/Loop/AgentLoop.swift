@@ -45,6 +45,9 @@ public actor AgentLoop {
     private let realRegister: RealRegister?
     // §5.7: skills = conocimiento procedural; nil ⇒ el turno no cambia en nada.
     private let skillEngine: SkillEngine?
+    // Track G (doc 05 §1): la línea de estado corporal (gafas) se refresca cada
+    // turno y entra al system volátil. nil ⇒ el turno no cambia en nada.
+    private let bodyStatus: (@Sendable () async -> String?)?
 
     /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(
@@ -68,6 +71,7 @@ public actor AgentLoop {
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
         skillEngine: SkillEngine? = nil,
+        bodyStatus: (@Sendable () async -> String?)? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -77,7 +81,7 @@ public actor AgentLoop {
                   workingMemory: workingMemory, permissionPolicy: permissionPolicy, confirmation: confirmation,
                   toolTimeout: toolTimeout, stopConditions: stopConditions, retryPolicy: retryPolicy,
                   brain: brain, inbox: inbox, memoryBudget: memoryBudget, selfModel: selfModel,
-                  realRegister: realRegister, skillEngine: skillEngine, sleep: sleep)
+                  realRegister: realRegister, skillEngine: skillEngine, bodyStatus: bodyStatus, sleep: sleep)
     }
 
     /// Init por modo de operación: el selector decide el córtex de cada turno y
@@ -100,6 +104,7 @@ public actor AgentLoop {
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
         skillEngine: SkillEngine? = nil,
+        bodyStatus: (@Sendable () async -> String?)? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -119,6 +124,7 @@ public actor AgentLoop {
         self.selfModel = selfModel
         self.realRegister = realRegister
         self.skillEngine = skillEngine
+        self.bodyStatus = bodyStatus
         self.sleep = sleep
     }
 
@@ -179,6 +185,11 @@ public actor AgentLoop {
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
             if let selfModel {
                 await workingMemory.updateSelfRender(await selfModel.render())
+            }
+
+            // Track G: estado corporal volátil (gafas conectadas / solo teléfono).
+            if let bodyStatus {
+                await workingMemory.updateBodyStatus(await bodyStatus())
             }
 
             // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno

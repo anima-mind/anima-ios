@@ -3,7 +3,7 @@
 // GlassesSessionPort / GlassesDisplayPort) a MWDATCore/MWDATDisplay/MWDATCamera.
 // Toda la lógica (sesión única, generaciones, re-send, dolencias) vive en
 // GlassesBody (AnimaKit, testeada). Calcado del DATManager de Relay, verificado
-// en hardware real. Verificable SOLO con gafas (ver App/Glasses/README.md).
+// en hardware real. Verificable SOLO con gafas (aceptación G0/G1, doc 05 §7).
 //
 // ⚠️ Este archivo NO importa SwiftUI: `Text`/`Button`/`Image` colisionarían con
 // los de MWDATDisplay (doc Relay §5).

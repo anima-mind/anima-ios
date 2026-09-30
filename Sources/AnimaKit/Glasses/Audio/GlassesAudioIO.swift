@@ -66,7 +66,7 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
     }
 
     public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
-        lock.lock(); cancelled = false; detector = TurnEndDetector(); lock.unlock()
+        withLock { cancelled = false; detector = TurnEndDetector() }
         guard await Self.authorized(), let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
             return nil
         }
@@ -84,11 +84,11 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
         }
         engine.prepare()
         do { try engine.start() } catch { return nil }
-        lock.lock()
-        self.engine = engine
-        self.request = request
-        detector.start(at: Date())
-        lock.unlock()
+        withLock {
+            self.engine = engine
+            self.request = request
+            detector.start(at: Date())
+        }
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             guard let self, let result else { return }
@@ -99,16 +99,21 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
 
         while !isCancelled {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            lock.lock(); let done = detector.isFinished(at: Date()); lock.unlock()
+            let done = withLock { detector.isFinished(at: Date()) }
             if done || Task.isCancelled { break }
         }
-        lock.lock(); let transcript = detector.transcript; let wasCancelled = cancelled; lock.unlock()
+        let (transcript, wasCancelled) = withLock { (detector.transcript, cancelled) }
         teardown()
         return wasCancelled || transcript.isEmpty ? nil : transcript
     }
 
     public func cancel() {
-        lock.lock(); cancelled = true; lock.unlock()
+        withLock { cancelled = true }
+    }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock(); defer { lock.unlock() }
+        return body()
     }
 
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
@@ -156,9 +161,13 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "es-CO") ?? AVSpeechSynthesisVoice(language: "es-MX")
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            lock.lock(); continuation = cont; lock.unlock()
+            store(cont)
             synthesizer.speak(utterance)
         }
+    }
+
+    private func store(_ cont: CheckedContinuation<Void, Never>) {
+        lock.lock(); continuation = cont; lock.unlock()
     }
 
     public func stop() {

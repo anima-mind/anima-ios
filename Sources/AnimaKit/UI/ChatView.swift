@@ -56,12 +56,20 @@ public final class ChatViewModel: ObservableObject {
     @Published public var isStreaming: Bool = false
     @Published public var errorText: String?
     @Published public private(set) var mind = MindState()
+    /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
+    @Published public var focusedMessageId: UUID?
+    /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
+    public private(set) var lastMirroredTurnID: UUID?
+    public let events: AsyncStream<SurfaceEvent>
+    private let eventSink: AsyncStream<SurfaceEvent>.Continuation
 
     private let loop: AgentLoop
     private let sessionId: SessionID
     private let desireEngine: DesireEngine?
     private let selfModel: SelfModel?
     private var shownIntentionIds: Set<String> = []
+    /// Track G: el cuerpo-gafas (línea de cuerpo del header + Mind sheet). nil ⇒ solo teléfono.
+    public var glasses: GlassesViewModel?
     private var lastUserText: String?
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
@@ -70,6 +78,7 @@ public final class ChatViewModel: ObservableObject {
         self.sessionId = sessionId
         self.desireEngine = desireEngine
         self.selfModel = selfModel
+        (events, eventSink) = AsyncStream<SurfaceEvent>.makeStream()
     }
 
     /// Refresca p/ciclos/régimen para el badge (anima 600 ms al cambiar).
@@ -115,6 +124,7 @@ public final class ChatViewModel: ObservableObject {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
         input = ""
+        eventSink.yield(.userText(text))
         await run(text: text, addUserBubble: true)
     }
 
@@ -169,6 +179,36 @@ public final class ChatViewModel: ObservableObject {
     }
 }
 
+// MARK: - PhoneChatSurface (doc 05 §3.2): MISMO contrato que el HUD
+
+extension ChatViewModel: PhoneChatSurface {
+    public nonisolated var id: SurfaceID { .phoneChat }
+    public nonisolated var capabilities: SurfaceCapabilities { .phoneChat }
+
+    /// Espejo de los turnos que llegaron por otra superficie (gafas): la
+    /// conversación es una sola y el teléfono la muestra completa.
+    public func render(_ content: SurfaceContent) async {
+        switch content {
+        case .userTurn(let text, let origin) where origin != .phoneChat:
+            messages.append(DisplayMessage(role: .user, text: text))
+        case .assistantTurn(let text, let origin) where origin != .phoneChat:
+            let message = DisplayMessage(role: .assistant, text: text)
+            messages.append(message)
+            lastMirroredTurnID = message.id
+        case .declined(let text, let origin) where origin != .phoneChat:
+            let message = DisplayMessage(role: .assistant, text: text, isRefusal: true)
+            messages.append(message)
+            lastMirroredTurnID = message.id
+        default:
+            break
+        }
+    }
+
+    public func focus(turn: UUID?) {
+        focusedMessageId = turn ?? messages.last?.id
+    }
+}
+
 // MARK: - Vista
 
 public struct ChatView: View {
@@ -204,6 +244,9 @@ public struct ChatView: View {
                             proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
+                    .onChange(of: model.focusedMessageId) { _, id in
+                        if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                    }
                 }
                 composer
             }
@@ -213,7 +256,7 @@ public struct ChatView: View {
             await model.loadProactiveIntentions()
         }
         .sheet(isPresented: $showMindSheet) {
-            MindSheet(mind: model.mind)
+            MindSheet(mind: model.mind, glasses: model.glasses)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
@@ -232,15 +275,7 @@ public struct ChatView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Theme.Colors.accent)
-                    .frame(width: 6, height: 6)
-                Text("solo teléfono")
-                    .font(Theme.Type_.label)
-                    .kerning(0.66)
-                    .foregroundStyle(Theme.Colors.textFaint)
-            }
+            BodyLine(glasses: model.glasses)
             HStack(alignment: .firstTextBaseline) {
                 Text("Anima")
                     .font(Theme.Type_.screenTitle)
@@ -594,6 +629,65 @@ public struct ChatView: View {
     }
 }
 
+// MARK: - Línea de cuerpo (header): "solo teléfono" | "gafas conectadas"…
+
+struct BodyLine: View {
+    let glasses: GlassesViewModel?
+
+    var body: some View {
+        if let glasses {
+            ObservedBodyLine(model: glasses)
+        } else {
+            BodyLineLabel(text: "solo teléfono", active: false)
+        }
+    }
+}
+
+private struct ObservedBodyLine: View {
+    @ObservedObject var model: GlassesViewModel
+    var body: some View { BodyLineLabel(text: model.bodyLabel, active: model.status.isActive) }
+}
+
+private struct BodyLineLabel: View {
+    let text: String
+    let active: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.Colors.accent)
+                .frame(width: 6, height: 6)
+                .shadow(color: Theme.Colors.accent.opacity(active ? 0.8 : 0), radius: 3)
+            Text(text)
+                .font(Theme.Type_.label)
+                .kerning(0.66)
+                .foregroundStyle(Theme.Colors.textFaint)
+        }
+        .accessibilityIdentifier("chat.bodyLine")
+    }
+}
+
+/// Acción del Mind sheet: "Vincular gafas" | "Mostrar en las gafas" + "Desconectar gafas".
+struct MindGlassesAction: View {
+    @ObservedObject var model: GlassesViewModel
+
+    var body: some View {
+        HStack(spacing: Theme.Space.sectionGap) {
+            if model.isRegistered {
+                Button("Mostrar en las gafas") { model.showOnGlasses() }
+                    .foregroundStyle(Theme.Colors.accentText)
+                Button("Desconectar gafas") { model.unpair() }
+                    .foregroundStyle(Theme.Colors.textFaint)
+            } else {
+                Button("Vincular gafas") { model.pair() }
+                    .foregroundStyle(Theme.Colors.accentText)
+            }
+        }
+        .font(Theme.Type_.secondary)
+        .frame(minHeight: Theme.minHitTarget)
+        .accessibilityIdentifier("mind.glasses")
+    }
+}
+
 // MARK: - "Pensando…" con pulso
 
 struct ThinkingPulseLabel: View {
@@ -636,9 +730,11 @@ public struct PlasticityBadge: View {
 
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
+    let glasses: GlassesViewModel?
 
-    public init(mind: ChatViewModel.MindState) {
+    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
         self.mind = mind
+        self.glasses = glasses
     }
 
     public var body: some View {
@@ -666,7 +762,7 @@ public struct MindSheet: View {
                     .foregroundStyle(Theme.Colors.textFaint)
 
                 VStack(spacing: 0) {
-                    keyValueRow("cuerpo", "solo teléfono", id: "body")
+                    keyValueRow("cuerpo", glasses?.bodyLabel ?? "solo teléfono", id: "body")
                     Divider().background(Theme.Colors.border)
                     keyValueRow("régimen", mind.regimeLabel, id: "regime")
                     Divider().background(Theme.Colors.border)
@@ -677,10 +773,10 @@ public struct MindSheet: View {
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
                 .padding(.horizontal, Theme.Space.screenInset)
 
-                Text("Vincular gafas · pronto")
-                    .font(Theme.Type_.secondary)
-                    .foregroundStyle(Theme.Colors.textFaint)
-                    .padding(.top, 4)
+                if let glasses {
+                    MindGlassesAction(model: glasses)
+                        .padding(.top, 4)
+                }
                 Spacer(minLength: 0)
             }
             .padding(.top, Theme.Space.sectionGap)

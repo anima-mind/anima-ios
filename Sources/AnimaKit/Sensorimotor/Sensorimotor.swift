@@ -13,6 +13,10 @@ public protocol SensorimotorTool: HarnessTool {
     func operation(for input: JSONValue) -> String
     /// Resumen legible de la acción para el `ask` in-chat.
     func confirmationSummary(for input: JSONValue) -> String
+    /// Guard de CUERPO (doc 05 §6.1: body presente → permiso → ACI). Si el
+    /// cuerpo que la tool necesita no está (gafas desconectadas), devuelve el
+    /// error SIN pedir confirmación ni ejecutar. nil = cuerpo presente.
+    func bodyGuard(for input: JSONValue) async -> ToolResult?
 }
 
 extension SensorimotorTool {
@@ -23,6 +27,7 @@ extension SensorimotorTool {
     public func confirmationSummary(for input: JSONValue) -> String {
         "\(spec.name): \(operation(for: input))"
     }
+    public func bodyGuard(for input: JSONValue) async -> ToolResult? { nil }
 }
 
 /// Resultado de una ejecución sin prompt (SkillRunner): la policy decide igual.
@@ -80,6 +85,7 @@ public actor Sensorimotor {
     /// `ask`, devuelve `.needsConfirmation` sin ejecutar ni molestar al dueño.
     public func executePreauthorized(name: String, input: JSONValue) async -> PreauthorizedExecution {
         guard let tool = tools[name] else { return .denied(Self.unknown(name)) }
+        if let absent = await tool.bodyGuard(for: input) { return .denied(absent) }
         let kind = tool.kind(for: input)
         let operation = tool.operation(for: input)
         switch policy.decide(tool: name, known: true, kind: kind, operation: operation) {

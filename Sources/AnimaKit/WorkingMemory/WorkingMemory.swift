@@ -54,6 +54,12 @@ public actor WorkingMemory {
     // Fase 3 (§5.6): banner de restructure inyectado cuando el turno matchea un
     // patrón demanding del RealRegister. Va como segundo mid-conversation system.
     private var restructureBanner: String?
+    // Track G (doc 05 §1, B.2): 1 línea de estado corporal (gafas) + la pista de
+    // superficie del turno. Volátiles: van como role:system al final, que el
+    // ClaudeRequestBuilder mueve a bloques ADICIONALES del system top-level
+    // (jamás role:system dentro de messages[] — PR #17).
+    private var bodyStatusLine: String?
+    private var surfaceHint: String?
 
     // Bloques compaction emitidos por el server; se re-anexan cada turno (contrato beta).
     private var compactionBlocks: [ContentBlock] = []
@@ -104,6 +110,12 @@ public actor WorkingMemory {
         //     turno cambie de aproximación ante un patrón que insiste en fallar.
         if let restructureBanner, !restructureBanner.isEmpty {
             messages.append(Message(role: .system, content: [.text(restructureBanner)]))
+        }
+
+        // 3c. estado corporal (gafas) + pista de superficie del turno.
+        let body = [bodyStatusLine, surfaceHint].compactMap { $0 }.filter { !$0.isEmpty }
+        if !body.isEmpty {
+            messages.append(Message(role: .system, content: [.text(body.joined(separator: "\n"))]))
         }
 
         // 4. contexto activado — memorias del Brain (Fase 2: vacío por ahora).
@@ -250,6 +262,16 @@ public actor WorkingMemory {
     /// Fase 3 (§5.5): el loop empuja el render vivo del SelfModel cada turno.
     public func updateSelfRender(_ render: String) {
         selfRenderOverride = render
+    }
+
+    /// Track G: la línea de estado corporal (GlassesStatus.statusLine); nil la quita.
+    public func updateBodyStatus(_ line: String?) {
+        bodyStatusLine = line
+    }
+
+    /// Track G: pista de la superficie de origen del turno (p.ej. gafas ⇒ breve).
+    public func updateSurfaceHint(_ hint: String?) {
+        surfaceHint = hint
     }
 
     /// Fase 3 (§5.6): fija (o limpia con nil) el banner de restructure del turno.

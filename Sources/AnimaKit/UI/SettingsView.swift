@@ -34,6 +34,8 @@ public final class SettingsViewModel: ObservableObject {
     public var account: AccountViewModel?
     /// Sección Skills (§5.7); la inyecta el shell con el SkillEngine vivo.
     public var skills: SkillsViewModel?
+    /// Sección Gafas (track G); la inyecta el shell con el GlassesBody vivo.
+    public var glasses: GlassesViewModel?
     /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
     public var onModeChanged: ((OperatingMode) -> Void)?
     private let availabilityProbe: () -> OnDeviceAvailability
@@ -188,6 +190,9 @@ public struct SettingsView: View {
                     costsSection
                     if let skills = model.skills {
                         SkillsSettingsSection(model: skills)
+                    }
+                    if let glasses = model.glasses {
+                        GlassesSettingsSection(model: glasses)
                     }
                     mindSection
                 }

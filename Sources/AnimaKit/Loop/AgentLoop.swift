@@ -45,6 +45,9 @@ public actor AgentLoop {
     private let realRegister: RealRegister?
     // §5.7: skills = conocimiento procedural; nil ⇒ el turno no cambia en nada.
     private let skillEngine: SkillEngine?
+    // Track G (doc 05 §1): la línea de estado corporal (gafas) se refresca cada
+    // turno y entra al system volátil. nil ⇒ el turno no cambia en nada.
+    private let bodyStatus: (@Sendable () async -> String?)?
 
     /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(
@@ -68,6 +71,7 @@ public actor AgentLoop {
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
         skillEngine: SkillEngine? = nil,
+        bodyStatus: (@Sendable () async -> String?)? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -77,7 +81,7 @@ public actor AgentLoop {
                   workingMemory: workingMemory, permissionPolicy: permissionPolicy, confirmation: confirmation,
                   toolTimeout: toolTimeout, stopConditions: stopConditions, retryPolicy: retryPolicy,
                   brain: brain, inbox: inbox, memoryBudget: memoryBudget, selfModel: selfModel,
-                  realRegister: realRegister, skillEngine: skillEngine, sleep: sleep)
+                  realRegister: realRegister, skillEngine: skillEngine, bodyStatus: bodyStatus, sleep: sleep)
     }
 
     /// Init por modo de operación: el selector decide el córtex de cada turno y
@@ -100,6 +104,7 @@ public actor AgentLoop {
         selfModel: SelfModel? = nil,
         realRegister: RealRegister? = nil,
         skillEngine: SkillEngine? = nil,
+        bodyStatus: (@Sendable () async -> String?)? = nil,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -119,6 +124,7 @@ public actor AgentLoop {
         self.selfModel = selfModel
         self.realRegister = realRegister
         self.skillEngine = skillEngine
+        self.bodyStatus = bodyStatus
         self.sleep = sleep
     }
 
@@ -128,26 +134,34 @@ public actor AgentLoop {
         run(sessionId: sessionId, content: [.text(userText)])
     }
 
+    /// Pista volátil por superficie de origen (el HUD es para vistazos).
+    public static let glassesSurfaceHint = "[Superficie: gafas] El dueño te habla por voz desde sus gafas y oirá tu respuesta: responde en 1–2 frases cortas, sin markdown ni listas. Si hace falta más, dilo breve y ofrece verlo en el teléfono."
+
+
     /// Turno multimodal: los content blocks (texto + image blocks de una foto, o
     /// texto de un transcript de audio) forman el mensaje user del turno.
-    public func run(sessionId: SessionID, content: [ContentBlock]) -> AsyncStream<LoopEvent> {
+    public func run(sessionId: SessionID, content: [ContentBlock],
+                    surface: SurfaceID = .phoneChat) -> AsyncStream<LoopEvent> {
         AsyncStream { continuation in
             let task = Task {
-                await self.runTurn(sessionId: sessionId, content: content, emit: { continuation.yield($0) })
+                await self.runTurn(sessionId: sessionId, content: content, surface: surface,
+                                   emit: { continuation.yield($0) })
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    private func runTurn(sessionId: SessionID, content: [ContentBlock], emit: @escaping @Sendable (LoopEvent) -> Void) async {
+    private func runTurn(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID,
+                         emit: @escaping @Sendable (LoopEvent) -> Void) async {
         let skillTurn = SkillTurn()
-        let end = await runTurnBody(sessionId: sessionId, content: content, emit: emit, skillTurn: skillTurn)
+        let end = await runTurnBody(sessionId: sessionId, content: content, surface: surface,
+                                    emit: emit, skillTurn: skillTurn)
         await concludeSkill(skillTurn, end: end, sessionId: sessionId)
     }
 
     /// El cuerpo del turno; cada salida devuelve CÓMO terminó (para practice).
-    private func runTurnBody(sessionId: SessionID, content: [ContentBlock],
+    private func runTurnBody(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID,
                              emit: @escaping @Sendable (LoopEvent) -> Void,
                              skillTurn: SkillTurn) async -> TurnEnd {
         let turnStart = Date()
@@ -180,6 +194,13 @@ public actor AgentLoop {
             if let selfModel {
                 await workingMemory.updateSelfRender(await selfModel.render())
             }
+
+            // Track G: estado corporal volátil (gafas conectadas / solo teléfono)
+            // + pista de la superficie de origen del turno.
+            if let bodyStatus {
+                await workingMemory.updateBodyStatus(await bodyStatus())
+            }
+            await workingMemory.updateSurfaceHint(surface == .glassesHUD ? Self.glassesSurfaceHint : nil)
 
             // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno
             // y las memorias entran como bloque etiquetado antes del turn input.
@@ -215,7 +236,7 @@ public actor AgentLoop {
             // aparte; los bloques ephemeral (system, activado) no van al transcript.
             let turn = TurnInput(sessionId: sessionId, content: content)
             var messages = try await workingMemory.assemble(turn)
-            try store.append(sessionId: sessionId, message: Message(role: .user, content: content))
+            try store.append(sessionId: sessionId, message: Message(role: .user, content: content), surface: surface)
             // No se escribe al brain en caliente: se encola para el Consolidator (§5.4 a).
             try? inbox?.enqueue(sessionId: sessionId, text: userText, source: "turn")
 
@@ -291,7 +312,8 @@ public actor AgentLoop {
 
                 // refusal: chequear ANTES de usar el content; mostrar sin crash, NO reintentar.
                 if response.stopReason == .refusal {
-                    try store.append(sessionId: sessionId, message: .assistant(response.content), usage: response.usage)
+                    try store.append(sessionId: sessionId, message: .assistant(response.content), usage: response.usage,
+                                     surface: surface)
                     await logMemoryUsage(activatedIds, sessionId: sessionId)
                     emit(.refused)
                     try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
@@ -300,7 +322,7 @@ public actor AgentLoop {
                 }
 
                 let assistantMessage = Message.assistant(response.content)
-                try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage)
+                try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage, surface: surface)
                 messages.append(assistantMessage)
                 emit(.assistantMessage(response.content))
 
@@ -311,6 +333,7 @@ public actor AgentLoop {
 
                 case .toolUse:
                     var results: [ContentBlock] = []
+                    var attachments: [ContentBlock] = []
                     for call in response.toolCalls {
                         // Loop detection: misma tool + mismo input N veces seguidas.
                         if loopDetector.record(tool: call.name, input: call.input) {
@@ -331,9 +354,12 @@ public actor AgentLoop {
                                                              result: result, sessionId: sessionId, now: Date()))
                         }
                         results.append(.toolResult(toolUseId: call.id, content: result.content, isError: result.isError))
+                        attachments.append(contentsOf: result.attachments)
                     }
-                    let toolMessage = Message.user(results)
-                    try store.append(sessionId: sessionId, message: toolMessage)
+                    // tool_result primero (contrato de la API), luego los adjuntos
+                    // (la foto POV entra al contexto por el pipeline de imagen).
+                    let toolMessage = Message.user(results + attachments)
+                    try store.append(sessionId: sessionId, message: toolMessage, surface: surface)
                     messages.append(toolMessage)
                     iteration += 1
                     continue

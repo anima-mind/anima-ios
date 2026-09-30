@@ -64,8 +64,10 @@ public final class SymbolicStore: Sendable {
 
     // MARK: - Eventos (append-only)
 
-    /// Agrega un mensaje al transcript. `usage` se guarda para telemetría/costos.
-    public func append(sessionId: SessionID, message: Message, usage: Usage? = nil) throws {
+    /// Agrega un mensaje al transcript. `usage` se guarda para telemetría/costos;
+    /// `surface` marca por dónde llegó (teléfono / gafas) — mismo transcript.
+    public func append(sessionId: SessionID, message: Message, usage: Usage? = nil,
+                       surface: SurfaceID? = nil) throws {
         let contentJSON = try Self.encodeBlocks(message.content)
         let usageJSON = try usage.map { try Self.encodeUsage($0) }
         let now = Date().timeIntervalSince1970
@@ -76,10 +78,10 @@ public final class SymbolicStore: Sendable {
                 arguments: [sessionId]) ?? 0) + 1
             try db.execute(
                 sql: """
-                    INSERT INTO turn_event (session_id, seq, role, content_json, usage_json, created_at)
-                    VALUES (?,?,?,?,?,?)
+                    INSERT INTO turn_event (session_id, seq, role, content_json, usage_json, created_at, surface)
+                    VALUES (?,?,?,?,?,?,?)
                     """,
-                arguments: [sessionId, seq, message.role.rawValue, contentJSON, usageJSON, now])
+                arguments: [sessionId, seq, message.role.rawValue, contentJSON, usageJSON, now, surface?.rawValue])
             try db.execute(sql: "UPDATE session SET last_event_at=? WHERE id=?", arguments: [now, sessionId])
         }
     }
@@ -101,6 +103,15 @@ public final class SymbolicStore: Sendable {
             }
         }
         return Self.trim(messages, budgetTokens: budgetTokens)
+    }
+
+    /// La superficie de cada evento del transcript, en orden (nil = sin marca).
+    public func surfaces(sessionId: SessionID) throws -> [SurfaceID?] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT surface FROM turn_event WHERE session_id=? ORDER BY seq ASC",
+                             arguments: [sessionId])
+                .map { row in (row["surface"] as String?).flatMap(SurfaceID.init(rawValue:)) }
+        }
     }
 
     // MARK: - Helpers

@@ -20,16 +20,19 @@ struct AnimaApp: App {
             FirebaseApp.configure()
         }
         AppModel.registerConsolidationTask()
+        HandoffNotifications.install()
     }
 
     var body: some Scene {
         WindowGroup {
             RootView(app: app)
                 .task { await app.bootstrap() }
+                .onOpenURL { app.handleOpenURL($0) }
                 .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { app.scheduleConsolidation() }
+            app.glassesForeground(phase == .active)
         }
     }
 }
@@ -78,6 +81,16 @@ final class AppModel: ObservableObject {
     private var desireEngine: DesireEngine?
     // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
     private var skillEngine: SkillEngine?
+    // Track G (doc 05): el segundo cuerpo opcional. Sin gafas todo sigue igual.
+    private var glassesBody: GlassesBody?
+    private var glassesActivation: GlassesActivation?
+    @Published private(set) var glassesModel: GlassesViewModel?
+    /// G1: las tools de gafas se declaran con este proxy; la superficie se enchufa al cablear.
+    private let glassesHost = LateBoundGlassesHost()
+    private let surfaceRouter = SurfaceRouter()
+    private var glassesSurface: GlassesHUDSurface?
+    /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
+    @Published var selectedTab: AppTab = .chat
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -118,7 +131,19 @@ final class AppModel: ObservableObject {
             // Fase 3 (§5.5, §5.6): identidad viva + registro de lo Real.
             let selfModel = SelfModel(queue: queue, notifier: UserNotificationApprovalNotifier())
             self.selfModel = selfModel
-            self.realRegister = RealRegister(queue: queue)
+            let realRegister = RealRegister(queue: queue)
+            self.realRegister = realRegister
+            // Track G: el cuerpo-gafas (DAT) — selector y sesión únicos en GlassesBody.
+            let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
+            let activation = GlassesActivation(body: glassesBody)
+            self.glassesBody = glassesBody
+            self.glassesActivation = activation
+            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation)
+            Task {
+                await glassesBody.setHandlers(onAction: nil, onExit: { Task { await activation.userExited() } })
+                await glassesBody.start()
+                await activation.start()
+            }
             // Fase 4 (§5.8): el modelo del deseo del Otro y su vista de metas.
             let otherModel = OtherModel(queue: queue)
             self.otherModel = otherModel
@@ -139,6 +164,7 @@ final class AppModel: ObservableObject {
             let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
             self.skillEngine = skillEngine
             settings.skills = SkillsViewModel(engine: skillEngine)
+            settings.glasses = glassesModel
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -165,7 +191,7 @@ final class AppModel: ObservableObject {
         for provider in ModelProvider.remoteCases {
             if let api = snapshot?.config(for: provider)?.api { apis[provider] = api }
         }
-        return OnboardingViewModel(
+        let model = OnboardingViewModel(
             keychain: keychain,
             // `--uitest`: sin apis → el validador acepta offline con warning (sin red).
             apis: UITestMode.isActive ? [:] : apis,
@@ -177,6 +203,8 @@ final class AppModel: ObservableObject {
         ) { [weak self] in
             self?.completeOnboarding()
         }
+        model.glasses = glassesModel
+        return model
     }
 
     func completeOnboarding() {
@@ -242,20 +270,28 @@ final class AppModel: ObservableObject {
                                         availability: Self.availability)
         sleepScheduler = SleepScheduler(selector: selector)
 
+        var bodyStatus: (@Sendable () async -> String?)?
+        if let body = glassesBody {
+            bodyStatus = { await body.currentStatus().statusLine }
+        }
         let loop = AgentLoop(
             selector: selector,
             store: store,
             telemetry: telemetry,
-            clientTools: Self.tools(),
+            clientTools: Self.tools(glasses: glassesHost),
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
             serverTools: [],
-            confirmation: confirmation,
+            // §8: la cámara de las gafas se confirma con pinch EN las gafas; el resto, sheet.
+            confirmation: SurfaceConfirmationRouter(phone: confirmation, glasses: { [glassesHost] request in
+                await glassesHost.confirm(request)
+            }),
             brain: brain,
             inbox: inbox,
             selfModel: selfModel,
             realRegister: realRegister,
-            skillEngine: skillEngine)
+            skillEngine: skillEngine,
+            bodyStatus: bodyStatus)
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -286,7 +322,11 @@ final class AppModel: ObservableObject {
             }
         }
 
-        chatModel = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        chat.glasses = glassesModel
+        surfaceRouter.register(chat)
+        chatModel = chat
+        await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
     }
 
@@ -326,8 +366,9 @@ final class AppModel: ObservableObject {
 
     /// Registro v1 de tools client-side (§5.7). Camera/audio: la captura la inicia
     /// el dueño desde la app (pendiente de verificación en device); el contrato y
-    /// el pipeline puro ya viven en AnimaKit.
-    static func tools() -> [any SensorimotorTool] {
+    /// el pipeline puro ya viven en AnimaKit. Las de gafas se declaran SIEMPRE
+    /// (prefijo cacheado estable, doc 05 §5); sin gafas responden "no conectadas".
+    static func tools(glasses: LateBoundGlassesHost) -> [any SensorimotorTool] {
         [
             CalendarTool(),
             RemindersTool(),
@@ -335,7 +376,80 @@ final class AppModel: ObservableObject {
             PhoneContextTool(),
             CameraTool(),
             AudioTool(),
+            GlassesShowTool(host: glasses),
+            GlassesCameraTool(host: glasses),
         ]
+    }
+
+    // MARK: - Gafas (track G)
+
+    /// SDK real en device/simulador; runtime nulo en `--uitest` (sin BT ni Meta AI).
+    static func makeGlassesRuntime() -> any GlassesRuntime {
+        if UITestMode.isActive { return AbsentGlassesRuntime() }
+        #if canImport(MWDATCore) && canImport(MWDATDisplay)
+        return DATGlassesRuntime()
+        #else
+        return AbsentGlassesRuntime()
+        #endif
+    }
+
+    /// G1: la superficie HUD sobre el mismo loop y la MISMA sesión que el chat.
+    private func wireGlassesSurface(loop: AgentLoop, sessionId: SessionID) async {
+        glassesSurface?.stop()
+        glassesSurface = nil
+        glassesHost.bind(nil, confirm: nil)
+        guard let glassesBody else { return }
+        let voice: any VoiceCapturePort
+        let speech: any SpeechOutputPort
+        #if os(iOS)
+        if UITestMode.isActive {
+            voice = SilentVoice(); speech = SilentVoice()
+        } else {
+            voice = GlassesVoiceCapture(); speech = GlassesSpeaker()
+        }
+        #else
+        voice = SilentVoice(); speech = SilentVoice()
+        #endif
+        let surface = GlassesHUDSurface(
+            body: glassesBody, activation: glassesActivation, runner: loop, sessionId: sessionId,
+            voice: voice, speech: speech, router: surfaceRouter,
+            openPhone: { [weak self] turn in self?.handoffToPhone(turn: turn) })
+        glassesSurface = surface
+        glassesHost.bind(surface, confirm: { [weak surface] request in
+            await surface?.confirmCamera(request) ?? false
+        })
+        await surface.start()
+    }
+
+    /// "Ver en el teléfono" desde las gafas: notificación con el deep link (el
+    /// teléfono suele estar en el bolsillo) y, si la app está al frente, salta ya.
+    private func handoffToPhone(turn: UUID?) {
+        let link = AnimaDeepLink.chat(turn: turn)
+        HandoffNotifications.post(link)
+        open(link)
+    }
+
+    private func open(_ link: AnimaDeepLink) {
+        switch link {
+        case .chat(let turn):
+            selectedTab = .chat
+            chatModel?.focus(turn: turn)
+        }
+    }
+
+    /// `anima://`: deep link propio (handoff) o callback de Meta AI (registro DAT).
+    func handleOpenURL(_ url: URL) {
+        if let link = AnimaDeepLink.parse(url) {
+            open(link)
+            return
+        }
+        guard let glassesBody else { return }
+        Task { _ = try? await glassesBody.handleURL(url) }
+    }
+
+    func glassesForeground(_ active: Bool) {
+        guard let glassesActivation else { return }
+        Task { await glassesActivation.setForeground(active) }
     }
 
     private static func skillsDirectory() -> URL {
@@ -356,6 +470,11 @@ final class AppModel: ObservableObject {
         try? FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path)
     }
+}
+
+/// Tabs del shell (selección programática para el deep link del handoff).
+enum AppTab: Hashable {
+    case chat, memory, goals, approvals, settings
 }
 
 /// Enrutado del shell (handoff): splash → (landing → onboarding) | chat.
@@ -399,28 +518,33 @@ struct RootView: View {
     }
 
     private var shellTabs: some View {
-        TabView {
+        TabView(selection: $app.selectedTab) {
             if let chat = app.chatModel {
                 ChatView(model: chat)
                     .confirmationOverlay(app.confirmation)
                     .tabItem { Label("Chat", systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
+                    .tag(AppTab.chat)
             }
             if let memory = app.memoryModel {
                 MemoryBrowserView(model: memory)
                     .tabItem { Label("Memoria", systemImage: "brain").accessibilityIdentifier("tab.memory") }
+                    .tag(AppTab.memory)
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
                     .tabItem { Label("Metas", systemImage: "target").accessibilityIdentifier("tab.goals") }
+                    .tag(AppTab.goals)
             }
             if let approvals = app.approvalsModel {
                 ApprovalsInboxView(model: approvals)
                     .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
+                    .tag(AppTab.approvals)
                     .badge(approvals.badgeCount)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
                     .tabItem { Label("Ajustes", systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
+                    .tag(AppTab.settings)
             }
         }
         .tint(Theme.Colors.accent)

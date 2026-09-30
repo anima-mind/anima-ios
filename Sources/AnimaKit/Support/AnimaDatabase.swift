@@ -67,6 +67,12 @@ public enum AnimaDatabase {
         DesireSchema.register(&m)
         SkillSchema.register(&m)
 
+        // Track G (doc 05 §3.2): la conversación es UNA; cada evento del
+        // transcript lleva la superficie por la que llegó (NULL = histórico/teléfono).
+        m.registerMigration("v9-turn-surface") { db in
+            try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN surface TEXT")
+        }
+
         return m
     }
 

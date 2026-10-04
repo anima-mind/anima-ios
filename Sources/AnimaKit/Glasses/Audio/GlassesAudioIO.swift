@@ -50,84 +50,27 @@ public struct SystemAudioSession: AudioSessionPort {
 }
 
 /// HFP → AVAudioEngine → SFSpeechRecognizer on-device (es-CO), fin por silencio.
+/// El ciclo (ruta, silencio, teardown y liberación de HFP) vive en VoiceCaptureLoop.
 public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
-    private let audio: any AudioSessionPort
     private let locale: Locale
-    private let lock = NSLock()
-    private var engine: AVAudioEngine?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var detector = TurnEndDetector()
-    private var cancelled = false
+    private let loop: VoiceCaptureLoop
 
     public init(audio: any AudioSessionPort = SystemAudioSession(), locale: Locale = Locale(identifier: "es-CO")) {
-        self.audio = audio
         self.locale = locale
+        self.loop = VoiceCaptureLoop(audio: audio)
     }
 
     public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
-        withLock { cancelled = false; detector = TurnEndDetector() }
-        guard await Self.authorized(), let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            return nil
-        }
-        let route = await AudioRoutePlanner.settleCapture(audio)
-        onRoute(route)
-        guard !isCancelled else { return nil }
-
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.requiresOnDeviceRecognition = true   // el audio crudo no sale del teléfono
-        request.shouldReportPartialResults = true
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.inputFormat(forBus: 0)) { buffer, _ in
-            request.append(buffer)
-        }
-        engine.prepare()
-        do { try engine.start() } catch { return nil }
-        withLock {
-            self.engine = engine
-            self.request = request
-            detector.start(at: Date())
-        }
-
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
-            guard let self, let result else { return }
-            self.lock.lock()
-            self.detector.partial(result.bestTranscription.formattedString, at: Date())
-            self.lock.unlock()
-        }
-
-        while !isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            let done = withLock { detector.isFinished(at: Date()) }
-            if done || Task.isCancelled { break }
-        }
-        let (transcript, wasCancelled) = withLock { (detector.transcript, cancelled) }
-        teardown()
-        return wasCancelled || transcript.isEmpty ? nil : transcript
+        let locale = self.locale
+        return await loop.run(recognizer: {
+            guard await Self.authorized(), let recognizer = SFSpeechRecognizer(locale: locale),
+                  recognizer.isAvailable else { return nil }
+            return SpeechRecognition(recognizer)
+        }, onRoute: onRoute)
     }
 
     public func cancel() {
-        withLock { cancelled = true }
-    }
-
-    private func withLock<T>(_ body: () -> T) -> T {
-        lock.lock(); defer { lock.unlock() }
-        return body()
-    }
-
-    private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
-
-    /// Teardown: removeTap → engine.stop() → endAudio (receta Relay §9).
-    private func teardown() {
-        lock.lock()
-        let engine = self.engine, request = self.request, task = self.task
-        self.engine = nil; self.request = nil; self.task = nil
-        lock.unlock()
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        request?.endAudio()
-        task?.cancel()
+        loop.cancel()
     }
 
     static func authorized() async -> Bool {
@@ -139,6 +82,50 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
             }
         default: return false
         }
+    }
+}
+
+/// AVAudioEngine (tap del input) + SFSpeechAudioBufferRecognitionRequest on-device.
+final class SpeechRecognition: SpeechRecognitionPort, @unchecked Sendable {
+    private let recognizer: SFSpeechRecognizer
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+
+    init(_ recognizer: SFSpeechRecognizer) {
+        self.recognizer = recognizer
+    }
+
+    func start(onPartial: @escaping @Sendable (String) -> Void) throws {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true   // el audio crudo no sale del teléfono
+        request.shouldReportPartialResults = true
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.inputFormat(forBus: 0)) { buffer, _ in
+            request.append(buffer)
+        }
+        lock.lock(); self.engine = engine; self.request = request; lock.unlock()
+        engine.prepare()
+        try engine.start()
+        let task = recognizer.recognitionTask(with: request) { result, _ in
+            guard let result else { return }
+            onPartial(result.bestTranscription.formattedString)
+        }
+        lock.lock(); self.task = task; lock.unlock()
+    }
+
+    /// Teardown: removeTap → engine.stop() → endAudio (receta Relay §9).
+    func stop() {
+        lock.lock()
+        let engine = self.engine, request = self.request, task = self.task
+        self.engine = nil; self.request = nil; self.task = nil
+        lock.unlock()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        request?.endAudio()
+        task?.cancel()
     }
 }
 

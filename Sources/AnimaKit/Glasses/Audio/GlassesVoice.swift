@@ -47,6 +47,96 @@ public enum AudioRoutePlanner {
         try? session.activatePhoneMic()
         return .phoneMic
     }
+
+    /// Suelta la ruta de captura al terminar (silencio, cancel o error). Salir de
+    /// .playAndRecord cierra el SCO/HFP: si queda abierto, el firmware de las
+    /// gafas sigue mostrando la UI de llamada hasta el próximo TTS. A2DP deja
+    /// además la salida lista para la respuesta; si falla, se desactiva la sesión.
+    public static func releaseCapture(_ session: any AudioSessionPort) {
+        do { try session.activatePlaybackA2DP() } catch { session.deactivate() }
+    }
+}
+
+/// El reconocedor (tap del AVAudioEngine + tarea SFSpeech) detrás de un puerto.
+public protocol SpeechRecognitionPort: Sendable {
+    /// Instala el tap, arranca el engine y la tarea. Lanza si el engine no arranca.
+    func start(onPartial: @escaping @Sendable (String) -> Void) throws
+    /// Teardown: removeTap → engine.stop() → endAudio → cancel (receta Relay §9).
+    func stop()
+}
+
+/// El ciclo de UNA captura: asentar ruta → reconocer → fin por silencio →
+/// teardown del reconocedor → soltar la ruta HFP. Cualquier salida tras tocar
+/// la sesión de audio (silencio, cancel, error del engine) pasa por
+/// `releaseCapture`: el canal de "llamada" nunca queda abierto.
+public final class VoiceCaptureLoop: @unchecked Sendable {
+    private let audio: any AudioSessionPort
+    private let template: TurnEndDetector
+    private let settle: TimeInterval
+    private let poll: TimeInterval
+    private let sleep: @Sendable (TimeInterval) async -> Void
+    private let lock = NSLock()
+    private var detector: TurnEndDetector
+    private var cancelled = false
+
+    public init(audio: any AudioSessionPort, detector: TurnEndDetector = TurnEndDetector(),
+                settle: TimeInterval = 2, poll: TimeInterval = 0.1,
+                sleep: @escaping @Sendable (TimeInterval) async -> Void = { s in
+                    try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000))
+                }) {
+        self.audio = audio
+        self.template = detector
+        self.detector = detector
+        self.settle = settle
+        self.poll = poll
+        self.sleep = sleep
+    }
+
+    /// `recognizer` resuelve permisos y disponibilidad ANTES de tocar el audio:
+    /// nil = no se captura (y la sesión de audio queda intacta).
+    public func run(recognizer: () async -> (any SpeechRecognitionPort)?,
+                    onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
+        withLock { cancelled = false; detector = template }
+        guard let recognizer = await recognizer() else { return nil }
+        let route = await AudioRoutePlanner.settleCapture(audio, settle: settle, sleep: sleep)
+        onRoute(route)
+        guard !isCancelled else {
+            AudioRoutePlanner.releaseCapture(audio)
+            return nil
+        }
+        do {
+            try recognizer.start { [weak self] text in self?.partial(text) }
+        } catch {
+            recognizer.stop()
+            AudioRoutePlanner.releaseCapture(audio)
+            return nil
+        }
+        withLock { detector.start(at: Date()) }
+        while !isCancelled {
+            await sleep(poll)
+            let done = withLock { detector.isFinished(at: Date()) }
+            if done || Task.isCancelled { break }
+        }
+        let (transcript, wasCancelled) = withLock { (detector.transcript, cancelled) }
+        recognizer.stop()
+        AudioRoutePlanner.releaseCapture(audio)
+        return wasCancelled || transcript.isEmpty ? nil : transcript
+    }
+
+    public func cancel() {
+        withLock { cancelled = true }
+    }
+
+    private func partial(_ text: String) {
+        withLock { detector.partial(text, at: Date()) }
+    }
+
+    private var isCancelled: Bool { withLock { cancelled } }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock(); defer { lock.unlock() }
+        return body()
+    }
 }
 
 /// Fin de turno por silencio (handoff: pausa ≈ 1.2 s termina el turno).

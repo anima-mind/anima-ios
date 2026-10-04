@@ -45,6 +45,21 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     /// Karaoke: ventanas del texto que se está diciendo (solo en speaking).
     private var pager: HUDSpokenPager?
     private var speechGeneration = 0
+    /// TTS por oración: la cola de utterances del turno en curso.
+    private var speechSession: SpeechSession?
+    private var turnGeneration = 0
+    private var turnScript = SpokenScript()
+    private var turnSpeechDismissed = false
+
+    private struct SpeechSession {
+        let generation: Int
+        /// Turno al que pertenece (nil = texto completo, sin stream).
+        let turn: Int?
+        var script: SpokenScript
+        let heading: String
+        var lastLocation = 0
+        let queue: AsyncStream<(Int, String)>.Continuation
+    }
     private var cameraContinuation: CheckedContinuation<Bool, Never>?
     private var cameraRequestID = 0
 
@@ -83,6 +98,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         listenTask?.cancel()
         turnTask?.cancel()
         speakTask?.cancel()
+        speechSession?.queue.finish()
         captureTask?.cancel()
         homeTask?.cancel()
         resolveCamera(false)
@@ -136,7 +152,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private func perform(_ effect: HUDEffect) async {
         switch effect {
         case .startListening:
-            speech.stop()
+            endSpeech()
             listenTask?.cancel()
             let voice = self.voice
             listenTask = Task { [weak self] in
@@ -195,26 +211,23 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             turnTask?.cancel()
             turnTask = nil
         case .speak(let text):
-            speakTask?.cancel()
-            speechGeneration += 1
-            let generation = speechGeneration
-            if case .speaking(let card) = state.screen {
-                pager = HUDSpokenPager(text, after: card.heading)
+            if var session = speechSession, session.turn == turnGeneration, !turnScript.finished {
+                // Ya se dice por oración: cerrar con la última + la remisión al teléfono.
+                let tail = turnScript.finish()
+                session.script = turnScript
+                speechSession = session
+                enqueue(tail)
+                session.queue.finish()
+                await refreshWindow()
             } else {
-                pager = nil
-            }
-            let speech = self.speech
-            speakTask = Task { [weak self] in
-                await speech.speak(text) { range in
-                    Task { @MainActor in await self?.spoke(range, generation: generation) }
-                }
-                guard !Task.isCancelled else { return }
-                await self?.handle(.speechFinished)
+                let heading: String
+                if case .speaking(let card) = state.screen { heading = card.heading } else { heading = "" }
+                let session = startSpeech(SpokenScript(whole: text), heading: heading, turn: nil)
+                enqueue(session.script.utterances)
+                session.queue.finish()
             }
         case .stopSpeaking:
-            speech.stop()
-            speakTask?.cancel()
-            speakTask = nil
+            endSpeech()
         case .resolveCamera(let approved):
             resolveCamera(approved)
         case .openPhone:
@@ -222,17 +235,108 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         }
     }
 
-    /// Progreso del TTS → ventana del pager. Re-envía la card SOLO si la
-    /// ventana cambió (histéresis del pager: nada de re-render por palabra).
-    func spoke(_ range: NSRange, generation: Int) async {
-        guard generation == speechGeneration, case .speaking = state.screen,
-              var pager, let window = pager.advance(to: range) else { return }
+    // MARK: - TTS por oración + karaoke
+
+    /// Abre una cola de TTS: las utterances se dicen en orden, una tras otra;
+    /// al vaciarse la cola cerrada, `.speechFinished`.
+    private func startSpeech(_ script: SpokenScript, heading: String, turn: Int?) -> SpeechSession {
+        endSpeech()
+        let generation = speechGeneration
+        let (stream, queue) = AsyncStream<(Int, String)>.makeStream()
+        let session = SpeechSession(generation: generation, turn: turn, script: script, heading: heading, queue: queue)
+        speechSession = session
+        pager = HUDSpokenPager(script.text, after: heading)
+        let speech = self.speech
+        speakTask = Task { [weak self] in
+            for await (index, text) in stream {
+                guard !Task.isCancelled else { return }
+                await speech.speak(text) { range in
+                    Task { @MainActor in await self?.spoke(index, range, generation: generation) }
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await self?.speechDrained(generation)
+        }
+        return session
+    }
+
+    /// Encola las utterances NUEVAS (las últimas del script de la sesión).
+    private func enqueue(_ utterances: [String]) {
+        guard let session = speechSession, !utterances.isEmpty else { return }
+        let first = session.script.utterances.count - utterances.count
+        for (k, text) in utterances.enumerated() { session.queue.yield((first + k, text)) }
+    }
+
+    private func endSpeech() {
+        speech.stop()
+        speechSession?.queue.finish()
+        speechSession = nil
+        speakTask?.cancel()
+        speakTask = nil
+        speechGeneration += 1
+    }
+
+    private func speechDrained(_ generation: Int) async {
+        guard generation == speechGeneration else { return }
+        speechSession = nil
+        await handle(.speechFinished)
+    }
+
+    /// Un delta del turno: las oraciones completas se encolan YA en el TTS; la
+    /// primera pasa la vista de "pensando…" a speaking.
+    private func streamed(_ delta: String, reply: String, turn: Int) async {
+        guard turn == turnGeneration, !turnSpeechDismissed else { return }
+        let fresh = turnScript.feed(delta)
+        if var session = speechSession, session.turn == turn {
+            session.script = turnScript
+            speechSession = session
+            enqueue(fresh)
+            await refreshWindow()
+            return
+        }
+        guard !fresh.isEmpty else { return }
+        switch state.screen {
+        case .thinking:
+            let heading = HUDSummary.card(from: reply).heading
+            let session = startSpeech(turnScript, heading: heading, turn: turn)
+            enqueue(session.script.utterances)
+            let window = pager?.window ?? ""
+            await handle(.replyStarted(HUDCard(heading: heading, body: window, overflow: false)))
+        case .agentCard:
+            let session = startSpeech(turnScript, heading: "", turn: turn)
+            enqueue(session.script.utterances)
+        default:
+            turnSpeechDismissed = true   // el dueño ya se movió: no hablarle encima
+        }
+    }
+
+    /// El texto hablado creció: re-pagina y re-envía SOLO si la ventana visible cambió.
+    private func refreshWindow() async {
+        guard let session = speechSession, case .speaking(let card) = state.screen else { return }
+        var fresh = HUDSpokenPager(session.script.text, after: session.heading)
+        _ = fresh.advance(to: NSRange(location: session.lastLocation, length: 0))
+        pager = fresh
+        if fresh.window != card.body { await handle(.speechWindow(fresh.window)) }
+    }
+
+    /// Progreso del TTS (rango de la utterance `index`) → ventana del pager.
+    /// Re-envía la card SOLO si cambió de ventana (histéresis: nada por palabra).
+    func spoke(_ index: Int, _ range: NSRange, generation: Int) async {
+        guard generation == speechGeneration, var session = speechSession else { return }
+        let absolute = session.script.absolute(index, range)
+        if absolute.location != NSNotFound { session.lastLocation = absolute.location }
+        speechSession = session
+        guard case .speaking = state.screen, var pager, let window = pager.advance(to: absolute) else { return }
         self.pager = pager
         await handle(.speechWindow(window))
     }
 
     /// El turno por el AgentLoop normal, marcado como superficie gafas.
     private func runTurn(mirror: String, content: [ContentBlock]) async {
+        turnGeneration += 1
+        let turn = turnGeneration
+        turnScript = SpokenScript()
+        turnSpeechDismissed = false
         await deliver(.userTurn(text: mirror, origin: .glassesHUD))
         var reply = ""
         var refused = false
@@ -240,7 +344,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         let stream = await runner.run(sessionId: sessionId, content: content, surface: .glassesHUD)
         for await event in stream {
             switch event {
-            case .textDelta(let delta): reply += delta
+            case .textDelta(let delta):
+                reply += delta
+                if !refused { await streamed(delta, reply: reply, turn: turn) }
             case .refused: refused = true
             case .error(let message): failure = message
             case .stopped(let stop): failure = "Turno detenido (\(stop))."

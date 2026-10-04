@@ -31,16 +31,25 @@ public protocol AudioSessionPort: Sendable {
 
 public enum AudioRoutePlanner {
     /// Configura la captura con la política del §4.2 y devuelve la ruta real.
+    /// La ruta se SONDEA cada `poll` con salida temprana apenas asienta (patrón
+    /// Relay SpeechVoiceSession): máximo `settle` por intento, típico <600 ms.
     public static func settleCapture(
         _ session: any AudioSessionPort,
         settle: TimeInterval = 2,
+        poll: TimeInterval = 0.1,
         sleep: @Sendable (TimeInterval) async -> Void = { s in try? await Task.sleep(nanoseconds: UInt64(s * 1_000_000_000)) }
     ) async -> VoiceRoute {
         if session.hfpInputAvailable() {
             for _ in 0..<2 {   // intento + 1 reintento
                 if (try? session.activateHFP()) != nil {
-                    await sleep(settle)
-                    if session.currentInputIsHFP() { return .glassesHFP }
+                    var waited: TimeInterval = 0
+                    while true {
+                        if session.currentInputIsHFP() { return .glassesHFP }
+                        guard waited < settle else { break }
+                        let step = min(poll, settle - waited)
+                        await sleep(step)
+                        waited += step
+                    }
                 }
             }
         }
@@ -98,7 +107,7 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
                     onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
         withLock { cancelled = false; detector = template }
         guard let recognizer = await recognizer() else { return nil }
-        let route = await AudioRoutePlanner.settleCapture(audio, settle: settle, sleep: sleep)
+        let route = await AudioRoutePlanner.settleCapture(audio, settle: settle, poll: min(poll, 0.1), sleep: sleep)
         onRoute(route)
         guard !isCancelled else {
             AudioRoutePlanner.releaseCapture(audio)

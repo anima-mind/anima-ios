@@ -120,14 +120,7 @@ struct GlassesKaraokeTests {
         let spoken = HUDSummary.spoken(from: reply)
         let pager = HUDSpokenPager(spoken, after: "Tu día.")
         #expect(pager.pages.count >= 2)   // TTS acotado a 280 + remisión al teléfono
-        // El TTS pronuncia varias palabras por ventana (mismo rango de página = sin re-render).
-        var ranges: [NSRange] = []
-        for page in pager.pages {
-            ranges.append(NSRange(location: page.range.location, length: 3))
-            ranges.append(NSRange(location: page.range.location + 5, length: 3))
-            ranges.append(NSRange(location: NSMaxRange(page.range) - 2, length: 2))
-        }
-        rig.voice.ranges.mutate { $0 = ranges }
+        rig.voice.wordRanges.mutate { $0 = true }   // rango por palabra, POR utterance
         rig.runner.replies.mutate { $0 = [GlassesConversationTests.reply(reply)] }
 
         await rig.surface.handle(.action(.talk))
@@ -136,12 +129,23 @@ struct GlassesKaraokeTests {
         await rig.surface.handle(.action(.send))
         #expect(await eventually { if case .answer = await rig.surface.state.screen { return true } else { return false } })
 
+        // Lo hablado = las utterances encoladas por oración (mismo texto que el resumen).
+        #expect(rig.voice.spoken.value.joined(separator: " ") == spoken)
         let sent = Array(rig.display?.sent.value.dropFirst(before) ?? [])
         let speaking = sent.filter { $0.name == "speaking" }
-        // 1 envío inicial (ventana 0) + 1 por cada cambio de ventana, ni uno más.
-        #expect(speaking.count == pager.pages.count)
         let bodies = speaking.compactMap { $0.texts.first { $0.style == .body }?.content }
-        #expect(bodies == pager.windows)
+        // Cada envío es un cambio real de ventana (nunca dos iguales seguidos)…
+        for (a, b) in zip(bodies, bodies.dropFirst()) { #expect(a != b) }
+        // …las ventanas del texto completo aparecen en orden…
+        var cursor = bodies.startIndex
+        for window in pager.windows {
+            guard let hit = bodies[cursor...].firstIndex(of: window) else { Issue.record("falta \(window)"); break }
+            cursor = hit + 1
+        }
+        // …y no hay re-render por palabra: a lo sumo una página extra (la que crece con el stream).
+        let words = spoken.split(separator: " ").count
+        #expect(speaking.count <= pager.pages.count + 1)
+        #expect(speaking.count < words / 4)
         for view in sent { try HUDValidator.validate(view) }
         // Done: la card queda con la última ventana + los botones de siempre.
         let answer = try #require(rig.lastView)
@@ -153,7 +157,7 @@ struct GlassesKaraokeTests {
 
     @Test func progresoDeOtroTurnoSeIgnora() async throws {
         let rig = await GlassesRig.make()
-        await rig.surface.spoke(NSRange(location: 400, length: 2), generation: 99)
+        await rig.surface.spoke(0, NSRange(location: 400, length: 2), generation: 99)
         #expect(rig.surface.state.screen == .home(status: nil))
     }
 }

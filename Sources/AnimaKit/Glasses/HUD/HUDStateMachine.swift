@@ -19,6 +19,9 @@ public enum HUDEvent: Sendable, Equatable {
     case turnFailed(String)
     /// El TTS terminó de decir la respuesta.
     case speechFinished
+    /// TTS por oración: la primera oración del stream ya se está diciendo
+    /// (heading + primera ventana) mientras el turno sigue llegando.
+    case replyStarted(HUDCard)
     /// Karaoke: el TTS entró a otra ventana del texto hablado (HUDSpokenPager).
     case speechWindow(String)
     /// Botón "Foto": la captura POV terminó (image block ya reducido ≤1568px).
@@ -158,6 +161,16 @@ public enum HUDStateMachine {
             if !spoken.isEmpty { card.body = HUDSpokenPager(spoken, after: card.heading).window }
             next.screen = spoken.isEmpty ? .answer(card) : .speaking(card)
             return (next, spoken.isEmpty ? [] : [.speak(spoken)])
+        case (.thinking, .replyStarted(let card)):
+            next.screen = .speaking(card)
+            return (next, [])
+        case (.speaking, .turnFinished(let reply)):
+            // Ya se dice por oración: el efecto solo cierra la cola del TTS.
+            let spoken = HUDSummary.spoken(from: reply)
+            return (next, spoken.isEmpty ? [] : [.speak(spoken)])
+        case (.speaking, .turnRefused(let text)):
+            next.screen = .declined(text)
+            return (next, [.stopSpeaking])
         case (.thinking, .turnRefused(let text)):
             next.screen = .declined(text)
             return (next, [])

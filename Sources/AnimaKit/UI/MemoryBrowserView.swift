@@ -161,6 +161,7 @@ struct MemoryDetailSheet: View {
     let detail: MemoryDetail
     let onInvalidate: (MemoryID, String) -> Void
     @State private var reason: String = ""
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
@@ -209,8 +210,11 @@ struct MemoryDetailSheet: View {
                     }
                 }
                 .padding(Theme.Space.screenInset)
+                .padding(.top, Theme.minHitTarget - Theme.Space.screenInset)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
+        .overlay(alignment: .topTrailing) { NavCloseButton("memoryDetail") { dismiss() } }
     }
 }
 #endif

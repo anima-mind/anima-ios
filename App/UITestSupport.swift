@@ -61,6 +61,7 @@ enum UITestMode {
 ///   "Calendario concedido …" o "Calendario sin permiso …" (fail-closed).
 struct UITestScriptedProvider: Provider {
     static let fixedReply = "Hola, soy Anima en modo de prueba. Te escucho."
+    static let thought = "Saludo breve. Respondo en modo de prueba."
     /// ~3 s de stream (5 trozos): ventana holgada para que el test vea el caret.
     static let chunkDelay: Duration = .milliseconds(600)
 
@@ -92,6 +93,9 @@ struct UITestScriptedProvider: Provider {
                 continuation.yield(.messageStart(id: "uitest-\(UUID().uuidString)", model: model))
                 switch plan {
                 case .text(let reply):
+                    // Resumen de razonamiento: la thought line queda en pantalla
+                    // (expandible) para ejercitar su tap con el teclado abierto.
+                    continuation.yield(.thinkingDelta(Self.thought))
                     for chunk in Self.chunks(reply) {
                         try? await Task.sleep(for: Self.chunkDelay)
                         if Task.isCancelled { break }

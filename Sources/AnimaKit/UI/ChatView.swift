@@ -217,6 +217,9 @@ public struct ChatView: View {
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
     @State private var captureNotice: String?
+    /// Foco del composer: el teclado se cierra al enviar, al arrastrar la
+    /// lista y al tocar el área de mensajes (la tab bar vuelve a verse).
+    @FocusState private var inputFocused: Bool
 
     public init(model: ChatViewModel) {
         self.model = model
@@ -239,6 +242,11 @@ public struct ChatView: View {
                         }
                         .padding(Theme.Space.screenInset)
                     }
+                    .scrollDismissesKeyboard(.interactively)
+                    // Simultáneo: cierra el teclado SIN robarle el tap a la thought
+                    // line, "Reintentar" ni las acciones de las propuestas.
+                    .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
+                    .accessibilityIdentifier("chat.messages")
                     .onChange(of: model.messages.last?.text) { _, _ in
                         if let last = model.messages.last {
                             proxy.scrollTo(last.id, anchor: .bottom)
@@ -600,11 +608,13 @@ public struct ChatView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.control)
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                .onSubmit { Task { await model.send() } }
+                .focused($inputFocused)
+                .onSubmit { inputFocused = false; Task { await model.send() } }
                 .accessibilityIdentifier("chat.input")
 
             Button {
                 if hasDraft {
+                    inputFocused = false
                     Task { await model.send() }
                 } else {
                     captureNotice = "Las notas de voz llegan pronto; por ahora escríbele."
@@ -728,6 +738,7 @@ public struct PlasticityBadge: View {
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
     let glasses: GlassesViewModel?
+    @Environment(\.dismiss) private var dismiss
 
     public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
         self.mind = mind
@@ -778,6 +789,7 @@ public struct MindSheet: View {
             }
             .padding(.top, Theme.Space.sectionGap)
         }
+        .overlay(alignment: .topTrailing) { NavCloseButton("mind") { dismiss() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mind.sheet")
     }

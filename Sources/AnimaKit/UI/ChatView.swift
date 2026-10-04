@@ -360,10 +360,7 @@ public struct ChatView: View {
 
     private func streamedText(_ message: ChatViewModel.DisplayMessage) -> some View {
         HStack(alignment: .bottom, spacing: 4) {
-            Text(message.text)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .fixedSize(horizontal: false, vertical: true)
+            MarkdownMessage(text: message.text)
             if message.isStreaming {
                 StreamCaret()
             }
@@ -799,6 +796,43 @@ public struct MindSheet: View {
         .padding(.horizontal, Theme.Space.cardPad)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("mind.row.\(id)")
+    }
+}
+
+/// El texto del asistente con markdown: prosa inline + bloques de código en
+/// vista monoespaciada sobre surface (accent jamás de relleno). Re-parsea el
+/// mensaje completo en cada delta (ChatMarkdown): sin parpadeos por fragmento.
+struct MarkdownMessage: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(ChatMarkdown.segments(text).enumerated()), id: \.offset) { _, segment in
+                switch segment {
+                case .text(let attributed):
+                    Text(attributed)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .tint(Theme.Colors.accentText)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .code(let code, _):
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(code)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(Theme.Colors.text)
+                            .textSelection(.enabled)
+                            .padding(Theme.Space.cardPad)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                            .fill(Theme.Colors.surface))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                }
+            }
+        }
     }
 }
 #endif

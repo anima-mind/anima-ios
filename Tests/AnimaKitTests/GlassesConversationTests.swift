@@ -11,6 +11,8 @@ final class MockVoice: VoiceCapturePort, SpeechOutputPort, @unchecked Sendable {
     let cancels = Locked(0)
     let stops = Locked(0)
     let hold = Locked(false)
+    /// Rangos que el TTS simulado "pronuncia" (karaoke), con una pausa entre cada uno.
+    let ranges = Locked<[NSRange]>([])
 
     func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
         onRoute(route.value)
@@ -19,6 +21,13 @@ final class MockVoice: VoiceCapturePort, SpeechOutputPort, @unchecked Sendable {
     }
     func cancel() { cancels.mutate { $0 += 1 }; hold.mutate { $0 = false } }
     func speak(_ text: String) async { spoken.mutate { $0.append(text) } }
+    func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
+        for range in ranges.value {
+            onRange(range)
+            try? await Task.sleep(nanoseconds: 3_000_000)
+        }
+        await speak(text)
+    }
     func stop() { stops.mutate { $0 += 1 } }
 }
 

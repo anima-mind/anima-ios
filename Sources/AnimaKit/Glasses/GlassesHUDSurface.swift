@@ -39,6 +39,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private var turnTask: Task<Void, Never>?
     private var speakTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
+    /// Karaoke: ventanas del texto que se está diciendo (solo en speaking).
+    private var pager: HUDSpokenPager?
+    private var speechGeneration = 0
     private var cameraContinuation: CheckedContinuation<Bool, Never>?
     private var cameraRequestID = 0
 
@@ -150,9 +153,18 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             turnTask = nil
         case .speak(let text):
             speakTask?.cancel()
+            speechGeneration += 1
+            let generation = speechGeneration
+            if case .speaking(let card) = state.screen {
+                pager = HUDSpokenPager(text, after: card.heading)
+            } else {
+                pager = nil
+            }
             let speech = self.speech
             speakTask = Task { [weak self] in
-                await speech.speak(text)
+                await speech.speak(text) { range in
+                    Task { @MainActor in await self?.spoke(range, generation: generation) }
+                }
                 guard !Task.isCancelled else { return }
                 await self?.handle(.speechFinished)
             }
@@ -165,6 +177,15 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         case .openPhone:
             openPhone(router?.phone?.lastMirroredTurnID)
         }
+    }
+
+    /// Progreso del TTS → ventana del pager. Re-envía la card SOLO si la
+    /// ventana cambió (histéresis del pager: nada de re-render por palabra).
+    func spoke(_ range: NSRange, generation: Int) async {
+        guard generation == speechGeneration, case .speaking = state.screen,
+              var pager, let window = pager.advance(to: range) else { return }
+        self.pager = pager
+        await handle(.speechWindow(window))
     }
 
     /// El turno por el AgentLoop normal, marcado como superficie gafas.

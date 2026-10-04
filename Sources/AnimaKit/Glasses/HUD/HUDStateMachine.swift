@@ -19,6 +19,8 @@ public enum HUDEvent: Sendable, Equatable {
     case turnFailed(String)
     /// El TTS terminó de decir la respuesta.
     case speechFinished
+    /// Karaoke: el TTS entró a otra ventana del texto hablado (HUDSpokenPager).
+    case speechWindow(String)
     /// `glasses_camera` pide confirmación pinch en las gafas.
     case cameraRequested(reason: String)
     /// `glasses_show`: el agente proyecta una card (ya validada).
@@ -117,7 +119,8 @@ public enum HUDStateMachine {
         case (.thinking, .turnFinished(let reply)), (.agentCard, .turnFinished(let reply)):
             let spoken = HUDSummary.spoken(from: reply)
             if case .agentCard = state.screen { return (next, spoken.isEmpty ? [] : [.speak(spoken)]) }
-            let card = HUDSummary.card(from: reply)
+            var card = HUDSummary.card(from: reply)
+            if !spoken.isEmpty { card.body = HUDSpokenPager(spoken, after: card.heading).window }
             next.screen = spoken.isEmpty ? .answer(card) : .speaking(card)
             return (next, spoken.isEmpty ? [] : [.speak(spoken)])
         case (.thinking, .turnRefused(let text)):
@@ -127,7 +130,11 @@ public enum HUDStateMachine {
             next.screen = .attention(message)
             return (next, [])
 
-        // Speaking → Answer (done)
+        // Speaking → Answer (done): la card queda con la ÚLTIMA ventana.
+        case (.speaking(var card), .speechWindow(let window)):
+            card.body = window
+            next.screen = .speaking(card)
+            return (next, [])
         case (.speaking(let card), .speechFinished):
             next.screen = .answer(card)
             return (next, [])

@@ -135,6 +135,7 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     private let synthesizer = AVSpeechSynthesizer()
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Never>?
+    private var onRange: (@Sendable (NSRange) -> Void)?
 
     public init(audio: any AudioSessionPort = SystemAudioSession()) {
         self.audio = audio
@@ -143,18 +144,22 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     }
 
     public func speak(_ text: String) async {
+        await speak(text, onRange: { _ in })
+    }
+
+    public func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
         guard !text.isEmpty else { return }
         try? audio.activatePlaybackA2DP()
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "es-CO") ?? AVSpeechSynthesisVoice(language: "es-MX")
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            store(cont)
+            store(cont, onRange)
             synthesizer.speak(utterance)
         }
     }
 
-    private func store(_ cont: CheckedContinuation<Void, Never>) {
-        lock.lock(); continuation = cont; lock.unlock()
+    private func store(_ cont: CheckedContinuation<Void, Never>, _ progress: @escaping @Sendable (NSRange) -> Void) {
+        lock.lock(); continuation = cont; onRange = progress; lock.unlock()
     }
 
     public func stop() {
@@ -163,8 +168,14 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     }
 
     private func finish() {
-        lock.lock(); let cont = continuation; continuation = nil; lock.unlock()
+        lock.lock(); let cont = continuation; continuation = nil; onRange = nil; lock.unlock()
         cont?.resume()
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange,
+                                  utterance: AVSpeechUtterance) {
+        lock.lock(); let progress = onRange; lock.unlock()
+        progress?(characterRange)
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { finish() }

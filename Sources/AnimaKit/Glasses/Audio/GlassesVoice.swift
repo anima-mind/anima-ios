@@ -182,7 +182,17 @@ public protocol VoiceCapturePort: Sendable {
 /// Salida por voz (TTS). `speak` retorna al terminar de hablar.
 public protocol SpeechOutputPort: Sendable {
     func speak(_ text: String) async
+    /// Igual, informando el rango (UTF-16 de `text`) que se está pronunciando:
+    /// alimenta el karaoke del HUD (HUDSpokenPager).
+    func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async
     func stop()
+}
+
+public extension SpeechOutputPort {
+    /// Salidas sin progreso (silenciosas, dobles): hablan sin reportar rangos.
+    func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
+        await speak(text)
+    }
 }
 
 /// Sin audio (UI tests, macOS): no oye nada, no dice nada.

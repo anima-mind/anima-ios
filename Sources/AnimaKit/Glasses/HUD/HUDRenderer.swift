@@ -60,8 +60,8 @@ public enum HUDRenderer {
                 .flexBox(card(icon: .speechBubble, meta: "Te escuché",
                               body: "“" + HUDSummary.clip(transcript, HUDValidator.bodyLimit - 2) + "”",
                               group: HUDButtonGroup(alignment: .end, buttons: [
-                                  HUDButton("Otra vez", style: .outline, icon: .speechBubble, action: .again),
-                                  HUDButton("Enviar", style: .primary, icon: .checkmarkCircle, action: .send),
+                                  HUDButton("Otra vez", style: .outline, icon: .twoArrowsClockwise, action: .again),
+                                  HUDButton("Enviar", style: .primary, icon: .paperAirplane, action: .send),
                               ]))),
             ]))
 

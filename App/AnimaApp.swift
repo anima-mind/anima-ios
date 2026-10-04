@@ -138,7 +138,7 @@ final class AppModel: ObservableObject {
             let activation = GlassesActivation(body: glassesBody)
             self.glassesBody = glassesBody
             self.glassesActivation = activation
-            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation)
+            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation, host: glassesHost)
             Task {
                 await glassesBody.setHandlers(onAction: nil, onExit: { Task { await activation.userExited() } })
                 await glassesBody.start()

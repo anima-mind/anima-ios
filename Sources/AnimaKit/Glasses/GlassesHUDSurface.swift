@@ -34,11 +34,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private weak var router: SurfaceRouter?
     private let openPhone: @MainActor (UUID?) -> Void
     private let cameraTimeout: TimeInterval
+    private let errorDwell: TimeInterval
 
     private var listenTask: Task<Void, Never>?
     private var turnTask: Task<Void, Never>?
     private var speakTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
+    private var captureTask: Task<Void, Never>?
+    private var homeTask: Task<Void, Never>?
     /// Karaoke: ventanas del texto que se está diciendo (solo en speaking).
     private var pager: HUDSpokenPager?
     private var speechGeneration = 0
@@ -47,7 +50,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
 
     public init(body: GlassesBody, activation: GlassesActivation? = nil, runner: any TurnRunner,
                 sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
-                router: SurfaceRouter? = nil, cameraTimeout: TimeInterval = 60,
+                router: SurfaceRouter? = nil, cameraTimeout: TimeInterval = 60, errorDwell: TimeInterval = 4,
                 openPhone: @escaping @MainActor (UUID?) -> Void = { _ in }) {
         self.body = body
         self.activation = activation
@@ -57,6 +60,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         self.speech = speech
         self.router = router
         self.cameraTimeout = cameraTimeout
+        self.errorDwell = errorDwell
         self.openPhone = openPhone
         (events, sink) = AsyncStream<SurfaceEvent>.makeStream()
         router?.register(self)
@@ -79,6 +83,8 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         listenTask?.cancel()
         turnTask?.cancel()
         speakTask?.cancel()
+        captureTask?.cancel()
+        homeTask?.cancel()
         resolveCamera(false)
         sink.finish()
     }
@@ -147,7 +153,44 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         case .submit(let text):
             sink.yield(.voiceTranscript(text))
             turnTask?.cancel()
-            turnTask = Task { [weak self] in await self?.runTurn(text) }
+            turnTask = Task { [weak self] in
+                await self?.runTurn(mirror: text, content: [AudioTool.transcriptBlock(text)])
+            }
+        case .capturePhoto:
+            captureTask?.cancel()
+            let body = self.body
+            captureTask = Task { [weak self] in
+                let event: HUDEvent
+                do {
+                    let data = try await body.capturePhoto()
+                    if let image = ImageDownscaler.imageBlock(from: data) {
+                        event = .photoCaptured(image)
+                    } else {
+                        event = .photoFailed(HUDPhoto.failure)
+                    }
+                } catch {
+                    event = .photoFailed(HUDPhoto.failure)
+                }
+                guard !Task.isCancelled else { return }
+                await self?.handle(event)
+            }
+        case .cancelCapture:
+            captureTask?.cancel()
+            captureTask = nil
+        case .submitPhoto(let image):
+            turnTask?.cancel()
+            turnTask = Task { [weak self] in
+                await self?.runTurn(mirror: HUDPhoto.question, content: [.text(HUDPhoto.prompt), image])
+            }
+        case .returnHomeLater:
+            homeTask?.cancel()
+            let shown = state.screen
+            let dwell = errorDwell
+            homeTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.state.screen == shown else { return }
+                await self.handle(.action(.back))
+            }
         case .cancelTurn:
             turnTask?.cancel()
             turnTask = nil
@@ -189,13 +232,12 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     }
 
     /// El turno por el AgentLoop normal, marcado como superficie gafas.
-    private func runTurn(_ text: String) async {
-        await deliver(.userTurn(text: text, origin: .glassesHUD))
+    private func runTurn(mirror: String, content: [ContentBlock]) async {
+        await deliver(.userTurn(text: mirror, origin: .glassesHUD))
         var reply = ""
         var refused = false
         var failure: String?
-        let stream = await runner.run(sessionId: sessionId, content: [AudioTool.transcriptBlock(text)],
-                                      surface: .glassesHUD)
+        let stream = await runner.run(sessionId: sessionId, content: content, surface: .glassesHUD)
         for await event in stream {
             switch event {
             case .textDelta(let delta): reply += delta

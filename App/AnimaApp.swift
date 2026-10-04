@@ -135,7 +135,9 @@ final class AppModel: ObservableObject {
             self.realRegister = realRegister
             // Track G: el cuerpo-gafas (DAT) — selector y sesión únicos en GlassesBody.
             let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
-            let activation = GlassesActivation(body: glassesBody)
+            let activation = GlassesActivation(body: glassesBody, reentry: {
+                await MainActor.run { HandoffNotifications.post(.glasses, body: HandoffNotifications.reentryText) }
+            })
             self.glassesBody = glassesBody
             self.glassesActivation = activation
             self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation, host: glassesHost)
@@ -434,6 +436,9 @@ final class AppModel: ObservableObject {
         case .chat(let turn):
             selectedTab = .chat
             chatModel?.focus(turn: turn)
+        case .glasses:
+            guard let glassesActivation else { return }
+            Task { await glassesActivation.userRequested() }
         }
     }
 

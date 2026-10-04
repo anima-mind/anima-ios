@@ -14,12 +14,13 @@ final class HandoffNotifications: NSObject, UNUserNotificationCenterDelegate, Se
     static let shared = HandoffNotifications()
     static let linkKey = "anima.deeplink"
     static let categoryPrefix = "handoff-"
+    static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
 
     static func install() {
         UNUserNotificationCenter.current().delegate = shared
     }
 
-    static func post(_ link: AnimaDeepLink) {
+    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {
         Task { @MainActor in
             // Con la app al frente el shell ya saltó al turno: sin notificación.
             guard UIApplication.shared.applicationState != .active else { return }
@@ -28,7 +29,7 @@ final class HandoffNotifications: NSObject, UNUserNotificationCenterDelegate, Se
             guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = "Anima"
-            content.body = "Sigue la conversación en el teléfono."
+            content.body = body
             content.userInfo = [linkKey: link.url.absoluteString]
             let request = UNNotificationRequest(identifier: categoryPrefix + UUID().uuidString,
                                                 content: content, trigger: nil)
@@ -54,7 +55,8 @@ final class HandoffNotifications: NSObject, UNUserNotificationCenterDelegate, Se
 }
 #else
 enum HandoffNotifications {
+    static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
     static func install() {}
-    static func post(_ link: AnimaDeepLink) {}
+    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {}
 }
 #endif

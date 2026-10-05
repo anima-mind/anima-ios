@@ -682,9 +682,9 @@ private struct SelfProposalDTO: Codable {
     let rationale: String?
 }
 
-/// Predicado observable emitido por Haiku (§5.8). Lenient: un `kind` desconocido
-/// o parámetros faltantes ⇒ toPredicate() nil, sin romper el parseo del arreglo.
-private struct PredicateDTO: Codable {
+/// Predicado observable emitido por Haiku (§5.8) o por la tool `goals`. Lenient:
+/// un `kind` desconocido o parámetros faltantes ⇒ toPredicate() nil, sin romper el parseo.
+struct PredicateDTO: Codable {
     let kind: String
     let value: Int?
     let hours: Double?
@@ -693,6 +693,7 @@ private struct PredicateDTO: Codable {
     let within_days: Int?
     let topic: String?
     let days: Int?
+    let every_days: Int?
 
     func toPredicate() -> ObservablePredicate? {
         switch kind {
@@ -701,6 +702,7 @@ private struct PredicateDTO: Codable {
         case "sleep_hours_at_least": return hours.map { .sleepHours(atLeast: $0, lastDays: last_days ?? 7) }
         case "calendar_has_free_slot": return min_minutes.map { .calendarFreeSlot(minMinutes: $0, withinDays: within_days ?? 7) }
         case "days_since_last_mention_at_most": return topic.map { .daysSinceLastMention(topic: $0, atMost: days ?? 7) }
+        case "progress_check_in": return .progressCheckIn(everyDays: max(1, every_days ?? 7))
         default: return nil
         }
     }
@@ -764,13 +766,13 @@ extension Consolidator {
     Resume el ciclo de consolidación. Los insights son conclusiones de alto nivel sobre el DUEÑO y su mundo (jamás sobre el asistente, su modelo o sus capacidades, ni sobre la conversación misma, ni preguntas). Sin insights durables, insights=[]. Devuelve SOLO un objeto JSON:
     {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}],"inferred_goals":[{"statement":"meta inferida del dueño","rationale":"por qué","priority":1-10,"predicate":{"kind":"...","value":N}}]}
     Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente. Usa inferred_goals SOLO si infieres una meta que el dueño NO declaró explícitamente (requerirá su confirmación). Si no aplica, omite el campo o déjalo vacío.
-    Predicados observables válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}.
+    Predicados observables válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}, progress_check_in{every_days} (el dueño reporta avance cada N días; úsalo para metas de hábito o ahorro sin otro observable).
     """
 
     static let goalsPrompt = """
     Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente"). Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta en tercera persona), evidence (cita textual del mensaje), priority (1-10) y un predicate observable de la lista cerrada. Devuelve SOLO un arreglo JSON:
     [{"statement":"...","evidence":"cita","priority":1-10,"predicate":{"kind":"...","value":N}}]
-    Predicados válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}.
+    Predicados válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}, progress_check_in{every_days} (el dueño reporta avance cada N días; úsalo para metas de hábito o ahorro sin otro observable).
     Si no hay metas declaradas, devuelve [].
     """
 }

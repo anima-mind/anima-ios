@@ -55,7 +55,7 @@ enum ProactiveFixtures {
         let clock = Locked(start)
         let now: @Sendable () -> Date = { clock.value }
         let reminders = AnimaReminderStore(queue: queue, calendar: calendar, now: now)
-        let other = OtherModel(queue: queue, now: now)
+        let other = OtherModel(queue: queue, calendar: calendar, now: now)
         let symbolic = SymbolicStore(queue: queue)
         let fake = FakeNotificationScheduler(status: status)
         let scheduler = ProactiveScheduler(scheduler: fake, reminders: reminders, otherModel: other,

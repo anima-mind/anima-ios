@@ -110,7 +110,7 @@ public actor DesireEngine {
     public func gaps() async -> [Lack] {
         var out: [Lack] = []
         for goal in await otherModel.desire() {
-            let reading = await goal.desiredState.evaluate(in: environment)
+            let reading = await goal.desiredState.evaluate(in: environment, goalId: goal.id)
             if !reading.satisfied { out.append(Lack(goal: goal, reading: reading)) }
         }
         return out

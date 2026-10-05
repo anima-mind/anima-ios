@@ -39,6 +39,11 @@ public actor ProactiveScheduler {
     public func desiredRequests() async -> [LocalNotificationRequest] {
         let title = await selfName()
         var out: [LocalNotificationRequest] = []
+        if let otherModel {
+            for goal in await otherModel.desire() {
+                out += CheckInScheduler.requests(for: goal, title: title)
+            }
+        }
         var timed: [(Date, LocalNotificationRequest)] = []
         for reminder in await reminders.list(.upcoming, limit: maxPending) {
             let dates = AnimaReminderStore.occurrences(of: reminder, count: occurrencesPerReminder, calendar: calendar)

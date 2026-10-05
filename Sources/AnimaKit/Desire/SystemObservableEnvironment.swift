@@ -1,7 +1,8 @@
 // SystemObservableEnvironment.swift — la evaluación real de los Observables (§5.8)
 // contra el cuerpo iOS de Fase 1: calendario y recordatorios vía EventKit. Todo
-// LOCAL y barato (0 LLM). Sueño y "días desde última mención" quedan device-pending
-// (HealthKit / Brain-FTS): degradan a nil, que los predicados tratan sin gap falso.
+// LOCAL y barato (0 LLM). Sueño queda device-pending (HealthKit): degrada a nil,
+// que el predicado trata sin gap falso. Menciones y avance de check-ins salen de
+// la propia base (transcript y goal_checkin).
 
 import Foundation
 
@@ -11,7 +12,13 @@ private let dayEndHour = 21
 private let workoutKeywords = ["entren", "gym", "gimnasio", "workout", "correr", "run", "pesas", "yoga"]
 
 public struct SystemObservableEnvironment: ObservableEnvironment {
-    public init() {}
+    private let otherModel: OtherModel?
+    private let mentions: MentionIndex?
+
+    public init(otherModel: OtherModel? = nil, mentions: MentionIndex? = nil) {
+        self.otherModel = otherModel
+        self.mentions = mentions
+    }
 
     public func workoutsThisWeek() async -> Int {
         #if canImport(EventKit)
@@ -44,8 +51,11 @@ public struct SystemObservableEnvironment: ObservableEnvironment {
     }
 
     public func daysSinceLastMention(topic: String) async -> Int? {
-        // Requiere el Brain (FTS) para fechar la última mención: device-pending.
-        nil
+        mentions?.daysSinceLastMention(topic: topic)
+    }
+
+    public func daysSinceProgress(goalId: String) async -> Int? {
+        await otherModel?.daysSinceProgress(goalId: goalId)
     }
 }
 

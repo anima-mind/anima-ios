@@ -94,6 +94,9 @@ final class AppModel: ObservableObject {
     private var reminderStore: AnimaReminderStore?
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
+    /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
+    /// desde una notificación): se abre al terminar el cableado.
+    private var pendingLink: AnimaDeepLink?
     // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
     private var skillEngine: SkillEngine?
     // Track G (doc 05): el segundo cuerpo opcional. Sin gafas todo sigue igual.
@@ -207,6 +210,9 @@ final class AppModel: ObservableObject {
                                                          otherModel: otherModel,
                                                          selfName: { await selfModel.name() })
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+            let proactive = self.proactiveScheduler
+            goalsModel?.onCheckInChanged = { await proactive?.sync() }
+            if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
             // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
@@ -358,7 +364,8 @@ final class AppModel: ObservableObject {
             selector: selector,
             store: store,
             telemetry: telemetry,
-            clientTools: Self.tools(glasses: glassesHost, reminders: reminderStore, proactive: proactiveScheduler),
+            clientTools: Self.tools(glasses: glassesHost, reminders: reminderStore, otherModel: otherModel,
+                                    proactive: proactiveScheduler),
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
             serverTools: [],
@@ -410,7 +417,9 @@ final class AppModel: ObservableObject {
         let (sessionId, previousSession) = resolveSession(store)
         var desireEngine: DesireEngine?
         if let otherModel {
-            let engine = DesireEngine(otherModel: otherModel, environment: SystemObservableEnvironment(),
+            let engine = DesireEngine(otherModel: otherModel,
+                                      environment: SystemObservableEnvironment(otherModel: otherModel,
+                                                                               mentions: MentionIndex(queue: store.database)),
                                       queue: store.database, selector: selector,
                                       store: store, telemetry: telemetry)
             self.desireEngine = engine
@@ -438,6 +447,10 @@ final class AppModel: ObservableObject {
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
         await reconcileProactive()
+        if let link = pendingLink {
+            pendingLink = nil
+            open(link)
+        }
     }
 
     /// Recordatorios vencidos → mensajes de Anima en el chat + re-sync de las
@@ -523,7 +536,7 @@ final class AppModel: ObservableObject {
     /// el dueño desde la app (pendiente de verificación en device); el contrato y
     /// el pipeline puro ya viven en AnimaKit. Las de gafas se declaran SIEMPRE
     /// (prefijo cacheado estable, doc 05 §5); sin gafas responden "no conectadas".
-    static func tools(glasses: LateBoundGlassesHost, reminders: AnimaReminderStore?,
+    static func tools(glasses: LateBoundGlassesHost, reminders: AnimaReminderStore?, otherModel: OtherModel?,
                       proactive: ProactiveScheduler?) -> [any SensorimotorTool] {
         var tools: [any SensorimotorTool] = [
             CalendarTool(),
@@ -537,6 +550,9 @@ final class AppModel: ObservableObject {
         ]
         if let reminders {
             tools.append(AnimaRemindersTool(store: reminders, onChange: { await proactive?.sync() }))
+        }
+        if let otherModel {
+            tools.append(GoalsTool(otherModel: otherModel, onChange: { await proactive?.sync() }))
         }
         return tools
     }
@@ -619,14 +635,34 @@ final class AppModel: ObservableObject {
             guard let glassesActivation else { return }
             Task { await glassesActivation.userRequested() }
         case .reminder(let id):
+            guard deferUntilReady(link) else { return }
             selectedTab = .chat
             Task {
                 await reconcileProactive()
                 chatModel?.focus(.reminder(id: id))
             }
-        case .goal, .intention:
+        case .goal(let id):
+            guard deferUntilReady(link) else { return }
+            selectedTab = .chat
+            Task {
+                if let prompt = await reconciler?.checkInPrompt(goalId: id, sessionId: activeSessionId) {
+                    chatModel?.appendProactive([prompt])
+                }
+                chatModel?.focus(.checkIn(goalId: id))
+            }
+        case .intention:
+            guard deferUntilReady(link) else { return }
             selectedTab = .chat
         }
+    }
+
+    /// false (y lo guarda) si el chat aún no está cableado.
+    private func deferUntilReady(_ link: AnimaDeepLink) -> Bool {
+        guard phase == .ready, chatModel != nil else {
+            pendingLink = link
+            return false
+        }
+        return true
     }
 
     /// `anima://`: deep link propio (handoff) o callback de Meta AI (registro DAT).

@@ -30,7 +30,7 @@ import Testing
         #expect(await mention.evaluate(in: full)
                 == ObservableReading(satisfied: false, detail: "3 días desde 'inglés' (máximo 2)"))
         #expect(await mention.evaluate(in: empty)
-                == ObservableReading(satisfied: false, detail: "nunca se mencionó 'inglés'"))
+                == ObservableReading(satisfied: true, detail: "sin datos de menciones de 'inglés'"))
     }
 
     @Test func labelsAreHumanReadable() {

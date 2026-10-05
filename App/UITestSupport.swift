@@ -15,7 +15,11 @@ enum UITestMode {
     static let flag = "--uitest"
     static let resetFlag = "--uitest-reset"
 
+    static let seedGoalFlag = "--uitest-seed-goal"
+    static let seededGoalStatement = "Ahorrar 10 millones para invertir"
+
     static let isActive = ProcessInfo.processInfo.arguments.contains(flag)
+    static let seedsGoal = isActive && ProcessInfo.processInfo.arguments.contains(seedGoalFlag)
     static let shouldReset = isActive && ProcessInfo.processInfo.arguments.contains(resetFlag)
 
     static let suiteName = "com.joshuamoreno1.anima.uitest"
@@ -39,6 +43,12 @@ enum UITestMode {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(databaseName + suffix))
         }
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(skillsDirectoryName, isDirectory: true))
+    }
+
+    /// Una meta declarada (idempotente por enunciado) para el XCUITest de Metas.
+    static func seedGoal(_ otherModel: OtherModel) async {
+        await otherModel.ingestStated(statement: seededGoalStatement,
+                                      desiredState: .progressCheckIn(everyDays: 2), evidence: "uitest")
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.

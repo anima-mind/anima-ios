@@ -4,9 +4,10 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# Merges seguidos: solo deploya el último (cancela el build en curso).
 concurrency:
   group: testflight
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   testflight:

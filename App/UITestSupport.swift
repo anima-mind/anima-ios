@@ -7,6 +7,9 @@
 
 import Foundation
 import AnimaKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum UITestMode {
     static let flag = "--uitest"
@@ -27,6 +30,8 @@ enum UITestMode {
         guard shouldReset else { return }
         defaults.removePersistentDomain(forName: suiteName)
         try? KeychainStore(service: keychainService).delete()
+        let tokens = ProviderTokenStore(service: keychainService)
+        for provider in ModelProvider.remoteCases { try? tokens.delete(provider) }
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         for suffix in ["", "-wal", "-shm"] {
@@ -50,6 +55,19 @@ enum UITestMode {
         return StaticConfigProvider(snapshot)
     }
 
+    /// Foto fixture del picker guionado (JPEG 800×600 de color plano).
+    static func fixturePhoto() -> Data? {
+        #if canImport(UIKit)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 600))
+        return renderer.jpegData(withCompressionQuality: 0.8) { ctx in
+            UIColor(red: 0.58, green: 0.74, blue: 0.89, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+        }
+        #else
+        return nil
+        #endif
+    }
+
     /// El modelo local se reporta disponible (el provider guionado lo reemplaza).
     static let forcedAvailability: OnDeviceAvailability = .available
 }
@@ -61,6 +79,7 @@ enum UITestMode {
 ///   "Calendario concedido …" o "Calendario sin permiso …" (fail-closed).
 struct UITestScriptedProvider: Provider {
     static let fixedReply = "Hola, soy Anima en modo de prueba. Te escucho."
+    static let thought = "Saludo breve. Respondo en modo de prueba."
     /// ~3 s de stream (5 trozos): ventana holgada para que el test vea el caret.
     static let chunkDelay: Duration = .milliseconds(600)
 
@@ -92,6 +111,9 @@ struct UITestScriptedProvider: Provider {
                 continuation.yield(.messageStart(id: "uitest-\(UUID().uuidString)", model: model))
                 switch plan {
                 case .text(let reply):
+                    // Resumen de razonamiento: la thought line queda en pantalla
+                    // (expandible) para ejercitar su tap con el teclado abierto.
+                    continuation.yield(.thinkingDelta(Self.thought))
                     for chunk in Self.chunks(reply) {
                         try? await Task.sleep(for: Self.chunkDelay)
                         if Task.isCancelled { break }
@@ -125,5 +147,41 @@ struct UITestScriptedProvider: Provider {
             index += 2
         }
         return out
+    }
+}
+
+/// Voz guionada del modo UI-test (mic del composer): emite un parcial en vivo y
+/// devuelve un transcript fijo al terminar (≈1.5 s o "Listo"); cancel → nil.
+final class UITestScriptedVoice: VoiceCapturePort, @unchecked Sendable {
+    static let transcript = "hola por voz"
+    private let lock = NSLock()
+    private var cancelled = false
+    private var finished = false
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
+        await capture(onRoute: onRoute, onPartial: { _ in })
+    }
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void) async -> String? {
+        set(cancelled: false, finished: false)
+        onRoute(.phoneMic)
+        try? await Task.sleep(for: .milliseconds(300))
+        onPartial("hola por")
+        for _ in 0..<12 where !state().finished && !state().cancelled {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return state().cancelled ? nil : Self.transcript
+    }
+
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    func finish() { lock.lock(); finished = true; lock.unlock() }
+
+    private func set(cancelled: Bool, finished: Bool) {
+        lock.lock(); self.cancelled = cancelled; self.finished = finished; lock.unlock()
+    }
+    private func state() -> (cancelled: Bool, finished: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (cancelled, finished)
     }
 }

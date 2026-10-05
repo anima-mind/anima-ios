@@ -56,6 +56,13 @@ public final class SymbolicStore: Sendable {
         }
     }
 
+    /// La sesión reanudada vuelve a estar viva (el próximo background la cierra limpio).
+    public func markActive(_ id: SessionID) throws {
+        try queue.write { db in
+            try db.execute(sql: "UPDATE session SET clean_shutdown=0 WHERE id=?", arguments: [id])
+        }
+    }
+
     public func incrementRestartCount(_ id: SessionID) throws {
         try queue.write { db in
             try db.execute(sql: "UPDATE session SET restart_count = restart_count + 1 WHERE id=?", arguments: [id])
@@ -114,6 +121,25 @@ public final class SymbolicStore: Sendable {
         }
     }
 
+    /// Los turnos VISIBLES del chat (campo #10): lo que el dueño dijo y lo que
+    /// la mente respondió, con sus marcas (voz, foto, superficie). Los
+    /// tool_use/tool_result crudos y el razonamiento no se pintan.
+    public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
+        let rows: [(String, String, String?)] = try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT role, content_json, surface FROM turn_event WHERE session_id=? ORDER BY seq ASC",
+                             arguments: [sessionId])
+                .compactMap { row in
+                    guard let role: String = row["role"], let json: String = row["content_json"] else { return nil }
+                    return (role, json, row["surface"])
+                }
+        }
+        return try rows.compactMap { role, json, surfaceRaw in
+            guard let role = Message.Role(rawValue: role), role == .user || role == .assistant else { return nil }
+            return VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
+                               surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
+        }
+    }
+
     // MARK: - Helpers
 
     static func trim(_ messages: [Message], budgetTokens: Int) -> [Message] {
@@ -163,5 +189,51 @@ public final class SymbolicStore: Sendable {
             "cache_creation_input_tokens": .int(usage.cacheCreationInputTokens ?? 0),
         ]
         return String(data: try JSONEncoder().encode(JSONValue.object(obj)), encoding: .utf8) ?? "{}"
+    }
+}
+
+/// Un turno del transcript tal como lo pinta el chat del teléfono.
+public struct VisibleTurn: Sendable, Equatable {
+    public var role: Message.Role
+    public var text: String
+    public var isVoice: Bool
+    /// Bytes base64 de la primera imagen del turno (thumb de la burbuja).
+    public var imageBase64: String?
+    public var surface: SurfaceID?
+
+    public init(role: Message.Role, text: String, isVoice: Bool = false, imageBase64: String? = nil,
+                surface: SurfaceID? = nil) {
+        self.role = role
+        self.text = text
+        self.isVoice = isVoice
+        self.imageBase64 = imageBase64
+        self.surface = surface
+    }
+
+    /// nil si el evento no tiene nada que pintar (tool_result, tool_use puro).
+    init?(role: Message.Role, blocks: [ContentBlock], surface: SurfaceID?) {
+        var texts: [String] = []
+        var voice = false
+        var image: String?
+        for block in blocks {
+            switch block {
+            case .text(let t):
+                if role == .user, t == HUDPhoto.prompt {
+                    texts.append(HUDPhoto.question)   // foto del botón de las gafas
+                } else if role == .user, t.hasPrefix(AudioTool.transcriptPrefix) {
+                    voice = true
+                    texts.append(String(t.dropFirst(AudioTool.transcriptPrefix.count)).trimmingCharacters(in: .whitespaces))
+                } else {
+                    texts.append(t)
+                }
+            case .image(_, let base64):
+                if image == nil { image = base64 }
+            default:
+                break   // thinking, tool_use, tool_result: no se pintan
+            }
+        }
+        let text = texts.joined(separator: role == .assistant ? "" : "\n")
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || image != nil else { return nil }
+        self.init(role: role, text: text, isVoice: voice, imageBase64: image, surface: surface)
     }
 }

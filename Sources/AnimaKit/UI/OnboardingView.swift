@@ -473,7 +473,12 @@ public struct OnboardingFlowView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("onboarding.back")
             ProgressSegments(count: OnboardingViewModel.stepCount, index: model.progressIndex)
-            Spacer(minLength: Theme.minHitTarget)
+            if model.isReplay {
+                // Replay desde Ajustes: se abandona en cualquier paso, sin tocar la mente.
+                NavCloseButton("onboarding") { onExit?() }
+            } else {
+                Spacer(minLength: Theme.minHitTarget)
+            }
         }
         .padding(.horizontal, Theme.Space.unit)
     }

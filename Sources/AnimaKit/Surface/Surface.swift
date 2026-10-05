@@ -117,6 +117,8 @@ public final class SurfaceRouter {
 public enum AnimaDeepLink: Sendable, Equatable {
     /// Abre el chat en el turno dado (handoff "ver en el teléfono").
     case chat(turn: UUID?)
+    /// Re-entrada a las gafas tras un back físico (activa el cuerpo de nuevo).
+    case glasses
 
     public static let scheme = "anima"
 
@@ -128,13 +130,16 @@ public enum AnimaDeepLink: Sendable, Equatable {
             components.host = "chat"
             if let turn { components.queryItems = [URLQueryItem(name: "turn", value: turn.uuidString)] }
             return components.url!
+        case .glasses:
+            return URL(string: "\(Self.scheme)://glasses")!
         }
     }
 
     public static func parse(_ url: URL) -> AnimaDeepLink? {
         guard url.scheme?.lowercased() == scheme,
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.host?.lowercased() == "chat" else { return nil }
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        if components.host?.lowercased() == "glasses" { return .glasses }
+        guard components.host?.lowercased() == "chat" else { return nil }
         let turn = components.queryItems?.first { $0.name == "turn" }?.value.flatMap(UUID.init(uuidString:))
         return .chat(turn: turn)
     }

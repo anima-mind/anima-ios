@@ -31,7 +31,10 @@ struct AnimaApp: App {
                 .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { app.scheduleConsolidation() }
+            if phase == .background {
+                app.markCleanShutdown()
+                app.scheduleConsolidation()
+            }
             app.glassesForeground(phase == .active)
         }
     }
@@ -89,6 +92,8 @@ final class AppModel: ObservableObject {
     private let glassesHost = LateBoundGlassesHost()
     private let surfaceRouter = SurfaceRouter()
     private var glassesSurface: GlassesHUDSurface?
+    private var activeSessionId: SessionID?
+    private var previousSessionId: SessionID?
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
 
@@ -135,10 +140,12 @@ final class AppModel: ObservableObject {
             self.realRegister = realRegister
             // Track G: el cuerpo-gafas (DAT) — selector y sesión únicos en GlassesBody.
             let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
-            let activation = GlassesActivation(body: glassesBody)
+            let activation = GlassesActivation(body: glassesBody, reentry: {
+                await MainActor.run { HandoffNotifications.post(.glasses, body: HandoffNotifications.reentryText) }
+            })
             self.glassesBody = glassesBody
             self.glassesActivation = activation
-            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation)
+            self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation, host: glassesHost)
             Task {
                 await glassesBody.setHandlers(onAction: nil, onExit: { Task { await activation.userExited() } })
                 await glassesBody.start()
@@ -232,6 +239,12 @@ final class AppModel: ObservableObject {
         guard let store, let telemetry, let configProvider else { return }
         let snapshot = configProvider.snapshot()
         let mode = Self.onboardingDefaults.modeStore.mode
+        // Ajustes → Modelo valida las keys como el onboarding (`--uitest`: offline).
+        var settingsAPIs: [ModelProvider: ProviderAPIConfig] = [:]
+        for provider in ModelProvider.remoteCases where !UITestMode.isActive {
+            if let api = snapshot.config(for: provider)?.api { settingsAPIs[provider] = api }
+        }
+        settingsModel?.apis = settingsAPIs
         let remoteKind = Self.onboardingDefaults.remoteStore.provider
 
         // Córtex remoto (Claude / OpenAI / Gemini): solo con token reconocible
@@ -302,12 +315,23 @@ final class AppModel: ObservableObject {
                                             realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
+            // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
+            let other = otherModel
+            settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
+                await other?.allGoals().count ?? 0
+            })
+            settingsModel?.onNightSimulated = { [weak self] in
+                Task { @MainActor in
+                    await self?.memoryModel?.load()
+                    await self?.goalsModel?.refresh()
+                }
+            }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
             if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
-        let sessionId = (try? store.startSession()) ?? UUID().uuidString
+        let (sessionId, previousSession) = resolveSession(store)
         var desireEngine: DesireEngine?
         if let otherModel {
             let engine = DesireEngine(otherModel: otherModel, environment: SystemObservableEnvironment(),
@@ -323,11 +347,42 @@ final class AppModel: ObservableObject {
         }
 
         let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
+        chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
+                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
         chat.glasses = glassesModel
+        chat.voice = Self.makePhoneVoice()
+        // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
+        chat.photosAvailable = mode != .onDeviceOnly
+        if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
+    }
+
+    /// Sesión activa del proceso: se decide UNA vez al abrir (Recovery.decideLaunch:
+    /// reanuda la última salvo >8 h sin actividad); los re-cableados la reusan.
+    private func resolveSession(_ store: SymbolicStore) -> (SessionID, SessionID?) {
+        if let activeSessionId { return (activeSessionId, previousSessionId) }
+        let recovery = Recovery(queue: store.database, store: store)
+        let decision = (try? recovery.decideLaunch()) ?? .fresh(previous: nil)
+        let resolved: (SessionID, SessionID?)
+        switch decision {
+        case .resume(let id):
+            resolved = (id, nil)
+        case .fresh(let previous):
+            resolved = ((try? store.startSession()) ?? UUID().uuidString, previous)
+        }
+        activeSessionId = resolved.0
+        previousSessionId = resolved.1
+        return resolved
+    }
+
+    /// scenePhase .background: cierre limpio de la sesión activa.
+    func markCleanShutdown() {
+        guard let store, let activeSessionId else { return }
+        try? store.markCleanShutdown(activeSessionId)
     }
 
     /// Fallback foreground (§5.4): si pasaron >48h sin ciclo completo, se corre al
@@ -393,6 +448,17 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    /// Mic del composer: el pipeline de voz de las gafas forzado al micrófono
+    /// del TELÉFONO (nunca HFP). `--uitest`: voz guionada con transcript fijo.
+    static func makePhoneVoice() -> (any VoiceCapturePort)? {
+        if UITestMode.isActive { return UITestScriptedVoice() }
+        #if os(iOS)
+        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()))
+        #else
+        return nil
+        #endif
+    }
+
     /// G1: la superficie HUD sobre el mismo loop y la MISMA sesión que el chat.
     private func wireGlassesSurface(loop: AgentLoop, sessionId: SessionID) async {
         glassesSurface?.stop()
@@ -434,6 +500,9 @@ final class AppModel: ObservableObject {
         case .chat(let turn):
             selectedTab = .chat
             chatModel?.focus(turn: turn)
+        case .glasses:
+            guard let glassesActivation else { return }
+            Task { await glassesActivation.userRequested() }
         }
     }
 

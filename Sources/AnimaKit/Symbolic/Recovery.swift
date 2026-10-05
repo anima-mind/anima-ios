@@ -50,4 +50,34 @@ public struct Recovery: Sendable {
         try store.incrementRestartCount(session.id)
         return .resume(session.id)
     }
+
+    // MARK: - Reanudación al abrir la app (campo #10)
+
+    /// Decisión de producto: una mente no amanece amnésica. Al abrir se reanuda
+    /// SIEMPRE la última sesión salvo que lleve más de `idleLimit` (8 h) sin
+    /// actividad — ahí el ciclo de sueño ya separó el episodio. Un crash (sin
+    /// marca de cierre limpio) también reanuda, con el tope de `maxRestarts`.
+    public enum LaunchDecision: Sendable, Equatable {
+        case resume(SessionID)
+        /// Sesión nueva; `previous` es la anterior (su historial se muestra arriba).
+        case fresh(previous: SessionID?)
+    }
+
+    public static let idleLimit: TimeInterval = 8 * 3600
+
+    public func decideLaunch(now: Date = Date(), idleLimit: TimeInterval = Recovery.idleLimit) throws -> LaunchDecision {
+        let latest: SessionState? = try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM session ORDER BY started_at DESC, rowid DESC LIMIT 1")
+                .map(SymbolicStore.state(from:))
+        }
+        guard let session = latest else { return .fresh(previous: nil) }
+        let lastActivity = session.lastEventAt ?? session.startedAt
+        guard now.timeIntervalSince(lastActivity) < idleLimit else { return .fresh(previous: session.id) }
+        if !session.cleanShutdown {
+            guard session.restartCount < maxRestarts else { return .fresh(previous: session.id) }
+            try store.incrementRestartCount(session.id)
+        }
+        try store.markActive(session.id)
+        return .resume(session.id)
+    }
 }

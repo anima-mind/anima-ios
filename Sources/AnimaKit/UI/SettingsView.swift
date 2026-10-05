@@ -54,6 +54,10 @@ public final class SettingsViewModel: ObservableObject {
     public var onNightSimulated: (() -> Void)?
     @Published public private(set) var simulatingNight = false
     @Published public private(set) var nightSummary: String?
+    /// Hub (FIX F): el SelfModel vivo alimenta el resumen de la fila Mente.
+    public var selfModel: SelfModel?
+    @Published public private(set) var mindSummary: String = ""
+    @Published public private(set) var monthCost: Double = 0
 
     /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
     public var onModeChanged: ((OperatingMode) -> Void)?
@@ -142,6 +146,7 @@ public final class SettingsViewModel: ObservableObject {
             nightSummary = summary
             onNightSimulated?()
         }
+        await refreshMind()
         simulatingNight = false
     }
 
@@ -309,38 +314,227 @@ public final class SettingsViewModel: ObservableObject {
     public func refreshCosts() {
         costs = (try? telemetry.summary()) ?? []
         totalCost = (try? telemetry.totalCostUSD()) ?? 0
+        monthCost = (try? telemetry.costUSD(since: Self.startOfMonth())) ?? 0
     }
+
+    static func startOfMonth(_ now: Date = Date(), calendar: Calendar = .current) -> Date {
+        calendar.dateInterval(of: .month, for: now)?.start ?? now
+    }
+
+    /// "ciclo #N · p 0.xx" desde el SelfModel (un solo origen de verdad, FIX C).
+    public func refreshMind() async {
+        guard let selfModel else { mindSummary = ""; return }
+        let cycles = await selfModel.cycles()
+        mindSummary = Self.mindLine(cycles: cycles)
+        skills?.selfName = await selfModel.name()
+    }
+
+    public static func mindLine(cycles: Int) -> String {
+        "ciclo #\(cycles) · p \(String(format: "%.2f", Plasticity.value(cycles: cycles)))"
+    }
+
+    /// Resumen de la fila "Modelo y costos": provider activo + híbrido + gasto del mes.
+    public var modelSummary: String {
+        var parts: [String] = [mode == .onDeviceOnly ? ProviderRoster.localName : remoteProvider.displayName]
+        if mode == .hybrid { parts.append("híbrido on") }
+        parts.append(String(format: "$%.2f este mes", monthCost))
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Ajustes como HUB (campo batch 3, FIX F; patrón iOS Settings): la raíz es una
+/// lista compacta de filas con resumen vivo que pushean sub-pantallas.
+public enum SettingsRoute: String, Hashable, CaseIterable, Sendable {
+    case account, model, skills, glasses, mind
 }
 
 public struct SettingsView: View {
     @ObservedObject private var model: SettingsViewModel
+    @State private var path: [SettingsRoute] = []
 
     public init(model: SettingsViewModel) {
         self.model = model
     }
 
     public var body: some View {
+        NavigationStack(path: $path) {
+            ZStack {
+                Theme.Colors.bg.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let account = model.account {
+                            AccountHubRow(account: account)
+                            hubDivider
+                        }
+                        hubRow(.model, title: "Modelo y costos", subtitle: model.modelSummary, glyph: "cpu")
+                        if let skills = model.skills {
+                            hubDivider
+                            SkillsHubRow(skills: skills)
+                        }
+                        if let glasses = model.glasses {
+                            hubDivider
+                            GlassesHubRow(glasses: glasses)
+                        }
+                        hubDivider
+                        hubRow(.mind, title: "Mente", subtitle: model.mindSummary, glyph: "moon")
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                    .padding(Theme.Space.screenInset)
+                }
+            }
+            .navigationTitle("Ajustes")
+            .navigationDestination(for: SettingsRoute.self) { route in
+                destination(route)
+            }
+        }
+        .tint(Theme.Colors.accent)
+        .onAppear {
+            model.load()
+            model.skills?.load()
+            Task { await model.refreshMind() }
+        }
+    }
+
+    private var hubDivider: some View {
+        Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
+            .padding(.leading, 52)
+    }
+
+    private func hubRow(_ route: SettingsRoute, title: String, subtitle: String, glyph: String) -> some View {
+        NavigationLink(value: route) {
+            SettingsHubRowLabel(title: title, subtitle: subtitle, glyph: glyph)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.\(route.rawValue)")
+    }
+
+    @ViewBuilder
+    private func destination(_ route: SettingsRoute) -> some View {
+        switch route {
+        case .account:
+            if let account = model.account {
+                SettingsSubScreen(title: "Cuenta") { AccountSettingsSection(account: account) }
+            }
+        case .model:
+            SettingsSubScreen(title: "Modelo y costos") {
+                ModelSettingsContent(model: model)
+            }
+        case .skills:
+            if let skills = model.skills { SkillsSettingsScreen(model: skills) }
+        case .glasses:
+            if let glasses = model.glasses {
+                SettingsSubScreen(title: "Gafas") { GlassesSettingsSection(model: glasses) }
+            }
+        case .mind:
+            SettingsSubScreen(title: "Mente") { MindSettingsContent(model: model) }
+        }
+    }
+}
+
+/// Fila del hub: glyph SF light (accent en línea), título, resumen vivo, chevron.
+struct SettingsHubRowLabel: View {
+    let title: String
+    let subtitle: String
+    let glyph: String
+
+    var body: some View {
+        HStack(spacing: Theme.Space.stack) {
+            Image(systemName: glyph)
+                .font(.system(size: 18, weight: .light))
+                .foregroundStyle(Theme.Colors.accent)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .light))
+                .foregroundStyle(Theme.Colors.textFaint)
+        }
+        .frame(minHeight: 56)
+        .padding(.horizontal, Theme.Space.cardPad)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AccountHubRow: View {
+    @ObservedObject var account: AccountViewModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.account) {
+            SettingsHubRowLabel(title: "Cuenta", subtitle: subtitle, glyph: "person.crop.circle")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.account")
+    }
+    private var subtitle: String {
+        if let email = account.signedInEmail, email != account.displayLine {
+            return "\(account.displayLine) · \(email)"
+        }
+        return account.displayLine
+    }
+}
+
+private struct SkillsHubRow: View {
+    @ObservedObject var skills: SkillsViewModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.skills) {
+            SettingsHubRowLabel(title: "Skills", subtitle: skills.summaryLine, glyph: "book")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.skills")
+    }
+}
+
+private struct GlassesHubRow: View {
+    @ObservedObject var glasses: GlassesViewModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.glasses) {
+            SettingsHubRowLabel(title: "Gafas", subtitle: glasses.hubSummary, glyph: "eyeglasses")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.glasses")
+    }
+}
+
+/// Sub-pantalla estándar del hub: fondo del tema, scroll y título inline.
+struct SettingsSubScreen<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
         ZStack {
             Theme.Colors.bg.ignoresSafeArea()
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
-                    if let account = model.account {
-                        AccountSettingsSection(account: account)
-                    }
-                    modeSection
-                    costsSection
-                    if let skills = model.skills {
-                        SkillsSettingsSection(model: skills)
-                    }
-                    if let glasses = model.glasses {
-                        GlassesSettingsSection(model: glasses)
-                    }
-                    mindSection
-                }
-                .padding(Theme.Space.screenInset)
+                VStack(alignment: .leading, spacing: Theme.Space.sectionGap) { content }
+                    .padding(Theme.Space.screenInset)
             }
         }
-        .onAppear { model.load() }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayModeInline()
+    }
+}
+
+/// Modelo y costos: roster de providers + Híbrido + desglose completo de costos.
+struct ModelSettingsContent: View {
+    @ObservedObject var model: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+            modeSection
+            costsSection
+        }
+        .onAppear { model.refreshCosts() }
     }
 
     /// Sección Modelo (§4.9): UNA fila por provider (radio de activo + estado
@@ -450,6 +644,64 @@ public struct SettingsView: View {
         }
     }
 
+    private var costsSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            HStack {
+                label("Costos")
+                Spacer()
+                Text(String(format: "$%.4f", model.totalCost))
+                    .font(Theme.Type_.tabular(Theme.Type_.cardTitle))
+                    .foregroundStyle(Theme.Colors.accentText)
+            }
+            if let budget = model.monthlyBudgetUSD {
+                HStack {
+                    Text("Presupuesto mensual")
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                    Spacer()
+                    Text("$\(budget)")
+                        .font(Theme.Type_.tabular(Theme.Type_.secondary))
+                        .foregroundStyle(Theme.Colors.textMuted)
+                }
+            }
+            if model.costs.isEmpty {
+                Text("Sin turnos registrados.")
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.textFaint)
+            } else {
+                ForEach(model.costs, id: \.model) { row in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(row.model).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
+                            Text("\(row.turnClass) · \(row.turns) turnos")
+                                .font(Theme.Type_.meta).foregroundStyle(Theme.Colors.textFaint)
+                        }
+                        Spacer()
+                        Text(String(format: "$%.4f", row.costUSD))
+                            .font(Theme.Type_.tabular(Theme.Type_.secondary))
+                            .foregroundStyle(Theme.Colors.textMuted)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.Type_.label)
+            .textCase(.uppercase)
+            .kerning(0.66)
+            .foregroundStyle(Theme.Colors.textMuted)
+    }
+}
+
+/// Mente: Simular una noche, Repetir onboarding y sus footers.
+struct MindSettingsContent: View {
+    @ObservedObject var model: SettingsViewModel
+
+    var body: some View { mindSection }
+
     /// Sección Mente: repetir el onboarding (sin borrar memoria).
     private var mindSection: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
@@ -511,49 +763,6 @@ public struct SettingsView: View {
             Text("Re-corre el flujo sin borrar memoria; la identidad solo se re-siembra si lo confirmas.")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textFaint)
-        }
-    }
-
-    private var costsSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            HStack {
-                label("Costos")
-                Spacer()
-                Text(String(format: "$%.4f", model.totalCost))
-                    .font(Theme.Type_.tabular(Theme.Type_.cardTitle))
-                    .foregroundStyle(Theme.Colors.accentText)
-            }
-            if let budget = model.monthlyBudgetUSD {
-                HStack {
-                    Text("Presupuesto mensual")
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                    Spacer()
-                    Text("$\(budget)")
-                        .font(Theme.Type_.tabular(Theme.Type_.secondary))
-                        .foregroundStyle(Theme.Colors.textMuted)
-                }
-            }
-            if model.costs.isEmpty {
-                Text("Sin turnos registrados.")
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(Theme.Colors.textFaint)
-            } else {
-                ForEach(model.costs, id: \.model) { row in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(row.model).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
-                            Text("\(row.turnClass) · \(row.turns) turnos")
-                                .font(Theme.Type_.meta).foregroundStyle(Theme.Colors.textFaint)
-                        }
-                        Spacer()
-                        Text(String(format: "$%.4f", row.costUSD))
-                            .font(Theme.Type_.tabular(Theme.Type_.secondary))
-                            .foregroundStyle(Theme.Colors.textMuted)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
         }
     }
 
@@ -619,6 +828,17 @@ struct ProviderKeyEditor: View {
         } message: {
             Text(row.isActive ? "Es el modelo activo: la selección pasa al siguiente con key o al local." : "Se quita del Keychain de este teléfono.")
         }
+    }
+}
+extension View {
+    /// Título inline en iOS (no existe en macOS: el package compila en ambos).
+    @ViewBuilder
+    func navigationBarTitleDisplayModeInline() -> some View {
+        #if os(iOS)
+        self.navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
     }
 }
 #endif

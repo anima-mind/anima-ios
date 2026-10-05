@@ -134,7 +134,10 @@ public final class OnboardingViewModel: ObservableObject {
     private let apis: [ModelProvider: ProviderAPIConfig]
     private let validator: APIKeyValidator
     private let defaults: OnboardingDefaults
-    private let selfModel: SelfModel?
+    /// El SelfModel se resuelve al SEMBRAR, no al crear el modelo: el landing
+    /// puede tocarse antes de que el bootstrap del shell termine (device lento),
+    /// y capturar `nil` aquí perdía el Birth en silencio.
+    private let resolveSelfModel: @Sendable () async -> SelfModel?
     private let onFinished: () -> Void
     private let availabilityProbe: () -> OnDeviceAvailability
     private var streamTask: Task<Void, Never>?
@@ -142,6 +145,7 @@ public final class OnboardingViewModel: ObservableObject {
     public init(keychain: ProviderTokenStore,
                 apis: [ModelProvider: ProviderAPIConfig] = [:],
                 selfModel: SelfModel?,
+                selfModelResolver: (@Sendable () async -> SelfModel?)? = nil,
                 defaults: OnboardingDefaults = OnboardingDefaults(),
                 validator: APIKeyValidator = APIKeyValidator(),
                 isReplay: Bool = false,
@@ -164,7 +168,7 @@ public final class OnboardingViewModel: ObservableObject {
         }
         self.keychain = keychain
         self.apis = apis
-        self.selfModel = selfModel
+        self.resolveSelfModel = selfModelResolver ?? { selfModel }
         self.defaults = defaults
         self.validator = validator
         self.isReplay = isReplay
@@ -421,10 +425,10 @@ public final class OnboardingViewModel: ObservableObject {
     public func finish(reseed: Bool) {
         askReseedConfirmation = false
         let birth = interview.birth()
-        let selfModel = self.selfModel
+        let resolve = resolveSelfModel
         defaults.markOnboarded()
         Task {
-            if reseed { await selfModel?.seed(from: birth) }
+            if reseed { await resolve()?.seed(from: birth) }
             onFinished()
         }
     }

@@ -140,12 +140,14 @@ final class MockRuntime: GlassesRuntime, @unchecked Sendable {
                                                compatibility: .compatible, supportsDisplay: true)
 }
 
-/// Espera activa acotada (los streams del actor se procesan en tasks).
-func eventually(_ timeout: TimeInterval = 2, _ condition: @Sendable () async -> Bool) async -> Bool {
+/// Espera activa acotada (los streams del actor se procesan en tasks). El tope es
+/// holgado a propósito: en el runner virtual de CI, con ~115 suites en paralelo,
+/// la suite entera de gafas (0,2 s local) excedía los 2 s originales.
+func eventually(_ timeout: TimeInterval = 10, _ condition: @Sendable () async -> Bool) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if await condition() { return true }
-        try? await Task.sleep(nanoseconds: 2_000_000)
+        try? await Task.sleep(nanoseconds: 10_000_000)
     }
     return await condition()
 }

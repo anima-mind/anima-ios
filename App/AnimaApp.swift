@@ -9,7 +9,9 @@ import FirebaseCore
 
 @main
 struct AnimaApp: App {
-    @StateObject private var app = AppModel()
+    /// La MISMA instancia que alcanza el runner del BGProcessingTask (lanzamiento
+    /// en background sin escena: el `.task` de la vista jamás corre).
+    @StateObject private var app = AppModel.live
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -26,7 +28,7 @@ struct AnimaApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(app: app)
-                .task { await app.bootstrap() }
+                .task { await app.ensureBootstrapped() }
                 .onOpenURL { app.handleOpenURL($0) }
                 .preferredColorScheme(.dark)
         }
@@ -36,6 +38,8 @@ struct AnimaApp: App {
                 app.scheduleConsolidation()
             }
             app.glassesForeground(phase == .active)
+            // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
+            if phase == .active { app.refreshMind() }
         }
     }
 }
@@ -109,6 +113,23 @@ final class AppModel: ObservableObject {
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
     static let shared = ConsolidatorHolder()
 
+    /// Instancia única del proceso: la escena y el BGTask comparten el mismo
+    /// cableado (un solo SelfModel, un solo Consolidator).
+    static let live = AppModel()
+
+    private var bootstrapTask: Task<Void, Never>?
+
+    /// Idempotente: la escena (`.task`) y el runner del BGTask lo llaman; el
+    /// cableado ocurre UNA vez. Sin esto, un lanzamiento en background (iOS
+    /// despierta la app para el sueño SIN escena) encontraba el holder vacío y
+    /// el ciclo nocturno jamás corría por esa vía.
+    func ensureBootstrapped() async {
+        if let bootstrapTask { return await bootstrapTask.value }
+        let task = Task { await self.bootstrap() }
+        bootstrapTask = task
+        await task.value
+    }
+
     /// Defaults del onboarding/modo: `.standard`, o la suite efímera en `--uitest`.
     static let onboardingDefaults = OnboardingDefaults(
         defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
@@ -171,6 +192,12 @@ final class AppModel: ObservableObject {
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
+            // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
+            // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
+            if let brain = self.brain {
+                _ = try? await DistillMigration.runIfNeeded(queue: queue, brain: brain,
+                                                            selfName: await selfModel.name())
+            }
             let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry,
                                              onboardingDefaults: Self.onboardingDefaults,
                                              availability: Self.availability)
@@ -184,7 +211,12 @@ final class AppModel: ObservableObject {
                                          to: skillsDir)
             let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
             self.skillEngine = skillEngine
-            settings.skills = SkillsViewModel(engine: skillEngine)
+            let skills = SkillsViewModel(engine: skillEngine, library: SkillLibrary(directory: skillsDir))
+            skills.exampleMarkdown = Bundle.main.url(forResource: "Skills", withExtension: nil)
+                .flatMap { try? String(contentsOf: $0.appendingPathComponent("nota-diaria.md"), encoding: .utf8) }
+            skills.makeVoice = { Self.makePhoneVoice() }
+            settings.skills = skills
+            settings.selfModel = selfModel
             settings.glasses = glassesModel
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
@@ -217,6 +249,11 @@ final class AppModel: ObservableObject {
             // `--uitest`: sin apis → el validador acepta offline con warning (sin red).
             apis: UITestMode.isActive ? [:] : apis,
             selfModel: selfModel,
+            selfModelResolver: { [weak self] in
+                guard let self else { return nil }
+                await self.ensureBootstrapped()
+                return await self.selfModel
+            },
             defaults: Self.onboardingDefaults,
             isReplay: replayingOnboarding,
             account: account,
@@ -338,10 +375,19 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()
+                    await self?.chatModel?.loadMind()
                 }
             }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
             if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
+        }
+
+        // Taller de skills (FIX A): sesión EFÍMERA sobre el córtex activo — no
+        // toca el SymbolicStore del hilo principal ni el inbox del sueño.
+        let workshopSelf = selfModel
+        settingsModel?.skills?.makeSession = { mode in
+            try SkillWorkshopSession.make(selector: selector, telemetry: telemetry,
+                                          selfModel: workshopSelf, mode: mode)
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
@@ -360,7 +406,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        // El SelfModel vivo alimenta el badge, el Mind sheet ("noches") y el nombre del header.
+        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine,
+                                 selfModel: selfModel)
         // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
         chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
                          previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
@@ -393,6 +441,11 @@ final class AppModel: ObservableObject {
         return resolved
     }
 
+    func refreshMind() {
+        guard let chatModel else { return }
+        Task { await chatModel.loadMind() }
+    }
+
     /// scenePhase .background: cierre limpio de la sesión activa.
     func markCleanShutdown() {
         guard let store, let activeSessionId else { return }
@@ -419,6 +472,8 @@ final class AppModel: ObservableObject {
             let expired = ExpirationFlag()
             task.expirationHandler = { expired.mark() }
             Task {
+                // Lanzamiento en background: cablea el harness si la escena no lo hizo.
+                await AppModel.live.ensureBootstrapped()
                 let success = await AppModel.shared.run(isExpired: { expired.value })
                 task.setTaskCompleted(success: success)
             }
@@ -548,7 +603,8 @@ final class AppModel: ObservableObject {
     private static func skillsDirectory() -> URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return dir.appendingPathComponent("skills", isDirectory: true)
+        return dir.appendingPathComponent(UITestMode.isActive ? UITestMode.skillsDirectoryName : "skills",
+                                          isDirectory: true)
     }
 
     private static func databasePath() -> String {

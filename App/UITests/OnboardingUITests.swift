@@ -29,7 +29,20 @@ final class OnboardingUITests: AnimaUITestCase {
         passPermissionsAndGlasses(app)
         completeBirth(app)
         waitForChat(app)
-        XCTAssertTrue(text(app, "Anima").exists)
+        // Header (FIX D): el nombre del self, centrado bajo el mark.
+        let header = element(app, "chat.selfName")
+        waitUntil(header, "label == 'Anima'")
+    }
+
+    /// FIX D: el header muestra el NOMBRE que el dueño le dio en el Birth.
+    @MainActor
+    func testChatHeaderShowsSelfName() {
+        let app = launch()
+        onboard(app, name: "Iris")
+        let header = element(app, "chat.selfName")
+        waitUntil(header, "label == 'Iris'")
+        XCTAssertTrue(app.buttons["chat.plasticityBadge"].exists)
+        XCTAssertTrue(element(app, "chat.bodyLine").exists)
     }
 
     /// 3. Camino Anthropic: paso API key con validación offline (sin red en --uitest).

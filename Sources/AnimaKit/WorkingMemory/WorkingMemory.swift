@@ -60,6 +60,9 @@ public actor WorkingMemory {
     // (jamás role:system dentro de messages[] — PR #17).
     private var bodyStatusLine: String?
     private var surfaceHint: String?
+    /// Instrucciones volátiles de una sesión de propósito (p.ej. el taller de
+    /// skills): van en el mismo bloque system que el estado corporal.
+    private var taskInstructions: String?
 
     // Bloques compaction emitidos por el server; se re-anexan cada turno (contrato beta).
     private var compactionBlocks: [ContentBlock] = []
@@ -113,7 +116,7 @@ public actor WorkingMemory {
         }
 
         // 3c. estado corporal (gafas) + pista de superficie del turno.
-        let body = [bodyStatusLine, surfaceHint].compactMap { $0 }.filter { !$0.isEmpty }
+        let body = [bodyStatusLine, surfaceHint, taskInstructions].compactMap { $0 }.filter { !$0.isEmpty }
         if !body.isEmpty {
             messages.append(Message(role: .system, content: [.text(body.joined(separator: "\n"))]))
         }
@@ -270,6 +273,10 @@ public actor WorkingMemory {
     }
 
     /// Track G: pista de la superficie de origen del turno (p.ej. gafas ⇒ breve).
+    public func updateTaskInstructions(_ text: String?) {
+        taskInstructions = text
+    }
+
     public func updateSurfaceHint(_ hint: String?) {
         surfaceHint = hint
     }

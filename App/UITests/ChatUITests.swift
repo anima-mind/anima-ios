@@ -88,7 +88,9 @@ final class ChatUITests: AnimaUITestCase {
         XCTAssertEqual(app.staticTexts.matching(identifier: "chat.userMessage").count, 1)
     }
 
-    /// Campo #11: cámara del composer → menú → (picker guionado) → thumb → enviar → burbuja con thumb.
+    /// Campo #11 + FIX G: cámara del composer → menú → (picker guionado) → el
+    /// adjunto PENDIENTE vive dentro del composer (no en el historial) → enviar →
+    /// burbuja con thumb.
     @MainActor
     func testComposerPhotoAttachesAndSends() {
         let app = launch()
@@ -97,20 +99,53 @@ final class ChatUITests: AnimaUITestCase {
 
         tap(app.buttons["chat.camera"])
         tap(app.buttons["Elegir de la galería"])
-        waitFor(element(app, "chat.attachment"))
+        let pending = element(app, "chat.attachment.pending")
+        waitFor(pending)
+        // Dentro del composer, y sin burbuja nueva en el historial hasta enviar.
+        let composer = element(app, "chat.composer")
+        XCTAssertTrue(composer.descendants(matching: .any)
+            .matching(identifier: "chat.attachment.pending").firstMatch.exists)
+        XCTAssertFalse(element(app, "chat.userMessage.photo").exists)
+        XCTAssertEqual(app.textFields["chat.input"].placeholderValue, "Agrega un mensaje…")
         // Quitar y volver a adjuntar con "Tomar foto".
         tap(app.buttons["nav.close.attachment"])
-        waitUntil(element(app, "chat.attachment"), "exists == false")
+        waitUntil(pending, "exists == false")
         tap(app.buttons["chat.camera"])
         tap(app.buttons["Tomar foto"])
-        waitFor(element(app, "chat.attachment"))
+        waitFor(pending)
 
         let input = app.textFields["chat.input"]
         tap(input)
         input.typeText("mira esto")
         tap(app.buttons["chat.send"])
         waitFor(element(app, "chat.userMessage.photo"))
-        waitUntil(element(app, "chat.attachment"), "exists == false")
+        waitUntil(pending, "exists == false")
         waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+    }
+
+    /// FIX G: tap al thumb (composer o burbuja) → visor fullscreen → X / swipe-down cierra.
+    @MainActor
+    func testImageViewerOpensFromThumbsAndCloses() {
+        let app = launch()
+        onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
+
+        tap(app.buttons["chat.camera"])
+        tap(app.buttons["Elegir de la galería"])
+        tap(element(app, "chat.attachment.thumb"))
+        let viewer = element(app, "chat.imageViewer")
+        waitFor(viewer)
+        waitFor(element(app, "chat.imageViewer.image"))
+        tap(app.buttons["nav.close.imageViewer"])
+        waitUntil(viewer, "exists == false")
+
+        tap(app.buttons["chat.send"])
+        let sent = element(app, "chat.userMessage.photo")
+        waitFor(sent)
+        tap(sent)
+        waitFor(viewer)
+        let image = element(app, "chat.imageViewer.image")
+        waitFor(image)
+        image.swipeDown(velocity: .fast)
+        waitUntil(viewer, "exists == false")
     }
 }

@@ -21,11 +21,12 @@ enum UITestMode {
     static let suiteName = "com.joshuamoreno1.anima.uitest"
     static let keychainService = "dev.joshua.anima.provider-token.uitest"
     static let databaseName = "anima-uitest.sqlite"
+    static let skillsDirectoryName = "skills-uitest"
 
     /// Suite efímera: jamás toca `UserDefaults.standard` del dueño.
     static var defaults: UserDefaults { UserDefaults(suiteName: suiteName) ?? .standard }
 
-    /// Borra flags de onboarding/modo, token y base de datos del modo UI-test.
+    /// Borra flags de onboarding/modo, token, base de datos y skills del modo UI-test.
     static func resetIfRequested() {
         guard shouldReset else { return }
         defaults.removePersistentDomain(forName: suiteName)
@@ -37,6 +38,7 @@ enum UITestMode {
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(databaseName + suffix))
         }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(skillsDirectoryName, isDirectory: true))
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.
@@ -88,7 +90,28 @@ struct UITestScriptedProvider: Provider {
         case calendarTool
     }
 
+    /// Taller de skills (FIX A): borrador fijo + la siguiente pregunta.
+    static let skillReply = """
+        <skill>
+        ---
+        name: regar-plantas
+        description: Recuerda y guía el riego de las plantas de la casa
+        when: regar las plantas, riego, plantas de la casa
+        ---
+        1. Pregunta qué plantas toca regar hoy.
+        2. Recuerda que el helecho va cada dos días.
+        </skill>
+        ¿Algo más o lo cambio?
+        """
+
     static func plan(for ctx: AssembledContext) -> Plan {
+        let inWorkshop = ctx.messages.contains { message in
+            message.role == .system && message.content.contains { block in
+                if case .text(let t) = block { return t.contains(SkillWorkshopSession.marker) }
+                return false
+            }
+        }
+        if inWorkshop { return .text(skillReply) }
         guard let last = ctx.messages.last(where: { $0.role == .user }) else { return .text(fixedReply) }
         for block in last.content {
             if case .toolResult(_, let content, let isError) = block {
@@ -114,8 +137,9 @@ struct UITestScriptedProvider: Provider {
                     // Resumen de razonamiento: la thought line queda en pantalla
                     // (expandible) para ejercitar su tap con el teclado abierto.
                     continuation.yield(.thinkingDelta(Self.thought))
+                    let delay: Duration = reply == Self.skillReply ? .milliseconds(40) : Self.chunkDelay
                     for chunk in Self.chunks(reply) {
-                        try? await Task.sleep(for: Self.chunkDelay)
+                        try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }
                         continuation.yield(.textDelta(chunk))
                     }

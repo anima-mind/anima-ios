@@ -192,6 +192,12 @@ final class AppModel: ObservableObject {
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
+            // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
+            // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
+            if let brain = self.brain {
+                _ = try? await DistillMigration.runIfNeeded(queue: queue, brain: brain,
+                                                            selfName: await selfModel.name())
+            }
             let settings = SettingsViewModel(keychain: keychain, telemetry: telemetry,
                                              onboardingDefaults: Self.onboardingDefaults,
                                              availability: Self.availability)

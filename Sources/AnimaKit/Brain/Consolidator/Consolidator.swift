@@ -24,6 +24,8 @@ public actor Consolidator {
         public var reconsolidated: Int
         public var reflectionSummary: String
         public var completed: Bool
+        /// Candidatos que el DistillGuard rechazó (eco/meta/pregunta), con razón en el cycle_log.
+        public var rejected: Int = 0
     }
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
@@ -206,7 +208,17 @@ public actor Consolidator {
 
     private func writeStage(cycle: Int) async throws {
         let pending = try pendingDistilled(cycle: cycle)
+        guard !pending.isEmpty else { return }
+        let selfName = await selfModel?.name()
+        let sourceTurns = try inboxTexts(cycle: cycle)
         for item in pending {
+            // Guard determinista (FIX B): preguntas, meta del asistente y ecos jamás
+            // llegan al Brain; quedan auditables en cycle_distilled y el cycle_log.
+            if let rejection = DistillGuard.reject(item.candidate.content, selfName: selfName,
+                                                   sourceTurns: sourceTurns) {
+                try markDecided(cycle: cycle, idx: item.idx, decision: Self.rejectedPrefix + rejection.rawValue)
+                continue
+            }
             let similar = try await brain.similar(to: item.candidate.content, limit: 5)
             let directive: WriteDirective
             let label: String
@@ -307,7 +319,7 @@ public actor Consolidator {
     private func reflectStage(cycle: Int) async throws {
         let added = try addedMemories(cycle: cycle)
         let changed = try decisionCounts(cycle: cycle)
-        let touched = changed.values.reduce(0, +)
+        let touched = changed.filter { !$0.key.hasPrefix(Self.rejectedPrefix) }.values.reduce(0, +)
         guard touched > 0 || !added.isEmpty else {
             try persistReflection(cycle: cycle, summary: "", insights: [])
             return
@@ -323,8 +335,17 @@ public actor Consolidator {
         let text = try await complete(.consolidation, system: Self.reflectionPrompt, user: user, maxOutputTokens: 1024)
         let dto = Self.decode(ReflectionDTO.self, from: text)
         let summary = dto?.summary ?? ""
-        let insights = dto?.insights ?? []
-        for insight in insights where !insight.trimmingCharacters(in: .whitespaces).isEmpty {
+        let selfName = await selfModel?.name()
+        var insights: [String] = []
+        var rejectedInsights: [RejectedDTO] = []
+        for insight in dto?.insights ?? [] where !insight.trimmingCharacters(in: .whitespaces).isEmpty {
+            if let rejection = DistillGuard.reject(insight, selfName: selfName) {
+                rejectedInsights.append(RejectedDTO(content: insight, reason: rejection.rawValue))
+            } else {
+                insights.append(insight)
+            }
+        }
+        for insight in insights {
             _ = try await brain.add(MemoryCandidate(content: insight, kind: .reflection, importance: 6,
                                                     source: "cycle:\(cycle)"), cycle: cycle)
         }
@@ -352,7 +373,7 @@ public actor Consolidator {
                                            priority: inferred.priority ?? 5)
             }
         }
-        try persistReflection(cycle: cycle, summary: summary, insights: insights)
+        try persistReflection(cycle: cycle, summary: summary, insights: insights, extraRejected: rejectedInsights)
     }
 
     // MARK: - f. Restructures (§5.6): la restructure queue → lecciones en el brain
@@ -496,9 +517,12 @@ public actor Consolidator {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory WHERE consolidation_cycle=? AND revises_id IS NOT NULL",
                              arguments: [cycle]) ?? 0
         }
-        let summary = try queue.read { db in
+        let logged = try queue.read { db in
             try String.fetchOne(db, sql: "SELECT report_json FROM cycle_log WHERE cycle=?", arguments: [cycle])
-        }.flatMap { Self.decode(ReflectionDTO.self, from: $0)?.summary } ?? ""
+        }.flatMap { Self.decode(ReflectionDTO.self, from: $0) }
+        let summary = logged?.summary ?? ""
+        // Antes del reflection el cycle_log aún no existe: cuenta lo de cycle_distilled.
+        let rejected = try logged?.rejected?.count ?? rejectedDistilled(cycle: cycle).count
         return CycleReport(
             cycle: cycle,
             distilled: distilledCount,
@@ -508,11 +532,33 @@ public actor Consolidator {
             noop: counts["NOOP"] ?? 0,
             reconsolidated: reconsolidated,
             reflectionSummary: summary,
-            completed: completed)
+            completed: completed,
+            rejected: rejected)
     }
 
-    private func persistReflection(cycle: Int, summary: String, insights: [String]) throws {
-        let dto = ReflectionDTO(summary: summary, insights: insights, self_proposals: nil, inferred_goals: nil)
+    static let rejectedPrefix = "REJECTED: "
+
+    private func rejectedDistilled(cycle: Int) throws -> [RejectedDTO] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT candidate_json, decision FROM cycle_distilled
+                WHERE cycle=? AND decision LIKE 'REJECTED:%' ORDER BY idx ASC
+                """, arguments: [cycle]).compactMap { row in
+                let json: String = row["candidate_json"]
+                let decision: String = row["decision"]
+                guard let data = json.data(using: .utf8),
+                      let candidate = try? JSONDecoder().decode(MemoryCandidate.self, from: data) else { return nil }
+                return RejectedDTO(content: candidate.content,
+                                   reason: String(decision.dropFirst(Self.rejectedPrefix.count)))
+            }
+        }
+    }
+
+    private func persistReflection(cycle: Int, summary: String, insights: [String],
+                                   extraRejected: [RejectedDTO] = []) throws {
+        let rejected = try rejectedDistilled(cycle: cycle) + extraRejected
+        let dto = ReflectionDTO(summary: summary, insights: insights, self_proposals: nil, inferred_goals: nil,
+                                rejected: rejected.isEmpty ? nil : rejected)
         let json = String(data: (try? JSONEncoder().encode(dto)) ?? Data(), encoding: .utf8) ?? "{}"
         let now = Date().timeIntervalSince1970
         try queue.write { db in
@@ -621,6 +667,13 @@ private struct ReflectionDTO: Codable {
     let insights: [String]?
     let self_proposals: [SelfProposalDTO]?
     let inferred_goals: [InferredGoalDTO]?
+    var rejected: [RejectedDTO]? = nil
+}
+
+/// Rechazo auditable del DistillGuard (va al cycle_log, jamás al Brain).
+private struct RejectedDTO: Codable {
+    let content: String
+    let reason: String
 }
 
 private struct SelfProposalDTO: Codable {
@@ -670,10 +723,30 @@ private struct InferredGoalDTO: Codable {
 // MARK: - Prompts (salida JSON estricta)
 
 extension Consolidator {
+    /// El prompt del ciclo es harness (código), no Remote Config: solo el system
+    /// base vive en RC. v2 (campo batch 3): criterios explícitos + negativos reales.
     static let distillPrompt = """
-    Eres el proceso de consolidación de memoria de un asistente personal. Extrae de los mensajes del dueño los hechos, preferencias y eventos ESTABLES y evergreen, uno por objeto. Ignora charla trivial. Devuelve SOLO un arreglo JSON:
+    Eres el proceso de consolidación de memoria de largo plazo de un asistente personal. Recibes mensajes que el DUEÑO le escribió al asistente. Tu trabajo: extraer SOLO hechos DURABLES que sigan siendo ciertos y útiles dentro de semanas.
+
+    SÍ extrae (en tercera persona, sobre el dueño — "El dueño…"):
+    - hechos sobre el dueño: dónde vive, a qué se dedica, su salud, sus rutinas;
+    - su gente: nombres y relación ("La hermana del dueño se llama Ana");
+    - su mundo: lugares, proyectos, empresas, mascotas, objetos que le importan;
+    - sus preferencias y gustos estables ("El dueño prefiere reuniones en la mañana");
+    - eventos con fecha ("El dueño viaja a Lima el 12 de noviembre");
+    - cómo el dueño se relaciona con el asistente cuando es un hecho del dueño ("El dueño llama Betty a su asistente").
+
+    PROHIBIDO (devuelve nada por ellos):
+    - las PREGUNTAS o pedidos del dueño, ni reformuladas: "¿Qué tengo pendiente en mi agenda?", "Que modelo usas para responder?", "Betty cuéntame sobre cómo funcionas" → NADA;
+    - descripciones del asistente, sus capacidades, su modelo o su funcionamiento: "El asistente utiliza un modelo de lenguaje para procesar…" → NADA;
+    - trivia de la conversación misma ("El dueño preguntó por su agenda", "El dueño saludó") → NADA;
+    - saludos, agradecimientos, charla trivial, estados de ánimo pasajeros;
+    - copiar literal el texto del mensaje.
+
+    Si los mensajes no dejan ningún hecho durable, devuelve [] — eso es un resultado CORRECTO, no un fallo. Prefiere 0 memorias a 1 memoria basura.
+
+    Devuelve SOLO un arreglo JSON:
     [{"content":"hecho atómico en tercera persona","kind":"semantic|episodic|procedural","importance":1-10,"event_at":null}]
-    Si no hay nada que consolidar, devuelve [].
     """
 
     static let decisionPrompt = """
@@ -688,7 +761,7 @@ extension Consolidator {
     """
 
     static let reflectionPrompt = """
-    Resume el ciclo de consolidación. Devuelve SOLO un objeto JSON:
+    Resume el ciclo de consolidación. Los insights son conclusiones de alto nivel sobre el DUEÑO y su mundo (jamás sobre el asistente, su modelo o sus capacidades, ni sobre la conversación misma, ni preguntas). Sin insights durables, insights=[]. Devuelve SOLO un objeto JSON:
     {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}],"inferred_goals":[{"statement":"meta inferida del dueño","rationale":"por qué","priority":1-10,"predicate":{"kind":"...","value":N}}]}
     Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente. Usa inferred_goals SOLO si infieres una meta que el dueño NO declaró explícitamente (requerirá su confirmación). Si no aplica, omite el campo o déjalo vacío.
     Predicados observables válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}.

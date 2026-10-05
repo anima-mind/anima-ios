@@ -20,6 +20,12 @@ public enum GlassesLink: String, Sendable, Equatable {
     case disconnected, connecting, connected
 }
 
+/// DAT 1.0.0 `DonState`: si el dueño lleva puestas las gafas (`Device.donState`,
+/// llega por `addDeviceStateListener`).
+public enum GlassesDonState: String, Sendable, Equatable {
+    case unknown, doffed, donned
+}
+
 /// Un device visto por el runtime (link + compatibilidad llegan tarde: el
 /// adapter re-emite el snapshot en cada listener, regla 3).
 public struct GlassesDeviceSnapshot: Sendable, Equatable {
@@ -30,15 +36,18 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
     public var supportsDisplay: Bool
     /// DAT 1.0.0: `Device.batteryLevel` (nil hasta que las gafas lo reportan).
     public var batteryPercent: Int?
+    /// DAT 1.0.0: `Device.donState` (puestas / quitadas).
+    public var donState: GlassesDonState
 
     public init(id: String, name: String, link: GlassesLink, compatibility: GlassesCompatibility,
-                supportsDisplay: Bool = true, batteryPercent: Int? = nil) {
+                supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown) {
         self.id = id
         self.name = name
         self.link = link
         self.compatibility = compatibility
         self.supportsDisplay = supportsDisplay
         self.batteryPercent = batteryPercent
+        self.donState = donState
     }
 }
 

@@ -70,8 +70,12 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
                         guard let device = wearables.deviceForIdentifier(id) else { continue }
                         device.addLinkStateListener { _ in emit() }.store(in: bag)
                         device.addCompatibilityListener { _ in emit() }.store(in: bag)
-                        // 1.0: batería/temperatura/don llegan por DeviceState.
-                        device.addDeviceStateListener { _ in emit() }.store(in: bag)
+                        // 1.0: batería/temperatura/don llegan por DeviceState
+                        // (don → don-wake en GlassesActivation).
+                        device.addDeviceStateListener { state in
+                            Self.donCache.set(id, Self.map(state.donState))
+                            emit()
+                        }.store(in: bag)
                     }
                     emit()
                 }
@@ -124,6 +128,16 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
         }
     }
 
+    static let donCache = DATDonCache()
+
+    static func map(_ don: DonState) -> GlassesDonState {
+        switch don {
+        case .donned: return .donned
+        case .doffed: return .doffed
+        default: return .unknown
+        }
+    }
+
     static func snapshots(_ wearables: any WearablesInterface, _ ids: [DeviceIdentifier]) -> [GlassesDeviceSnapshot] {
         ids.compactMap { id in
             guard let device = wearables.deviceForIdentifier(id) else { return nil }
@@ -140,12 +154,23 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
             case .sdkUpdateRequired: compatibility = .sdkUpdateRequired
             default: compatibility = .undefined
             }
+            // El valor del listener manda (llega antes de que el accessor se entere).
+            let don = donCache.get(id) ?? map(device.donState)
             return GlassesDeviceSnapshot(id: id, name: device.nameOrId(), link: link,
                                          compatibility: compatibility,
                                          supportsDisplay: device.supportsDisplay(),
-                                         batteryPercent: device.batteryLevel)
+                                         batteryPercent: device.batteryLevel,
+                                         donState: don)
         }
     }
+}
+
+/// Último DonState reportado por `addDeviceStateListener`, por device.
+final class DATDonCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [DeviceIdentifier: GlassesDonState] = [:]
+    func set(_ id: DeviceIdentifier, _ value: GlassesDonState) { lock.lock(); values[id] = value; lock.unlock() }
+    func get(_ id: DeviceIdentifier) -> GlassesDonState? { lock.lock(); defer { lock.unlock() }; return values[id] }
 }
 
 // MARK: - Sesión

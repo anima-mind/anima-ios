@@ -90,6 +90,19 @@ public enum AnimaDatabase {
                 """)
         }
 
+        // DAT 1.0: eventos del cuerpo-gafas fuera del turno (don_wake, …).
+        m.registerMigration("v11-glasses-events") { db in
+            try db.execute(sql: """
+                CREATE TABLE glasses_event_telemetry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    detail TEXT,
+                    ts REAL NOT NULL
+                )
+                """)
+        }
+
         return m
     }
 

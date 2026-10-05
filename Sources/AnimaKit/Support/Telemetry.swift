@@ -127,6 +127,25 @@ public final class Telemetry: Sendable {
         }
     }
 
+    // MARK: - Eventos del cuerpo-gafas (don_wake, …)
+
+    public func recordGlassesEvent(_ row: GlassesEventRecord) throws {
+        let now = Date().timeIntervalSince1970
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO glasses_event_telemetry (event, outcome, detail, ts) VALUES (?,?,?,?)
+                """, arguments: [row.event, row.outcome, row.detail, now])
+        }
+    }
+
+    public func glassesEvents() throws -> [GlassesEventRecord] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM glasses_event_telemetry ORDER BY id").map {
+                GlassesEventRecord(event: $0["event"], outcome: $0["outcome"], detail: $0["detail"])
+            }
+        }
+    }
+
     // MARK: - Agregados de costos
 
     public struct CostRow: Sendable, Equatable {

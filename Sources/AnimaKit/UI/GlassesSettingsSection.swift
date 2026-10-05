@@ -16,6 +16,11 @@ public final class GlassesViewModel: ObservableObject {
 
     /// Próxima card de "Probar iconos" (diagnóstico de campo del catálogo).
     @Published public private(set) var iconProbeIndex = 0
+    /// "Despertar al ponértelas" (don-wake, DAT 1.0). Persistido; default sí.
+    @Published public private(set) var donWake: Bool
+
+    public static let donWakeKey = "glasses.donWake"
+    private let defaults: UserDefaults
 
     private let body: GlassesBody?
     private let activation: GlassesActivation?
@@ -23,10 +28,15 @@ public final class GlassesViewModel: ObservableObject {
     private var observeTask: Task<Void, Never>?
     private var voiceTask: Task<Void, Never>?
 
-    public init(body: GlassesBody?, activation: GlassesActivation?, host: (any GlassesToolHost)? = nil) {
+    public init(body: GlassesBody?, activation: GlassesActivation?, host: (any GlassesToolHost)? = nil,
+                defaults: UserDefaults = .standard) {
         self.body = body
         self.activation = activation
         self.host = host
+        self.defaults = defaults
+        let donWake = defaults.object(forKey: Self.donWakeKey) as? Bool ?? true
+        self.donWake = donWake
+        if let activation { Task { await activation.setDonWakeEnabled(donWake) } }
         guard let body else { return }
         observeTask = Task { [weak self] in
             for await status in await body.statusUpdates() {
@@ -94,6 +104,13 @@ public final class GlassesViewModel: ObservableObject {
         }
     }
 
+    public func setDonWake(_ enabled: Bool) {
+        donWake = enabled
+        defaults.set(enabled, forKey: Self.donWakeKey)
+        guard let activation else { return }
+        Task { await activation.setDonWakeEnabled(enabled) }
+    }
+
     public func showOnGlasses() {
         guard let activation else { return }
         Task { await activation.userRequested() }
@@ -144,6 +161,16 @@ struct GlassesSettingsSection: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            if model.isRegistered {
+                Toggle(isOn: Binding(get: { model.donWake }, set: { model.setDonWake($0) })) {
+                    Text("Despertar al ponértelas")
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                }
+                .tint(Theme.Colors.accentText)
+                .frame(minHeight: Theme.minHitTarget)
+                .accessibilityIdentifier("settings.glasses.donWake")
+            }
             HStack(spacing: Theme.Space.stack) {
                 if model.isRegistered {
                     Button("Mostrar en las gafas") { model.showOnGlasses() }

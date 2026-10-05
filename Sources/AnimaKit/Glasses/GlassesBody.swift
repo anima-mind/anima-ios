@@ -47,6 +47,9 @@ public struct GlassesStatus: Sendable, Equatable {
     /// La última sesión la terminó el mundo (back físico, doff, apagado, dolencia),
     /// no el harness. La política de activación NO re-abre sola en ese caso.
     public var endedByDevice: Bool = false
+    /// Puestas/quitadas (DAT 1.0 DeviceState). Quitárselas NO cierra la sesión
+    /// aquí: el teardown lo decide el SDK (hingesClosed / `.stopped`).
+    public var donState: GlassesDonState = .unknown
 
     public init(body: GlassesBodyState = .absent, configured: Bool = false,
                 registration: GlassesRegistration = .unavailable, deviceName: String? = nil,
@@ -203,6 +206,7 @@ public actor GlassesBody {
             ?? list.first { $0.supportsDisplay }
         status.deviceName = device?.name
         status.batteryPercent = device?.batteryPercent
+        status.donState = device?.donState ?? .unknown
         if let device, device.link == .connected,
            device.compatibility == .deviceUpdateRequired || device.compatibility == .sdkUpdateRequired,
            previous?.compatibility != device.compatibility {

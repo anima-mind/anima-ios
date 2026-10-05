@@ -261,7 +261,33 @@ struct GlassesVoicePolicyTests {
         let waited = Locked<[TimeInterval]>([])
         let audio = FakeAudio(available: true, settlesOnAttempt: 1)
         _ = await AudioRoutePlanner.settleCapture(audio, settle: 2, sleep: { s in waited.mutate { $0.append(s) } })
-        #expect(waited.value == [2])
+        #expect(waited.value.isEmpty)   // ya asentada: cero espera
+    }
+
+    /// Ruta que asienta a los `after` segundos de un reloj virtual.
+    final class ClockAudio: AudioSessionPort, @unchecked Sendable {
+        let clock = Locked<TimeInterval>(0)
+        let after: TimeInterval?
+        init(after: TimeInterval?) { self.after = after }
+        func hfpInputAvailable() -> Bool { true }
+        func activateHFP() throws {}
+        func currentInputIsHFP() -> Bool { after.map { clock.value >= $0 - 1e-9 } ?? false }
+        func activatePhoneMic() throws {}
+        func activatePlaybackA2DP() throws {}
+        func deactivate() {}
+    }
+
+    @Test func sondeaYSaleTempranoApenasAsienta() async {
+        let audio = ClockAudio(after: 0.3)
+        let route = await AudioRoutePlanner.settleCapture(audio, settle: 2, sleep: { s in audio.clock.mutate { $0 += s } })
+        #expect(route == .glassesHFP)
+        #expect(abs(audio.clock.value - 0.3) < 0.001, "durmió \(audio.clock.value)s, no 2s")
+
+        // Nunca asienta: máximo 2 s por intento (intento + reintento) y degrada al teléfono.
+        let never = ClockAudio(after: nil)
+        let degraded = await AudioRoutePlanner.settleCapture(never, settle: 2, sleep: { s in never.clock.mutate { $0 += s } })
+        #expect(degraded == .phoneMic)
+        #expect(abs(never.clock.value - 4) < 0.001)
     }
 
     @Test func finDeTurnoPorPausa() {

@@ -17,7 +17,7 @@ struct HUDTests {
         .attention("Sin red."),
         .cameraConfirm(reason: "Para ver qué estás mirando."),
         .agentCard(HUDFlexBox(background: .card, children: [.text(HUDText("Hola", style: .heading))])),
-        .handoff,
+        .handoff, .capturing,
     ]
 
     @Test func catalogoDeIconosEsElDelSDK() {
@@ -42,7 +42,7 @@ struct HUDTests {
         #expect(view.isRoot)
         #expect(view.texts.contains { $0.content == "anima 👋" && $0.style == .heading })
         #expect(view.texts.contains { $0.content == "gafas conectadas · batería 80%" })
-        #expect(view.actions == [.talk])
+        #expect(view.actions == [.talk, .photo])
         #expect(!view.actions.contains(.back))
         guard case .flexBox(let card) = view.root.children.first else { Issue.record("sin card"); return }
         #expect(card.background == .card)

@@ -50,84 +50,45 @@ public struct SystemAudioSession: AudioSessionPort {
 }
 
 /// HFP → AVAudioEngine → SFSpeechRecognizer on-device (es-CO), fin por silencio.
+/// El ciclo (ruta, silencio, teardown y liberación de HFP) vive en VoiceCaptureLoop.
 public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
-    private let audio: any AudioSessionPort
     private let locale: Locale
-    private let lock = NSLock()
-    private var engine: AVAudioEngine?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var detector = TurnEndDetector()
-    private var cancelled = false
+    private let loop: VoiceCaptureLoop
 
     public init(audio: any AudioSessionPort = SystemAudioSession(), locale: Locale = Locale(identifier: "es-CO")) {
-        self.audio = audio
         self.locale = locale
+        self.loop = VoiceCaptureLoop(audio: audio)
     }
 
     public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
-        withLock { cancelled = false; detector = TurnEndDetector() }
-        guard await Self.authorized(), let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
-            return nil
-        }
-        let route = await AudioRoutePlanner.settleCapture(audio)
-        onRoute(route)
-        guard !isCancelled else { return nil }
+        await capture(onRoute: onRoute, onPartial: { _ in })
+    }
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.requiresOnDeviceRecognition = true   // el audio crudo no sale del teléfono
-        request.shouldReportPartialResults = true
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.inputFormat(forBus: 0)) { buffer, _ in
-            request.append(buffer)
-        }
-        engine.prepare()
-        do { try engine.start() } catch { return nil }
-        withLock {
-            self.engine = engine
-            self.request = request
-            detector.start(at: Date())
-        }
-
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
-            guard let self, let result else { return }
-            self.lock.lock()
-            self.detector.partial(result.bestTranscription.formattedString, at: Date())
-            self.lock.unlock()
-        }
-
-        while !isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            let done = withLock { detector.isFinished(at: Date()) }
-            if done || Task.isCancelled { break }
-        }
-        let (transcript, wasCancelled) = withLock { (detector.transcript, cancelled) }
-        teardown()
-        return wasCancelled || transcript.isEmpty ? nil : transcript
+    public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                        onPartial: @escaping @Sendable (String) -> Void) async -> String? {
+        let locale = self.locale
+        return await loop.run(recognizer: {
+            guard await Self.authorized(), await Self.microphoneGranted(),
+                  let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return nil }
+            return SpeechRecognition(recognizer)
+        }, onRoute: onRoute, onPartial: onPartial)
     }
 
     public func cancel() {
-        withLock { cancelled = true }
+        loop.cancel()
     }
 
-    private func withLock<T>(_ body: () -> T) -> T {
-        lock.lock(); defer { lock.unlock() }
-        return body()
+    public func finish() {
+        loop.finish()
     }
 
-    private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
-
-    /// Teardown: removeTap → engine.stop() → endAudio (receta Relay §9).
-    private func teardown() {
-        lock.lock()
-        let engine = self.engine, request = self.request, task = self.task
-        self.engine = nil; self.request = nil; self.task = nil
-        lock.unlock()
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        request?.endAudio()
-        task?.cancel()
+    /// Permiso de micrófono (TCC normal; el primer uso muestra el diálogo).
+    static func microphoneGranted() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return true
+        case .undetermined: return await AVAudioApplication.requestRecordPermission()
+        default: return false
+        }
     }
 
     static func authorized() async -> Bool {
@@ -142,12 +103,57 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
     }
 }
 
+/// AVAudioEngine (tap del input) + SFSpeechAudioBufferRecognitionRequest on-device.
+final class SpeechRecognition: SpeechRecognitionPort, @unchecked Sendable {
+    private let recognizer: SFSpeechRecognizer
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+
+    init(_ recognizer: SFSpeechRecognizer) {
+        self.recognizer = recognizer
+    }
+
+    func start(onPartial: @escaping @Sendable (String) -> Void) throws {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = true   // el audio crudo no sale del teléfono
+        request.shouldReportPartialResults = true
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.inputFormat(forBus: 0)) { buffer, _ in
+            request.append(buffer)
+        }
+        lock.lock(); self.engine = engine; self.request = request; lock.unlock()
+        engine.prepare()
+        try engine.start()
+        let task = recognizer.recognitionTask(with: request) { result, _ in
+            guard let result else { return }
+            onPartial(result.bestTranscription.formattedString)
+        }
+        lock.lock(); self.task = task; lock.unlock()
+    }
+
+    /// Teardown: removeTap → engine.stop() → endAudio (receta Relay §9).
+    func stop() {
+        lock.lock()
+        let engine = self.engine, request = self.request, task = self.task
+        self.engine = nil; self.request = nil; self.task = nil
+        lock.unlock()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        request?.endAudio()
+        task?.cancel()
+    }
+}
+
 /// TTS corto por A2DP (parlantes de las gafas). AVSpeechSynthesizer v1 (doc 05 §9 #5).
 public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     private let audio: any AudioSessionPort
     private let synthesizer = AVSpeechSynthesizer()
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Never>?
+    private var onRange: (@Sendable (NSRange) -> Void)?
 
     public init(audio: any AudioSessionPort = SystemAudioSession()) {
         self.audio = audio
@@ -156,18 +162,22 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     }
 
     public func speak(_ text: String) async {
+        await speak(text, onRange: { _ in })
+    }
+
+    public func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
         guard !text.isEmpty else { return }
         try? audio.activatePlaybackA2DP()
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "es-CO") ?? AVSpeechSynthesisVoice(language: "es-MX")
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            store(cont)
+            store(cont, onRange)
             synthesizer.speak(utterance)
         }
     }
 
-    private func store(_ cont: CheckedContinuation<Void, Never>) {
-        lock.lock(); continuation = cont; lock.unlock()
+    private func store(_ cont: CheckedContinuation<Void, Never>, _ progress: @escaping @Sendable (NSRange) -> Void) {
+        lock.lock(); continuation = cont; onRange = progress; lock.unlock()
     }
 
     public func stop() {
@@ -176,8 +186,14 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     }
 
     private func finish() {
-        lock.lock(); let cont = continuation; continuation = nil; lock.unlock()
+        lock.lock(); let cont = continuation; continuation = nil; onRange = nil; lock.unlock()
         cont?.resume()
+    }
+
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange,
+                                  utterance: AVSpeechUtterance) {
+        lock.lock(); let progress = onRange; lock.unlock()
+        progress?(characterRange)
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { finish() }

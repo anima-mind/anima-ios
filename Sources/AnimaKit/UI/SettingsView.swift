@@ -23,6 +23,18 @@ public final class SettingsViewModel: ObservableObject {
     @Published public private(set) var savedRemotes: Set<ModelProvider> = []
     /// A qué provider va la key del campo de texto.
     @Published public var tokenTarget: ModelProvider
+    /// Ajustes → Modelo: UNA fila por provider (ProviderRoster).
+    @Published public private(set) var rows: [ProviderRow] = []
+    /// La fila con su campo de key expandido inline.
+    @Published public private(set) var editing: ModelProvider?
+    @Published public var keyInput: String = ""
+    /// Error de validación de la fila en edición (nil = sin error).
+    @Published public private(set) var keyError: String?
+    @Published public private(set) var checkingKey = false
+    /// Config del API por provider para validar la key como el onboarding
+    /// (vacío = sin red / `--uitest`: se acepta con el formato ok).
+    public var apis: [ModelProvider: ProviderAPIConfig] = [:]
+    public var validator = APIKeyValidator()
 
     private let keychain: ProviderTokenStore
     private let telemetry: Telemetry
@@ -36,6 +48,13 @@ public final class SettingsViewModel: ObservableObject {
     public var skills: SkillsViewModel?
     /// Sección Gafas (track G); la inyecta el shell con el GlassesBody vivo.
     public var glasses: GlassesViewModel?
+    /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
+    public var nightSimulator: NightSimulator?
+    /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
+    public var onNightSimulated: (() -> Void)?
+    @Published public private(set) var simulatingNight = false
+    @Published public private(set) var nightSummary: String?
+
     /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
     public var onModeChanged: ((OperatingMode) -> Void)?
     private let availabilityProbe: () -> OnDeviceAvailability
@@ -62,14 +81,14 @@ public final class SettingsViewModel: ObservableObject {
             return reason
         }
         if mode.requiresToken, !hasToken {
-            return "Requiere tu API key de \(remoteProvider.displayName) (abajo)."
+            return "Requiere tu API key de \(remoteProvider.displayName) (en su fila)."
         }
         return nil
     }
 
     /// Si se puede activar ese provider remoto; si no, el porqué.
     public func remoteBlocker(for provider: ModelProvider) -> String? {
-        savedRemotes.contains(provider) ? nil : "Guarda primero su API key (abajo)."
+        savedRemotes.contains(provider) ? nil : "Agrega primero la key de \(provider.displayName) en su fila."
     }
 
     /// Cambia el córtex remoto (requiere su key guardada). Re-cablea el shell.
@@ -99,6 +118,7 @@ public final class SettingsViewModel: ObservableObject {
         guard newMode != mode else { return }
         onboardingDefaults.modeStore.set(newMode)
         mode = newMode
+        refreshRows()
         onModeChanged?(newMode)
     }
 
@@ -112,6 +132,17 @@ public final class SettingsViewModel: ObservableObject {
             ("Conversación", ProviderSelector.plannedBackend(mode: mode, turn: .interactive)),
             ("Sueño, pulsos y destilado", ProviderSelector.plannedBackend(mode: mode, turn: .consolidation)),
         ]
+    }
+
+    public func simulateNight() async {
+        guard let nightSimulator, !simulatingNight else { return }
+        simulatingNight = true
+        nightSummary = nil
+        if let summary = await nightSimulator.run() {
+            nightSummary = summary
+            onNightSimulated?()
+        }
+        simulatingNight = false
     }
 
     public func replayOnboarding() {
@@ -129,7 +160,118 @@ public final class SettingsViewModel: ObservableObject {
         refreshCosts()
     }
 
+    // MARK: Lista de providers (una fila por provider)
+
+    /// Radio de una fila: local = Solo teléfono; remota = ese provider (modo
+    /// remoto, o Híbrido si ya lo era). Sin key, abre su campo.
+    public func activate(_ provider: ModelProvider) {
+        refreshAvailability()
+        if provider == .onDevice {
+            select(.onDeviceOnly)
+            refreshRows()
+            return
+        }
+        guard savedRemotes.contains(provider) else {
+            beginEditing(provider)
+            return
+        }
+        modeNotice = nil
+        let newMode: OperatingMode = mode == .onDeviceOnly ? .remote : mode
+        guard provider != remoteProvider || newMode != mode else { return }
+        onboardingDefaults.remoteStore.set(provider)
+        onboardingDefaults.modeStore.set(newMode)
+        remoteProvider = provider
+        tokenTarget = provider
+        mode = newMode
+        refreshTokenState()
+        onModeChanged?(newMode)
+    }
+
+    /// Toggle Híbrido (debajo de la lista): solo con un remoto activo.
+    public func setHybrid(_ on: Bool) {
+        guard mode != .onDeviceOnly else { return }
+        select(on ? .hybrid : .remote)
+    }
+
+    public func beginEditing(_ provider: ModelProvider) {
+        guard provider.isRemote else { return }
+        editing = provider
+        keyInput = ""
+        keyError = nil
+    }
+
+    public func cancelEditing() {
+        editing = nil
+        keyInput = ""
+        keyError = nil
+    }
+
+    /// Guardar de la fila expandida: formato → validación contra el API (como el
+    /// onboarding; sin red se acepta) → Keychain → la fila colapsa y se actualiza.
+    public func saveKey() async {
+        guard let provider = editing else { return }
+        let token = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        guard provider.acceptsTokenFormat(token) else {
+            keyError = provider == .anthropic
+                ? "Formato no reconocido (esperado sk-ant-api… o sk-ant-oat…)."
+                : "Formato no reconocido (sin espacios)."
+            return
+        }
+        checkingKey = true
+        let verdict: APIKeyValidator.Verdict
+        if let api = apis[provider] {
+            verdict = await validator.validate(token: token, provider: provider, api: api)
+        } else {
+            verdict = .offlineAccepted(provider.authMode(forToken: token) ?? .apiKey)
+        }
+        checkingKey = false
+        switch verdict {
+        case .valid, .offlineAccepted:
+            do {
+                try keychain.save(token, for: provider)
+            } catch {
+                keyError = "Error al guardar: \(error.localizedDescription)"
+                return
+            }
+            cancelEditing()
+            refreshTokenState()
+            if provider == remoteProvider, mode != .onDeviceOnly { onModeChanged?(mode) }
+        case .rejected(let reason):
+            keyError = reason
+        case .malformed:
+            keyError = "Formato no reconocido."
+        }
+    }
+
+    /// Borra la key (con confirmación en la vista). Si era la ACTIVA, la
+    /// selección cae al siguiente remoto con key o al modelo local.
+    public func deleteKey(_ provider: ModelProvider) {
+        guard provider.isRemote else { return }
+        try? keychain.delete(provider)
+        if editing == provider { cancelEditing() }
+        let wasActive = provider == remoteProvider && mode != .onDeviceOnly
+        refreshTokenState()
+        guard wasActive else { return }
+        refreshAvailability()
+        switch ProviderRoster.fallback(afterDeleting: provider, saved: savedRemotes, local: onDeviceAvailability) {
+        case .onDevice?: select(.onDeviceOnly)
+        case let next?: activate(next)
+        case nil: onModeChanged?(mode)
+        }
+        refreshRows()
+    }
+
+    private func refreshRows() {
+        var tokens: [ModelProvider: String] = [:]
+        for provider in ModelProvider.remoteCases {
+            if let token = (try? keychain.read(provider)) ?? nil { tokens[provider] = token }
+        }
+        rows = ProviderRoster.rows(tokens: tokens, activeRemote: remoteProvider, mode: mode, local: onDeviceAvailability)
+    }
+
     private func refreshTokenState() {
+        defer { refreshRows() }
         savedRemotes = Set(ModelProvider.remoteCases.filter { keychain.hasToken($0) })
         hasToken = savedRemotes.contains(remoteProvider)
         if let token = (try? keychain.read(remoteProvider)) ?? nil, !token.isEmpty {
@@ -186,7 +328,6 @@ public struct SettingsView: View {
                         AccountSettingsSection(account: account)
                     }
                     modeSection
-                    tokenSection
                     costsSection
                     if let skills = model.skills {
                         SkillsSettingsSection(model: skills)
@@ -202,39 +343,16 @@ public struct SettingsView: View {
         .onAppear { model.load() }
     }
 
-    /// Sección Modo (§4.9): los 3 modos, la disponibilidad actual y qué corre dónde.
+    /// Sección Modelo (§4.9): UNA fila por provider (radio de activo + estado
+    /// inline + acción que expande su key), el modelo local en la misma lista,
+    /// el toggle Híbrido debajo y qué corre dónde.
     private var modeSection: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            label("Modo")
+            label("Modelo")
             VStack(spacing: 0) {
-                ForEach(Array(OperatingMode.allCases.enumerated()), id: \.element) { index, mode in
-                    let selected = model.mode == mode
-                    let blocker = model.blocker(for: mode)
-                    Button {
-                        model.select(mode)
-                    } label: {
-                        HStack(alignment: .top, spacing: Theme.Space.stack) {
-                            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                                .font(.system(size: 18, weight: .light))
-                                .foregroundStyle(selected ? Theme.Colors.accent : Theme.Colors.textFaint)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(mode.title(remote: model.remoteProvider))
-                                    .font(Theme.Type_.body)
-                                    .foregroundStyle(blocker == nil ? Theme.Colors.text : Theme.Colors.textFaint)
-                                Text(blocker ?? mode.summary(remote: model.remoteProvider))
-                                    .font(Theme.Type_.meta)
-                                    .foregroundStyle(Theme.Colors.textFaint)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 10)
-                        .padding(.horizontal, Theme.Space.cardPad)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("settings.mode.\(mode.rawValue)")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                    if index < OperatingMode.allCases.count - 1 {
+                ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
+                    providerRow(row)
+                    if index < model.rows.count - 1 {
                         Divider().background(Theme.Colors.border).padding(.leading, Theme.Space.cardPad)
                     }
                 }
@@ -242,6 +360,21 @@ public struct SettingsView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+
+            if model.mode != .onDeviceOnly {
+                Toggle(isOn: Binding(get: { model.mode == .hybrid }, set: { model.setHybrid($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Híbrido")
+                            .font(Theme.Type_.body)
+                            .foregroundStyle(Theme.Colors.text)
+                        Text(model.blocker(for: .hybrid) ?? "El sueño y los pulsos corren en tu teléfono, gratis.")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                    }
+                }
+                .tint(Theme.Colors.accent)
+                .accessibilityIdentifier("settings.mode.hybrid")
+            }
 
             ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
                 HStack {
@@ -254,14 +387,6 @@ public struct SettingsView: View {
                         .foregroundStyle(Theme.Colors.accentText)
                 }
             }
-            remotePicker
-            HStack(spacing: 6) {
-                Image(systemName: model.onDeviceAvailability.isAvailable ? "iphone" : "iphone.slash")
-                    .font(.system(size: 12, weight: .light))
-                Text("Modelo local: " + model.onDeviceAvailability.label)
-            }
-            .font(Theme.Type_.meta)
-            .foregroundStyle(Theme.Colors.textFaint)
             if let notice = model.modeNotice {
                 Text(notice)
                     .font(Theme.Type_.meta)
@@ -271,63 +396,57 @@ public struct SettingsView: View {
         }
     }
 
-    /// Provider remoto activo: se cambia si ya hay key guardada de ese provider.
-    private var remotePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Provider remoto")
-                .font(Theme.Type_.secondary)
-                .foregroundStyle(Theme.Colors.textMuted)
-            HStack(spacing: Theme.Space.stack) {
-                ForEach(ModelProvider.remoteCases, id: \.self) { provider in
-                    let selected = model.remoteProvider == provider
-                    let available = model.remoteBlocker(for: provider) == nil
-                    Button(provider.displayName) { model.selectRemote(provider) }
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(selected ? Theme.Colors.accentText
-                                         : (available ? Theme.Colors.textMuted : Theme.Colors.textFaint))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .strokeBorder(selected ? Theme.Colors.accent : Theme.Colors.border,
-                                              lineWidth: Theme.Stroke.hairline))
-                        .buttonStyle(.plain)
+    private func providerRow(_ row: ProviderRow) -> some View {
+        let id = "settings.provider.\(row.provider.rawValue)"
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: Theme.Space.stack) {
+                Button {
+                    model.activate(row.provider)
+                } label: {
+                    HStack(spacing: Theme.Space.stack) {
+                        Image(systemName: row.isActive ? "largecircle.fill.circle" : "circle")
+                            .font(.system(size: 18, weight: .light))
+                            .foregroundStyle(row.isActive ? Theme.Colors.accent
+                                             : (row.selectable ? Theme.Colors.textMuted : Theme.Colors.border))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.provider.isRemote ? row.provider.displayName : "📱 " + ProviderRoster.localName)
+                                .font(Theme.Type_.body)
+                                .foregroundStyle(row.selectable ? Theme.Colors.text : Theme.Colors.textFaint)
+                            Text(row.status)
+                                .font(Theme.Type_.meta)
+                                .foregroundStyle(row.isReady ? Theme.Colors.accentText : Theme.Colors.textFaint)
+                                .accessibilityIdentifier("\(id).status")
+                            if let detail = row.detail {
+                                Text(detail)
+                                    .font(Theme.Type_.meta)
+                                    .foregroundStyle(Theme.Colors.textFaint)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
-            }
-        }
-    }
-
-    private var tokenSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            label("API key")
-            Picker("Provider", selection: $model.tokenTarget) {
-                ForEach(ModelProvider.remoteCases, id: \.self) { provider in
-                    Text(provider.displayName).tag(provider)
-                }
-            }
-            .pickerStyle(.segmented)
-            SecureField(model.tokenTarget.tokenPlaceholder, text: $model.tokenInput)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .padding(Theme.Space.cardPad)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.Radius.control)
-                        .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline)
-                )
-            HStack {
-                Button("Guardar") { model.save() }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("\(id).radio")
+                .accessibilityAddTraits(row.isActive ? .isSelected : [])
+                if let action = row.actionTitle {
+                    Button(model.editing == row.provider ? "Cancelar" : action) {
+                        if model.editing == row.provider { model.cancelEditing() } else { model.beginEditing(row.provider) }
+                    }
                     .font(Theme.Type_.secondary)
-                    .foregroundStyle(Theme.Colors.accent)
-                Spacer()
-                if let mode = model.detectedMode {
-                    Text("Auth: \(mode.rawValue)")
-                        .font(Theme.Type_.meta)
-                        .foregroundStyle(Theme.Colors.textMuted)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(minHeight: Theme.minHitTarget)
+                    .accessibilityIdentifier("\(id).action")
                 }
             }
-            Text(model.statusText)
-                .font(Theme.Type_.meta)
-                .foregroundStyle(Theme.Colors.textFaint)
+            .padding(.vertical, 6)
+            .padding(.horizontal, Theme.Space.cardPad)
+            if model.editing == row.provider {
+                ProviderKeyEditor(model: model, row: row)
+                    .padding(.horizontal, Theme.Space.cardPad)
+                    .padding(.bottom, Theme.Space.stack)
+            }
         }
     }
 
@@ -336,6 +455,32 @@ public struct SettingsView: View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
             label("Mente")
             VStack(spacing: 0) {
+                if model.nightSimulator != nil {
+                    Button {
+                        Task { await model.simulateNight() }
+                    } label: {
+                        HStack {
+                            Text("Simular una noche")
+                                .font(Theme.Type_.body)
+                                .foregroundStyle(model.simulatingNight ? Theme.Colors.textFaint : Theme.Colors.accentText)
+                            Spacer()
+                            if model.simulatingNight {
+                                ProgressView().controlSize(.small).tint(Theme.Colors.accent)
+                            } else {
+                                Image(systemName: "moon")
+                                    .font(.system(size: 12, weight: .light))
+                                    .foregroundStyle(Theme.Colors.textFaint)
+                            }
+                        }
+                        .frame(height: 48)
+                        .padding(.horizontal, Theme.Space.cardPad)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.simulatingNight)
+                    .accessibilityIdentifier("settings.simulateNight")
+                    Divider().background(Theme.Colors.border)
+                }
                 Button {
                     model.replayOnboarding()
                 } label: {
@@ -357,6 +502,12 @@ public struct SettingsView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            if let summary = model.nightSummary {
+                Text(summary)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .accessibilityIdentifier("settings.simulateNight.summary")
+            }
             Text("Re-corre el flujo sin borrar memoria; la identidad solo se re-siembra si lo confirmas.")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textFaint)
@@ -412,6 +563,62 @@ public struct SettingsView: View {
             .textCase(.uppercase)
             .kerning(0.66)
             .foregroundStyle(Theme.Colors.textMuted)
+    }
+}
+
+/// Campo de key expandido INLINE bajo su fila: placeholder por provider,
+/// Guardar (valida como el onboarding) y Borrar con confirmación.
+struct ProviderKeyEditor: View {
+    @ObservedObject var model: SettingsViewModel
+    let row: ProviderRow
+    @State private var confirmDelete = false
+
+    var body: some View {
+        let id = "settings.provider.\(row.provider.rawValue)"
+        VStack(alignment: .leading, spacing: 8) {
+            SecureField(row.provider.tokenPlaceholder, text: $model.keyInput)
+                .font(Theme.Type_.body)
+                .foregroundStyle(Theme.Colors.text)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
+                .padding(Theme.Space.cardPad)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.Radius.control)
+                        .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                .onSubmit { Task { await model.saveKey() } }
+                .accessibilityIdentifier("\(id).field")
+            if let error = model.keyError {
+                Text(error)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.textMuted)
+                    .accessibilityIdentifier("\(id).error")
+            }
+            HStack {
+                if row.hasKey {
+                    Button("Borrar key") { confirmDelete = true }
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                        .accessibilityIdentifier("\(id).delete")
+                }
+                Spacer()
+                if model.checkingKey { ProgressView().controlSize(.small).tint(Theme.Colors.accent) }
+                Button("Guardar") { Task { await model.saveKey() } }
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(minHeight: Theme.minHitTarget)
+                    .disabled(model.keyInput.trimmingCharacters(in: .whitespaces).isEmpty || model.checkingKey)
+                    .accessibilityIdentifier("\(id).save")
+            }
+        }
+        .confirmationDialog("¿Borrar la key de \(row.provider.displayName)?", isPresented: $confirmDelete,
+                            titleVisibility: .visible) {
+            Button("Borrar", role: .destructive) { model.deleteKey(row.provider) }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text(row.isActive ? "Es el modelo activo: la selección pasa al siguiente con key o al local." : "Se quita del Keychain de este teléfono.")
+        }
     }
 }
 #endif

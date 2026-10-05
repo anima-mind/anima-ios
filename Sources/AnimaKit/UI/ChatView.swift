@@ -23,6 +23,45 @@ public final class ChatViewModel: ObservableObject {
         public var isProactive: Bool = false
         public var intentionId: String?
         public var resolved: Bool = false
+        /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
+        public var isVoice: Bool = false
+        /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
+        public var isSessionDivider: Bool = false
+        /// Foto del turno del dueño (JPEG ya reducido): thumb sobre la burbuja.
+        public var imageData: Data?
+    }
+
+    /// Foto elegida en el composer, esperando el texto opcional del dueño.
+    public struct PendingImage: Sendable, Equatable {
+        public var block: ContentBlock
+        public var thumb: Data
+    }
+
+    public static let photosNeedRemoteNote = "Las fotos necesitan un modelo remoto (Claude, OpenAI o Gemini)."
+
+    public static let sessionDividerText = "— nueva sesión —"
+
+    /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
+    /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
+    /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
+    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
+        func message(_ turn: VisibleTurn) -> DisplayMessage {
+            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                           imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+        }
+        var out = previous.map(message)
+        if !out.isEmpty {
+            out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
+        }
+        out += current.map(message)
+        return out
+    }
+
+    /// Carga el historial al cablearse (antes de cualquier turno nuevo).
+    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = []) {
+        let restored = Self.history(current: current, previous: previous)
+        guard !restored.isEmpty else { return }
+        messages = restored + messages
     }
 
     /// Estado de la mente para el badge y el Mind sheet.
@@ -70,7 +109,19 @@ public final class ChatViewModel: ObservableObject {
     private var shownIntentionIds: Set<String> = []
     /// Track G: el cuerpo-gafas (línea de cuerpo del header + Mind sheet). nil ⇒ solo teléfono.
     public var glasses: GlassesViewModel?
-    private var lastUserText: String?
+    private var lastUserContent: [ContentBlock]?
+    /// Voz desde el composer (mic del TELÉFONO). nil ⇒ el mic no está disponible.
+    public var voice: (any VoiceCapturePort)?
+    /// Listening bar en lugar del composer + transcript en vivo.
+    @Published public private(set) var isListening = false
+    @Published public private(set) var liveTranscript = ""
+    private var voiceCancelled = false
+    /// Foto del composer (cámara o galería) pendiente de enviar.
+    @Published public private(set) var pendingImage: PendingImage?
+    /// Solo-teléfono (FoundationModels) no ve imágenes: el menú lo dice y no adjunta.
+    public var photosAvailable = true
+    /// `--uitest`: el picker es un doble que entrega una imagen fixture.
+    public var injectedPhoto: (@MainActor () -> Data?)?
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
                 selfModel: SelfModel? = nil) {
@@ -122,24 +173,98 @@ public final class ChatViewModel: ObservableObject {
 
     public func send() async {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+        let image = pendingImage
+        guard !text.isEmpty || image != nil, !isStreaming else { return }
         input = ""
-        eventSink.yield(.userText(text))
-        await run(text: text, addUserBubble: true)
+        pendingImage = nil
+        if !text.isEmpty { eventSink.yield(.userText(text)) }
+        var content: [ContentBlock] = []
+        if let image { content.append(image.block) }
+        if !text.isEmpty { content.append(.text(text)) }
+        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb), content: content)
+    }
+
+    // MARK: Foto (cámara / galería → ImageDownscaler → thumb en el composer)
+
+    /// Bytes crudos del picker → ≤1568px JPEG. false si no es imagen o no hay modelo que la vea.
+    @discardableResult
+    public func attachPhoto(_ data: Data) -> Bool {
+        guard let block = ImageDownscaler.imageBlock(from: data) else { return false }
+        return attach(block)
+    }
+
+    /// Image block ya reducido (CameraPicker / PhotoLibraryPicker).
+    @discardableResult
+    public func attach(_ block: ContentBlock) -> Bool {
+        guard photosAvailable, case .image(_, let base64) = block, let thumb = Data(base64Encoded: base64) else {
+            return false
+        }
+        pendingImage = PendingImage(block: block, thumb: thumb)
+        return true
+    }
+
+    /// X del thumb: se envía solo el texto.
+    public func removePhoto() {
+        pendingImage = nil
+    }
+
+    // MARK: Voz (mic del composer → mismo pipeline que las gafas, ruta teléfono)
+
+    /// Tap al mic: listening bar + transcript en vivo; fin por silencio o "Listo".
+    public func startVoice() {
+        guard let voice, !isListening, !isStreaming else { return }
+        isListening = true
+        liveTranscript = ""
+        voiceCancelled = false
+        Task { [weak self] in
+            let transcript = await voice.capture(onRoute: { _ in }, onPartial: { partial in
+                Task { @MainActor in
+                    guard let self, self.isListening else { return }
+                    self.liveTranscript = partial
+                }
+            })
+            await self?.voiceEnded(transcript)
+        }
+    }
+
+    /// "Listo": envía lo oído sin esperar el silencio.
+    public func finishVoice() {
+        guard isListening else { return }
+        voice?.finish()
+    }
+
+    /// X o tap fuera: descarta sin enviar.
+    public func cancelVoice() {
+        guard isListening else { return }
+        voiceCancelled = true
+        isListening = false
+        liveTranscript = ""
+        voice?.cancel()
+    }
+
+    func voiceEnded(_ transcript: String?) async {
+        let cancelled = voiceCancelled
+        isListening = false
+        liveTranscript = ""
+        guard !cancelled else { return }
+        let text = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isStreaming else { return }
+        eventSink.yield(.voiceTranscript(text))
+        await run(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
     }
 
     /// "Try again" del error card: reintenta el último turno sin duplicar la
     /// burbuja del usuario — el mensaje nunca se pierde.
     public func retry() async {
-        guard let text = lastUserText, !isStreaming else { return }
-        await run(text: text, addUserBubble: false)
+        guard let content = lastUserContent, !isStreaming else { return }
+        await run(nil, content: content)
     }
 
-    private func run(text: String, addUserBubble: Bool) async {
+    private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
         errorText = nil
-        lastUserText = text
-        if addUserBubble {
-            messages.append(DisplayMessage(role: .user, text: text))
+        lastUserContent = content
+        if let bubble {
+            messages.append(bubble)
         }
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
@@ -147,7 +272,7 @@ public final class ChatViewModel: ObservableObject {
         let index = messages.count - 1
         isStreaming = true
 
-        for await event in await loop.run(sessionId: sessionId, userText: text) {
+        for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
             switch event {
             case .textDelta(let d):
                 assistant.text += d
@@ -216,7 +341,11 @@ public struct ChatView: View {
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
-    @State private var captureNotice: String?
+    @State private var showPhotoMenu = false
+    @State private var photoSource: PhotoSource?
+    /// Foco del composer: el teclado se cierra al enviar, al arrastrar la
+    /// lista y al tocar el área de mensajes (la tab bar vuelve a verse).
+    @FocusState private var inputFocused: Bool
 
     public init(model: ChatViewModel) {
         self.model = model
@@ -239,6 +368,15 @@ public struct ChatView: View {
                         }
                         .padding(Theme.Space.screenInset)
                     }
+                    .defaultScrollAnchor(.bottom)
+                    .scrollDismissesKeyboard(.interactively)
+                    // Simultáneo: cierra el teclado SIN robarle el tap a la thought
+                    // line, "Reintentar" ni las acciones de las propuestas.
+                    .simultaneousGesture(TapGesture().onEnded {
+                        inputFocused = false
+                        model.cancelVoice()   // tap fuera de la listening bar: descarta
+                    })
+                    .accessibilityIdentifier("chat.messages")
                     .onChange(of: model.messages.last?.text) { _, _ in
                         if let last = model.messages.last {
                             proxy.scrollTo(last.id, anchor: .bottom)
@@ -248,7 +386,13 @@ public struct ChatView: View {
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
                 }
-                composer
+                if model.isListening {
+                    ListeningBar(transcript: model.liveTranscript,
+                                 onDone: { model.finishVoice() },
+                                 onCancel: { model.cancelVoice() })
+                } else {
+                    composer
+                }
             }
         }
         .task {
@@ -261,14 +405,26 @@ public struct ChatView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
         }
-        .alert("Disponible pronto", isPresented: Binding(
-            get: { captureNotice != nil },
-            set: { if !$0 { captureNotice = nil } }
-        )) {
-            Button("Entendido", role: .cancel) {}
+        .confirmationDialog("Foto para Anima", isPresented: $showPhotoMenu, titleVisibility: .visible) {
+            if model.photosAvailable {
+                Button("Tomar foto") { pickPhoto(.camera) }
+                Button("Elegir de la galería") { pickPhoto(.library) }
+            }
+            Button("Cancelar", role: .cancel) {}
         } message: {
-            Text(captureNotice ?? "")
+            if !model.photosAvailable { Text(ChatViewModel.photosNeedRemoteNote) }
         }
+        #if os(iOS)
+        .sheet(item: $photoSource) { source in
+            Group {
+                switch source {
+                case .camera: CameraPicker { model.attach($0) }
+                case .library: PhotoLibraryPicker { model.attach($0) }
+                }
+            }
+            .ignoresSafeArea()
+        }
+        #endif
     }
 
     // MARK: Header (body line + título + badge + regla que se desvanece)
@@ -301,11 +457,19 @@ public struct ChatView: View {
 
     @ViewBuilder
     private func bubble(_ message: ChatViewModel.DisplayMessage) -> some View {
-        switch message.role {
-        case .user:
-            userBubble(message)
-        default:
-            mindMessage(message)
+        if message.isSessionDivider {
+            Text(message.text)
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Theme.Colors.textFaint)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("chat.sessionDivider")
+        } else {
+            switch message.role {
+            case .user:
+                userBubble(message)
+            default:
+                mindMessage(message)
+            }
         }
     }
 
@@ -313,9 +477,24 @@ public struct ChatView: View {
     private func userBubble(_ message: ChatViewModel.DisplayMessage) -> some View {
         HStack {
             Spacer(minLength: 0)
-            Text(message.text)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
+            VStack(alignment: .trailing, spacing: 4) {
+                if let data = message.imageData {
+                    PhotoThumb(data: data, width: 160, height: 110)
+                        .accessibilityIdentifier("chat.userMessage.photo")
+                }
+                if message.isVoice {
+                    Label("voz", systemImage: "waveform")
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .accessibilityIdentifier("chat.userMessage.voice")
+                }
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .accessibilityIdentifier("chat.userMessage")
+                }
+            }
                 .padding(Theme.Space.cardPad)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
@@ -326,7 +505,6 @@ public struct ChatView: View {
                 .containerRelativeFrame(.horizontal, count: 5, span: 4, spacing: 0,
                                         alignment: .trailing)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("chat.userMessage")
         }
     }
 
@@ -360,10 +538,7 @@ public struct ChatView: View {
 
     private func streamedText(_ message: ChatViewModel.DisplayMessage) -> some View {
         HStack(alignment: .bottom, spacing: 4) {
-            Text(message.text)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .fixedSize(horizontal: false, vertical: true)
+            MarkdownMessage(text: message.text)
             if message.isStreaming {
                 StreamCaret()
             }
@@ -571,13 +746,48 @@ public struct ChatView: View {
     // MARK: Composer — cámara (40×40) · campo (surface h40) · mic/send
 
     private var hasDraft: Bool {
-        !model.input.trimmingCharacters(in: .whitespaces).isEmpty
+        !model.input.trimmingCharacters(in: .whitespaces).isEmpty || model.pendingImage != nil
+    }
+
+    enum PhotoSource: String, Identifiable {
+        case camera, library
+        var id: String { rawValue }
+    }
+
+    private func pickPhoto(_ source: PhotoSource) {
+        if let injected = model.injectedPhoto {
+            if let data = injected() { model.attachPhoto(data) }
+        } else {
+            photoSource = source
+        }
+    }
+
+    /// Thumb de la foto pendiente en el composer, con X para quitarla.
+    @ViewBuilder
+    private var attachmentPreview: some View {
+        if let image = model.pendingImage {
+            HStack {
+                ZStack(alignment: .topTrailing) {
+                    PhotoThumb(data: image.thumb, width: 96, height: 66)
+                    NavCloseButton("attachment") { model.removePhoto() }
+                        .offset(x: 14, y: -14)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.attachment")
+                Spacer()
+            }
+            .padding(.horizontal, Theme.Space.screenInset)
+            .padding(.top, Theme.Space.stack)
+        }
     }
 
     private var composer: some View {
+        VStack(spacing: 0) {
+        attachmentPreview
         HStack(spacing: Theme.Space.stack) {
             Button {
-                captureNotice = "La cámara de Anima llega pronto; por ahora escríbele."
+                inputFocused = false
+                showPhotoMenu = true
             } label: {
                 Image(systemName: "camera")
                     .font(.system(size: 16, weight: .light))
@@ -603,14 +813,16 @@ public struct ChatView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: Theme.Radius.control)
                         .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                .onSubmit { Task { await model.send() } }
+                .focused($inputFocused)
+                .onSubmit { inputFocused = false; Task { await model.send() } }
                 .accessibilityIdentifier("chat.input")
 
             Button {
+                inputFocused = false
                 if hasDraft {
                     Task { await model.send() }
                 } else {
-                    captureNotice = "Las notas de voz llegan pronto; por ahora escríbele."
+                    model.startVoice()
                 }
             } label: {
                 Image(systemName: hasDraft ? "arrow.up" : "mic")
@@ -622,10 +834,12 @@ public struct ChatView: View {
                             .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
             }
             .buttonStyle(.plain)
-            .disabled(model.isStreaming && hasDraft)
-            .accessibilityIdentifier("chat.send")
+            .disabled(model.isStreaming || (!hasDraft && model.voice == nil))
+            .accessibilityLabel(hasDraft ? "Enviar" : "Hablar")
+            .accessibilityIdentifier(hasDraft ? "chat.send" : "chat.mic")
         }
         .padding(Theme.Space.screenInset)
+        }
     }
 }
 
@@ -731,6 +945,7 @@ public struct PlasticityBadge: View {
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
     let glasses: GlassesViewModel?
+    @Environment(\.dismiss) private var dismiss
 
     public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
         self.mind = mind
@@ -781,6 +996,7 @@ public struct MindSheet: View {
             }
             .padding(.top, Theme.Space.sectionGap)
         }
+        .overlay(alignment: .topTrailing) { NavCloseButton("mind") { dismiss() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mind.sheet")
     }
@@ -799,6 +1015,130 @@ public struct MindSheet: View {
         .padding(.horizontal, Theme.Space.cardPad)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("mind.row.\(id)")
+    }
+}
+
+/// El texto del asistente con markdown: prosa inline + bloques de código en
+/// vista monoespaciada sobre surface (accent jamás de relleno). Re-parsea el
+/// mensaje completo en cada delta (ChatMarkdown): sin parpadeos por fragmento.
+struct MarkdownMessage: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(ChatMarkdown.segments(text).enumerated()), id: \.offset) { _, segment in
+                switch segment {
+                case .text(let attributed):
+                    Text(attributed)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .tint(Theme.Colors.accentText)
+                        .fixedSize(horizontal: false, vertical: true)
+                case .code(let code, _):
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(code)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(Theme.Colors.text)
+                            .textSelection(.enabled)
+                            .padding(Theme.Space.cardPad)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                            .fill(Theme.Colors.surface))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.card)
+                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                }
+            }
+        }
+    }
+}
+
+/// Listening bar (components.md): borde accent, 5 barras de onda escalonadas,
+/// "Escuchando…" + transcript en vivo, acción de texto "Listo" y X para descartar.
+struct ListeningBar: View {
+    let transcript: String
+    let onDone: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.Space.stack) {
+            NavCloseButton("listening", action: onCancel)
+            VoiceWave()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Escuchando…")
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                if !transcript.isEmpty {
+                    Text(transcript)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .lineLimit(3)
+                        .accessibilityIdentifier("chat.listening.transcript")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Listo", action: onDone)
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.accentText)
+                .frame(minHeight: Theme.minHitTarget)
+                .accessibilityIdentifier("chat.voice.done")
+        }
+        .padding(.horizontal, Theme.Space.unit)
+        .padding(.vertical, 6)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.control)
+                .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+        .padding(Theme.Space.screenInset)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.listeningBar")
+    }
+}
+
+/// 5 barras de onda escalonadas (Theme.Motion.voiceWave, stagger 0.15).
+struct VoiceWave: View {
+    @State private var up = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<5, id: \.self) { i in
+                Capsule()
+                    .fill(Theme.Colors.accent)
+                    .frame(width: 3, height: up ? 18 : 6)
+                    .animation(.easeInOut(duration: Theme.Motion.voiceWave)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(i) * Theme.Motion.voiceWaveStagger), value: up)
+            }
+        }
+        .frame(height: 20)
+        .onAppear { up = true }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Miniatura de una foto (radius 8, recorte .fill). Sin UIKit, un placeholder.
+struct PhotoThumb: View {
+    let data: Data
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Group {
+            #if canImport(UIKit)
+            if let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Theme.Colors.surface
+            }
+            #else
+            Theme.Colors.surface
+            #endif
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
+            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
     }
 }
 #endif

@@ -7,6 +7,8 @@
 #if os(iOS) && canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import PhotosUI
+import UniformTypeIdentifiers
 
 /// Hoja de captura de foto (UIImagePickerController, sourceType .camera). Entrega
 /// un image block ya downscaleado (≤1568px, JPEG) para el turno multimodal.
@@ -44,6 +46,46 @@ public struct CameraPicker: UIViewControllerRepresentable {
 
         public func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.dismiss()
+        }
+    }
+}
+
+/// Galería (PHPickerViewController): corre fuera del proceso, SIN permiso TCC.
+/// Solo imágenes, selección única → image block ≤1568px JPEG.
+public struct PhotoLibraryPicker: UIViewControllerRepresentable {
+    private let onPick: (ContentBlock) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    public init(onPick: @escaping (ContentBlock) -> Void) {
+        self.onPick = onPick
+    }
+
+    public func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    public func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    public func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    public final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let parent: PhotoLibraryPicker
+        init(_ parent: PhotoLibraryPicker) { self.parent = parent }
+
+        public func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            parent.dismiss()
+            guard let provider = results.first?.itemProvider,
+                  provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else { return }
+            nonisolated(unsafe) let onPick = parent.onPick   // se invoca en main
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                guard let data, let block = ImageDownscaler.imageBlock(from: data) else { return }
+                DispatchQueue.main.async { onPick(block) }
+            }
         }
     }
 }

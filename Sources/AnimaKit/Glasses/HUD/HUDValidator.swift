@@ -10,6 +10,7 @@ import Foundation
 public extension HUDActionID {
     static let back: HUDActionID = "back"
     static let talk: HUDActionID = "talk"
+    static let photo: HUDActionID = "photo"
     static let cancel: HUDActionID = "cancel"
     static let send: HUDActionID = "send"
     static let again: HUDActionID = "again"

@@ -11,6 +11,8 @@ import Foundation
 public enum HUDScreen: Sendable, Equatable {
     /// Raíz. G0: la card estática de bienvenida "anima 👋" con el estado corporal.
     case home(status: String?)
+    /// Foto iniciada por el dueño con el botón "Foto" de la Home (sin confirmación).
+    case capturing
     /// Captura de voz activa. `viaPhone` = degradó al micrófono del teléfono.
     case listening(viaPhone: Bool)
     /// Transcript mostrado ANTES de enviarlo (regla del handoff).
@@ -41,8 +43,18 @@ public enum HUDRenderer {
                               body: status ?? "Tu mente, ahora también en tus gafas.",
                               group: HUDButtonGroup(alignment: .start, buttons: [
                                   HUDButton("Hablar", style: .primary, icon: .speechBubble, action: .talk),
+                                  HUDButton("Foto", style: .secondary, icon: .videoCamera, action: .photo),
                               ]))),
             ]), isRoot: true)
+
+        case .capturing:
+            return HUDView(name: "capturing", root: root(back: true, [
+                .flexBox(card(icon: .videoCamera, meta: "Cámara", heading: "Tomando la foto…",
+                              body: "Mantén la mirada en lo que quieres mostrar.", bodySecondary: true,
+                              group: HUDButtonGroup(alignment: .end, buttons: [
+                                  HUDButton("Cancelar", style: .outline, icon: .x, action: .cancel),
+                              ]))),
+            ]))
 
         case .listening(let viaPhone):
             return HUDView(name: "listening", root: root(back: true, [
@@ -60,8 +72,8 @@ public enum HUDRenderer {
                 .flexBox(card(icon: .speechBubble, meta: "Te escuché",
                               body: "“" + HUDSummary.clip(transcript, HUDValidator.bodyLimit - 2) + "”",
                               group: HUDButtonGroup(alignment: .end, buttons: [
-                                  HUDButton("Otra vez", style: .outline, icon: .speechBubble, action: .again),
-                                  HUDButton("Enviar", style: .primary, icon: .checkmarkCircle, action: .send),
+                                  HUDButton("Otra vez", style: .outline, icon: .twoArrowsClockwise, action: .again),
+                                  HUDButton("Enviar", style: .primary, icon: .paperAirplane, action: .send),
                               ]))),
             ]))
 

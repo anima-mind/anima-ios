@@ -88,7 +88,28 @@ struct UITestScriptedProvider: Provider {
         case calendarTool
     }
 
+    /// Taller de skills (FIX A): borrador fijo + la siguiente pregunta.
+    static let skillReply = """
+        <skill>
+        ---
+        name: regar-plantas
+        description: Recuerda y guía el riego de las plantas de la casa
+        when: regar las plantas, riego, plantas de la casa
+        ---
+        1. Pregunta qué plantas toca regar hoy.
+        2. Recuerda que el helecho va cada dos días.
+        </skill>
+        ¿Algo más o lo cambio?
+        """
+
     static func plan(for ctx: AssembledContext) -> Plan {
+        let inWorkshop = ctx.messages.contains { message in
+            message.role == .system && message.content.contains { block in
+                if case .text(let t) = block { return t.contains(SkillWorkshopSession.marker) }
+                return false
+            }
+        }
+        if inWorkshop { return .text(skillReply) }
         guard let last = ctx.messages.last(where: { $0.role == .user }) else { return .text(fixedReply) }
         for block in last.content {
             if case .toolResult(_, let content, let isError) = block {
@@ -114,8 +135,9 @@ struct UITestScriptedProvider: Provider {
                     // Resumen de razonamiento: la thought line queda en pantalla
                     // (expandible) para ejercitar su tap con el teclado abierto.
                     continuation.yield(.thinkingDelta(Self.thought))
+                    let delay: Duration = reply == Self.skillReply ? .milliseconds(40) : Self.chunkDelay
                     for chunk in Self.chunks(reply) {
-                        try? await Task.sleep(for: Self.chunkDelay)
+                        try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }
                         continuation.yield(.textDelta(chunk))
                     }

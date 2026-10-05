@@ -1,6 +1,6 @@
 // SettingsUITests.swift — Ajustes como hub (FIX F): filas con resumen vivo que
 // pushean sub-pantallas. Modelo (los 3 modos, availability fake = disponible),
-// Cuenta con el mock (sin cuenta) y "Repetir onboarding".
+// Cuenta con el mock (sin cuenta), "Repetir onboarding" y el taller de skills.
 
 import XCTest
 
@@ -79,5 +79,42 @@ final class SettingsUITests: AnimaUITestCase {
         }
         waitFor(title)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
+    }
+
+    /// FIX A: Ajustes → Skills → "Enséñame algo" → conversación → borrador vivo →
+    /// Guardar → la skill aparece en la lista (sesión efímera, provider guionado).
+    @MainActor
+    func testTeachSkillConversationallyAppearsInList() {
+        let app = launch()
+        onboard(app)
+        openSettings(app, "skills")
+
+        waitFor(element(app, "skills.explainer"))
+        // "Ver ejemplo": el markdown de una seed en un sheet de solo lectura.
+        tap(element(app, "skills.example"))
+        waitFor(element(app, "skills.exampleSheet"))
+        tap(app.buttons["nav.close.skillExample"])
+        waitUntil(element(app, "skills.exampleSheet"), "exists == false")
+
+        XCTAssertFalse(element(app, "skills.row.regar-plantas").exists)
+        tap(element(app, "skills.new"))
+        waitFor(element(app, "workshop.screen"))
+        waitFor(text(app, "Enséñame algo. ¿Qué quieres que aprenda a hacer?"))
+
+        let input = app.textFields["workshop.input"]
+        tap(input)
+        input.typeText("Regar las plantas de la casa")
+        tap(app.buttons["workshop.send"])
+
+        // El borrador vivo (card colapsable) + la siguiente pregunta.
+        waitFor(element(app, "workshop.draft"), timeout: 20)
+        waitFor(text(app, "¿Algo más o lo cambio?"))
+        let save = element(app, "workshop.save")
+        waitFor(save)
+        tap(save)
+
+        // De vuelta en la lista: la skill nueva aparece al instante (hot-reload).
+        waitFor(element(app, "skills.row.regar-plantas"), timeout: 10)
+        XCTAssertFalse(element(app, "workshop.screen").exists)
     }
 }

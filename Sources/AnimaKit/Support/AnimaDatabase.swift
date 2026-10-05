@@ -113,6 +113,14 @@ public enum AnimaDatabase {
         return queue
     }
 
+    /// Base en memoria (jamás toca disco): sesiones efímeras de propósito como el
+    /// taller de skills — su transcript muere con la pantalla.
+    public static func inMemory() throws -> DatabaseQueue {
+        let queue = try DatabaseQueue()
+        try migrator().migrate(queue)
+        return queue
+    }
+
     /// Base efímera en un archivo temporal único — para tests y previews.
     public static func temporary() throws -> DatabaseQueue {
         let url = FileManager.default.temporaryDirectory

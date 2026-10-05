@@ -326,6 +326,7 @@ public final class SettingsViewModel: ObservableObject {
         guard let selfModel else { mindSummary = ""; return }
         let cycles = await selfModel.cycles()
         mindSummary = Self.mindLine(cycles: cycles)
+        skills?.selfName = await selfModel.name()
     }
 
     public static func mindLine(cycles: Int) -> String {
@@ -421,9 +422,7 @@ public struct SettingsView: View {
                 ModelSettingsContent(model: model)
             }
         case .skills:
-            if let skills = model.skills {
-                SettingsSubScreen(title: "Skills") { SkillsSettingsSection(model: skills) }
-            }
+            if let skills = model.skills { SkillsSettingsScreen(model: skills) }
         case .glasses:
             if let glasses = model.glasses {
                 SettingsSubScreen(title: "Gafas") { GlassesSettingsSection(model: glasses) }

@@ -211,7 +211,11 @@ final class AppModel: ObservableObject {
                                          to: skillsDir)
             let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
             self.skillEngine = skillEngine
-            settings.skills = SkillsViewModel(engine: skillEngine)
+            let skills = SkillsViewModel(engine: skillEngine, library: SkillLibrary(directory: skillsDir))
+            skills.exampleMarkdown = Bundle.main.url(forResource: "Skills", withExtension: nil)
+                .flatMap { try? String(contentsOf: $0.appendingPathComponent("nota-diaria.md"), encoding: .utf8) }
+            skills.makeVoice = { Self.makePhoneVoice() }
+            settings.skills = skills
             settings.selfModel = selfModel
             settings.glasses = glassesModel
             self.settingsModel = settings
@@ -371,6 +375,14 @@ final class AppModel: ObservableObject {
             }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
             if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
+        }
+
+        // Taller de skills (FIX A): sesión EFÍMERA sobre el córtex activo — no
+        // toca el SymbolicStore del hilo principal ni el inbox del sueño.
+        let workshopSelf = selfModel
+        settingsModel?.skills?.makeSession = { mode in
+            try SkillWorkshopSession.make(selector: selector, telemetry: telemetry,
+                                          selfModel: workshopSelf, mode: mode)
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.

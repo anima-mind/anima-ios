@@ -29,6 +29,8 @@ public final class ChatViewModel: ObservableObject {
         public var isSessionDivider: Bool = false
         /// Foto del turno del dueño (JPEG ya reducido): thumb sobre la burbuja.
         public var imageData: Data?
+        /// Solo-teléfono: la foto viajó como descripción de texto (FIX G).
+        public var photoSentAsText: Bool = false
     }
 
     /// Foto elegida en el composer, esperando el texto opcional del dueño.
@@ -124,6 +126,16 @@ public final class ChatViewModel: ObservableObject {
     public var photosAvailable = true
     /// `--uitest`: el picker es un doble que entrega una imagen fixture.
     public var injectedPhoto: (@MainActor () -> Data?)?
+    /// Etiquetas on-device de una foto (Vision) para cuando el córtex no ve imágenes.
+    public var describeImage: @Sendable (Data) async -> [String] = { await ImageDescriber.labels(for: $0) }
+
+    /// Aviso honesto en el composer: hay foto adjunta y el modelo activo no la ve.
+    public var pendingImageNotice: String? {
+        pendingImage != nil && !photosAvailable ? ImageDescriber.notice : nil
+    }
+
+    /// Placeholder del campo: con adjunto, el hint de que falta el paso de enviar.
+    public var inputPlaceholder: String { pendingImage == nil ? "Mensaje" : "Agrega un mensaje…" }
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
                 selfModel: SelfModel? = nil) {
@@ -183,9 +195,19 @@ public final class ChatViewModel: ObservableObject {
         pendingImage = nil
         if !text.isEmpty { eventSink.yield(.userText(text)) }
         var content: [ContentBlock] = []
-        if let image { content.append(image.block) }
+        var asText = false
+        if let image {
+            if photosAvailable {
+                content.append(image.block)
+            } else {
+                // Solo-teléfono no ve imágenes: la foto va como descripción (avisado), jamás en silencio.
+                asText = true
+                content.append(.text(ImageDescriber.textBlock(labels: await describeImage(image.thumb))))
+            }
+        }
         if !text.isEmpty { content.append(.text(text)) }
-        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb), content: content)
+        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
+                  content: content)
     }
 
     // MARK: Foto (cámara / galería → ImageDownscaler → thumb en el composer)
@@ -347,6 +369,8 @@ public struct ChatView: View {
     @State private var showMindSheet = false
     @State private var showPhotoMenu = false
     @State private var photoSource: PhotoSource?
+    /// Visor fullscreen de una foto (thumb del composer o de una burbuja).
+    @State private var viewerImage: ViewerImage?
     /// Foco del composer: el teclado se cierra al enviar, al arrastrar la
     /// lista y al tocar el área de mensajes (la tab bar vuelve a verse).
     @FocusState private var inputFocused: Bool
@@ -428,6 +452,13 @@ public struct ChatView: View {
             }
             .ignoresSafeArea()
         }
+        .fullScreenCover(item: $viewerImage) { image in
+            ImageViewer(data: image.data) { viewerImage = nil }
+        }
+        #else
+        .sheet(item: $viewerImage) { image in
+            ImageViewer(data: image.data) { viewerImage = nil }
+        }
         #endif
     }
 
@@ -497,8 +528,18 @@ public struct ChatView: View {
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 4) {
                 if let data = message.imageData {
-                    PhotoThumb(data: data, width: 160, height: 110)
-                        .accessibilityIdentifier("chat.userMessage.photo")
+                    Button { viewerImage = ViewerImage(data: data) } label: {
+                        PhotoThumb(data: data, width: 160, height: 110)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Ver foto")
+                    .accessibilityIdentifier("chat.userMessage.photo")
+                    if message.photoSentAsText {
+                        Text("enviada como descripción")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .accessibilityIdentifier("chat.userMessage.photoAsText")
+                    }
                 }
                 if message.isVoice {
                     Label("voz", systemImage: "waveform")
@@ -780,29 +821,51 @@ public struct ChatView: View {
         }
     }
 
-    /// Thumb de la foto pendiente en el composer, con X para quitarla.
+    /// Adjunto PENDIENTE dentro del contenedor del composer (FIX G): misma card
+    /// que el campo, encima del input, con etiqueta "Adjunta · lista para enviar"
+    /// y la X. Jamás flota en el historial (parecía mensaje ya enviado).
     @ViewBuilder
-    private var attachmentPreview: some View {
+    private var pendingAttachment: some View {
         if let image = model.pendingImage {
-            HStack {
-                ZStack(alignment: .topTrailing) {
-                    PhotoThumb(data: image.thumb, width: 96, height: 66)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: Theme.Space.stack) {
+                    Button { viewerImage = ViewerImage(data: image.thumb) } label: {
+                        PhotoThumb(data: image.thumb, width: 72, height: 52)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Ver foto adjunta")
+                    .accessibilityIdentifier("chat.attachment.thumb")
+                    HStack(spacing: 4) {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 11, weight: .light))
+                        Text("Adjunta · lista para enviar")
+                    }
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.textMuted)
+                    .padding(.top, 4)
+                    Spacer(minLength: 0)
                     NavCloseButton("attachment") { model.removePhoto() }
-                        .offset(x: 14, y: -14)
+                        .frame(width: 32, height: 32)
                 }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.attachment")
-                Spacer()
+                if let notice = model.pendingImageNotice {
+                    Text(notice)
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("chat.attachment.notice")
+                }
             }
-            .padding(.horizontal, Theme.Space.screenInset)
-            .padding(.top, Theme.Space.stack)
+            .padding(.horizontal, Theme.Space.cardPad)
+            .padding(.top, 10)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("chat.attachment.pending")
+            Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
+                .padding(.horizontal, Theme.Space.cardPad)
         }
     }
 
     private var composer: some View {
-        VStack(spacing: 0) {
-        attachmentPreview
-        HStack(spacing: Theme.Space.stack) {
+        HStack(alignment: .bottom, spacing: Theme.Space.stack) {
             Button {
                 inputFocused = false
                 showPhotoMenu = true
@@ -818,22 +881,28 @@ public struct ChatView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("chat.camera")
 
-            TextField("Mensaje", text: $model.input, axis: .vertical)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .lineLimit(1...4)
-                .padding(.horizontal, Theme.Space.cardPad)
-                .padding(.vertical, 10)
-                .frame(minHeight: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.Radius.control)
-                        .fill(Theme.Colors.surface))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.control)
-                        .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                .focused($inputFocused)
-                .onSubmit { inputFocused = false; Task { await model.send() } }
-                .accessibilityIdentifier("chat.input")
+            // Contenedor único que crece: adjunto (si hay) + campo.
+            VStack(alignment: .leading, spacing: 0) {
+                pendingAttachment
+                TextField(model.inputPlaceholder, text: $model.input, axis: .vertical)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, Theme.Space.cardPad)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 40)
+                    .focused($inputFocused)
+                    .onSubmit { inputFocused = false; Task { await model.send() } }
+                    .accessibilityIdentifier("chat.input")
+            }
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .fill(Theme.Colors.surface))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .strokeBorder(model.pendingImage == nil ? Theme.Colors.border : Theme.Colors.accent,
+                                  lineWidth: Theme.Stroke.hairline))
+            .animation(.easeOut(duration: 0.2), value: model.pendingImage != nil)
 
             Button {
                 inputFocused = false
@@ -857,8 +926,21 @@ public struct ChatView: View {
             .accessibilityIdentifier(hasDraft ? "chat.send" : "chat.mic")
         }
         .padding(Theme.Space.screenInset)
+        // Unidad anclada abajo: el historial scrollea por detrás, separado por la regla.
+        .background(Theme.Colors.bg)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.Colors.border.opacity(model.pendingImage == nil ? 0 : 1))
+                .frame(height: Theme.Stroke.hairline)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.composer")
     }
+}
+
+/// Foto a mostrar en el visor (thumb del composer o de una burbuja).
+struct ViewerImage: Identifiable {
+    let id = UUID()
+    let data: Data
 }
 
 // MARK: - Línea de cuerpo (header): "solo teléfono" | "gafas conectadas"…
@@ -1136,28 +1218,34 @@ struct VoiceWave: View {
     }
 }
 
-/// Miniatura de una foto (radius 8, recorte .fill). Sin UIKit, un placeholder.
+/// Miniatura de una foto (radius 8, recorte .fill). Decode ASYNC y reducido
+/// (ImageLoader, FIX G): jamás UIImage(data:) síncrono en el body; spinner
+/// sutil mientras carga.
 struct PhotoThumb: View {
     let data: Data
     let width: CGFloat
     let height: CGFloat
+    @State private var image: CGImage?
+    @State private var failed = false
 
     var body: some View {
-        Group {
-            #if canImport(UIKit)
-            if let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFill()
-            } else {
-                Theme.Colors.surface
-            }
-            #else
+        ZStack {
             Theme.Colors.surface
-            #endif
+            if let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            } else if !failed {
+                ProgressView().controlSize(.small).tint(Theme.Colors.accent)
+                    .accessibilityIdentifier("photo.loading")
+            }
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
             .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+        .task(id: data) {
+            image = await ImageLoader.load(data, maxPixel: ImageLoader.thumbMaxPixel)
+            failed = image == nil
+        }
     }
 }
 #endif

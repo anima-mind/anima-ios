@@ -31,7 +31,9 @@ public struct RemindersTool: SensorimotorTool {
         .client(
             name: "reminders",
             description: """
-                Recordatorios del dueño (EventKit). Acciones: list (pendientes o \
+                Recordatorios del iPhone/agenda del dueño (app Recordatorios, EventKit). \
+                Úsala solo si pide explícitamente sus recordatorios del iPhone; para \
+                "recuérdame X" personal usa anima_reminders. Acciones: list (pendientes o \
                 vencidos), create (nuevo recordatorio con fecha opcional), complete \
                 (marcar como hecho por id). Crear y completar requieren confirmación.
                 """,

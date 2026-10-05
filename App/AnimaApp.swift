@@ -39,7 +39,10 @@ struct AnimaApp: App {
             }
             app.glassesForeground(phase == .active)
             // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
-            if phase == .active { app.refreshMind() }
+            if phase == .active {
+                app.refreshMind()
+                app.didBecomeActive()
+            }
         }
     }
 }
@@ -86,6 +89,11 @@ final class AppModel: ObservableObject {
     // Fase 4: el deseo del Otro y el motor del pulso.
     private var otherModel: OtherModel?
     private var desireEngine: DesireEngine?
+    // Capa proactiva: recordatorios de Anima, notificaciones locales y la
+    // reconciliación de lo vencido mientras la app no miraba.
+    private var reminderStore: AnimaReminderStore?
+    private var proactiveScheduler: ProactiveScheduler?
+    private var reconciler: ProactiveReconciler?
     // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
     private var skillEngine: SkillEngine?
     // Track G (doc 05): el segundo cuerpo opcional. Sin gafas todo sigue igual.
@@ -191,6 +199,14 @@ final class AppModel: ObservableObject {
             self.otherModel = otherModel
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
+            let reminderStore = AnimaReminderStore(queue: queue)
+            let notifications: any LocalNotificationScheduler = UITestMode.isActive
+                ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
+            self.reminderStore = reminderStore
+            self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
+                                                         otherModel: otherModel,
+                                                         selfName: { await selfModel.name() })
+            self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
             // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
@@ -342,7 +358,7 @@ final class AppModel: ObservableObject {
             selector: selector,
             store: store,
             telemetry: telemetry,
-            clientTools: Self.tools(glasses: glassesHost),
+            clientTools: Self.tools(glasses: glassesHost, reminders: reminderStore, proactive: proactiveScheduler),
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
             serverTools: [],
@@ -421,6 +437,21 @@ final class AppModel: ObservableObject {
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
+        await reconcileProactive()
+    }
+
+    /// Recordatorios vencidos → mensajes de Anima en el chat + re-sync de las
+    /// notificaciones locales (al abrir, al volver a foreground y en background).
+    func reconcileProactive() async {
+        guard let reconciler, let activeSessionId else { return }
+        let delivered = await reconciler.reconcileDueReminders(sessionId: activeSessionId)
+        chatModel?.appendProactive(delivered)
+        await proactiveScheduler?.sync()
+    }
+
+    func didBecomeActive() {
+        guard phase == .ready else { return }
+        Task { await reconcileProactive() }
     }
 
     /// Sesión activa del proceso: se decide UNA vez al abrir (Recovery.decideLaunch:
@@ -492,8 +523,9 @@ final class AppModel: ObservableObject {
     /// el dueño desde la app (pendiente de verificación en device); el contrato y
     /// el pipeline puro ya viven en AnimaKit. Las de gafas se declaran SIEMPRE
     /// (prefijo cacheado estable, doc 05 §5); sin gafas responden "no conectadas".
-    static func tools(glasses: LateBoundGlassesHost) -> [any SensorimotorTool] {
-        [
+    static func tools(glasses: LateBoundGlassesHost, reminders: AnimaReminderStore?,
+                      proactive: ProactiveScheduler?) -> [any SensorimotorTool] {
+        var tools: [any SensorimotorTool] = [
             CalendarTool(),
             RemindersTool(),
             NotesTool(),
@@ -503,6 +535,10 @@ final class AppModel: ObservableObject {
             GlassesShowTool(host: glasses),
             GlassesCameraTool(host: glasses),
         ]
+        if let reminders {
+            tools.append(AnimaRemindersTool(store: reminders, onChange: { await proactive?.sync() }))
+        }
+        return tools
     }
 
     // MARK: - Gafas (track G)
@@ -582,6 +618,14 @@ final class AppModel: ObservableObject {
         case .glasses:
             guard let glassesActivation else { return }
             Task { await glassesActivation.userRequested() }
+        case .reminder(let id):
+            selectedTab = .chat
+            Task {
+                await reconcileProactive()
+                chatModel?.focus(.reminder(id: id))
+            }
+        case .goal, .intention:
+            selectedTab = .chat
         }
     }
 

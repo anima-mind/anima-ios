@@ -119,28 +119,55 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case chat(turn: UUID?)
     /// Re-entrada a las gafas tras un back físico (activa el cuerpo de nuevo).
     case glasses
+    /// Un recordatorio de Anima entregado: chat con el foco en su mensaje.
+    case reminder(id: String)
+    /// El check-in de una meta: chat con la pregunta de seguimiento.
+    case goal(id: String)
+    /// Una Intention del pulso en background: chat con el foco en la propuesta.
+    case intention(id: String)
 
     public static let scheme = "anima"
 
     public var url: URL {
+        var components = URLComponents()
+        components.scheme = Self.scheme
         switch self {
         case .chat(let turn):
-            var components = URLComponents()
-            components.scheme = Self.scheme
             components.host = "chat"
             if let turn { components.queryItems = [URLQueryItem(name: "turn", value: turn.uuidString)] }
-            return components.url!
         case .glasses:
-            return URL(string: "\(Self.scheme)://glasses")!
+            components.host = "glasses"
+        case .reminder(let id):
+            components.host = "reminder"
+            components.queryItems = [URLQueryItem(name: "id", value: id)]
+        case .goal(let id):
+            components.host = "goal"
+            components.queryItems = [URLQueryItem(name: "id", value: id)]
+        case .intention(let id):
+            components.host = "intention"
+            components.queryItems = [URLQueryItem(name: "id", value: id)]
         }
+        return components.url!
     }
 
     public static func parse(_ url: URL) -> AnimaDeepLink? {
         guard url.scheme?.lowercased() == scheme,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        if components.host?.lowercased() == "glasses" { return .glasses }
-        guard components.host?.lowercased() == "chat" else { return nil }
-        let turn = components.queryItems?.first { $0.name == "turn" }?.value.flatMap(UUID.init(uuidString:))
-        return .chat(turn: turn)
+        let id = components.queryItems?.first { $0.name == "id" }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        switch components.host?.lowercased() {
+        case "glasses":
+            return .glasses
+        case "chat":
+            let turn = components.queryItems?.first { $0.name == "turn" }?.value.flatMap(UUID.init(uuidString:))
+            return .chat(turn: turn)
+        case "reminder":
+            return id.map { .reminder(id: $0) }
+        case "goal":
+            return id.map { .goal(id: $0) }
+        case "intention":
+            return id.map { .intention(id: $0) }
+        default:
+            return nil
+        }
     }
 }

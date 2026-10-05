@@ -26,6 +26,15 @@ echo "Simulador: $UDID"
 xcrun simctl bootstatus "$UDID" -b
 xcrun simctl privacy "$UDID" reset calendar,reminders,contacts "$BUNDLE_ID" 2>/dev/null || true
 
+# Runners de CI (fríos/lentos): todas las esperas ×2. xcodebuild pasa al test
+# runner las vars con prefijo TEST_RUNNER_ (sin el prefijo); la base de la suite
+# lo reenvía a la app (voz guionada). Local: escala 1 salvo override explícito.
+if [[ "${CI:-}" == "true" && -z "${UITEST_TIMEOUT_SCALE:-}" ]]; then
+  export UITEST_TIMEOUT_SCALE=2
+fi
+export TEST_RUNNER_UITEST_TIMEOUT_SCALE="${UITEST_TIMEOUT_SCALE:-1}"
+echo "UITEST_TIMEOUT_SCALE=$TEST_RUNNER_UITEST_TIMEOUT_SCALE"
+
 (cd "$ROOT" && xcodegen generate --spec App/project.yml)
 rm -rf "$RESULT"
 xcodebuild test \

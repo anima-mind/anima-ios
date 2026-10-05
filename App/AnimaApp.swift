@@ -150,6 +150,8 @@ final class AppModel: ObservableObject {
             let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
             let activation = GlassesActivation(body: glassesBody, reentry: {
                 await MainActor.run { HandoffNotifications.post(.glasses, body: HandoffNotifications.reentryText) }
+            }, events: { [telemetry] row in
+                try? telemetry.recordGlassesEvent(row)
             })
             self.glassesBody = glassesBody
             self.glassesActivation = activation

@@ -69,9 +69,9 @@ final class ChatUITests: AnimaUITestCase {
         onboard(app)
 
         tap(app.buttons["chat.mic"])
-        waitFor(element(app, "chat.listeningBar"))
-        waitFor(text(app, "Escuchando…"))
-        waitFor(element(app, "chat.listening.transcript"))
+        // Por identifier (no por el texto literal): la barra vive ~1.5 s × escala.
+        waitFor(element(app, "chat.listening.label"), timeout: 30)
+        waitFor(element(app, "chat.listening.transcript"), timeout: 30)
         // Fin por silencio (voz guionada ≈1.5 s): la barra se va y el turno entra.
         let bubble = app.staticTexts.matching(identifier: "chat.userMessage")
             .matching(NSPredicate(format: "label == 'hola por voz'")).firstMatch

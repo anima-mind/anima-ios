@@ -8,8 +8,20 @@ import XCTest
 let fixedReply = "Hola, soy Anima en modo de prueba. Te escucho."
 
 class AnimaUITestCase: XCTestCase {
-    /// Timeout por defecto de cada espera explícita.
-    let timeout: TimeInterval = 15
+    /// Multiplicador de TODAS las esperas (runners lentos). Lo fija el entorno
+    /// del test runner: `UITEST_TIMEOUT_SCALE` (scripts/ui-test.sh exporta
+    /// `TEST_RUNNER_UITEST_TIMEOUT_SCALE=2` cuando CI=true; xcodebuild quita el
+    /// prefijo). Default 1; nunca < 1. Se reenvía a la app (voz guionada).
+    static let timeoutScale: Double = {
+        let raw = ProcessInfo.processInfo.environment["UITEST_TIMEOUT_SCALE"].flatMap(Double.init) ?? 1
+        return max(1, raw)
+    }()
+
+    /// Timeout por defecto de cada espera explícita (15 s × escala).
+    var timeout: TimeInterval { scaled(15) }
+
+    /// Escala un timeout explícito.
+    func scaled(_ seconds: TimeInterval) -> TimeInterval { seconds * Self.timeoutScale }
 
     override func setUp() {
         super.setUp()
@@ -22,6 +34,7 @@ class AnimaUITestCase: XCTestCase {
     func makeApp(reset: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitest"] + (reset ? ["--uitest-reset"] : [])
+        app.launchEnvironment["UITEST_TIMEOUT_SCALE"] = String(Self.timeoutScale)
         return app
     }
 
@@ -40,7 +53,7 @@ class AnimaUITestCase: XCTestCase {
     func waitFor(_ element: XCUIElement, timeout: TimeInterval? = nil,
                  file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         if element.exists { return element }
-        XCTAssertTrue(element.waitForExistence(timeout: timeout ?? self.timeout),
+        XCTAssertTrue(element.waitForExistence(timeout: timeout.map(scaled) ?? self.timeout),
                       "No apareció: \(element)", file: file, line: line)
         return element
     }
@@ -61,7 +74,7 @@ class AnimaUITestCase: XCTestCase {
         for _ in 0..<attempts {
             tap(element, file: file, line: line)
             let expectation = XCTNSPredicateExpectation(predicate: predicate, object: effect)
-            if XCTWaiter().wait(for: [expectation], timeout: 3) == .completed { return }
+            if XCTWaiter().wait(for: [expectation], timeout: scaled(3)) == .completed { return }
         }
         XCTFail("Sin efecto tras \(attempts) taps en \(element): '\(format)' en \(effect)", file: file, line: line)
     }
@@ -74,7 +87,7 @@ class AnimaUITestCase: XCTestCase {
         // Camino rápido: si ya se cumple, no se paga el polling de 1 s del waiter.
         if element.exists, predicate.evaluate(with: element) { return }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        let result = XCTWaiter().wait(for: [expectation], timeout: timeout ?? self.timeout)
+        let result = XCTWaiter().wait(for: [expectation], timeout: timeout.map(scaled) ?? self.timeout)
         XCTAssertEqual(result, .completed, "No se cumplió '\(format)' en \(element)", file: file, line: line)
     }
 

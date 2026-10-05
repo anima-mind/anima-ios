@@ -34,6 +34,7 @@ struct HUDTests {
             #expect(view.buttons.count <= 3)
             #expect(view.actions.count <= 4)
             if !view.isRoot { #expect(view.actions.contains(.back), "\(view.name) sin Atrás") }
+            #expect(view.buttons.filter(\.isPrimaryAction).count <= 1, "\(view.name): máximo un foco")
         }
     }
 
@@ -121,6 +122,7 @@ struct HUDTests {
             .textTooLong(style: .body, count: 300, limit: 200), .emptyText, .emptyButtonGroup,
             .invalidImageURI("x"), .tooDeep(6), .invalidNumber("spacing"), .unknownComponent("slider"),
             .unknownValue(field: "icon", value: "mic"), .missingField("type"), .notAnObject("tree"), .rootNotFlexBox,
+            .multiplePrimaryActions(2),
         ]
         for error in errors { #expect(!error.description.isEmpty) }
         #expect(HUDValidationError.unknownComponent("slider").description.contains("slider"))

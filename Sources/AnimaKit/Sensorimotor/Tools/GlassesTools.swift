@@ -49,7 +49,8 @@ public struct GlassesShowTool: SensorimotorTool {
                 style heading ≤40 car.|body ≤200|meta ≤60, color primary|secondary), "icon" (name del \
                 catálogo del SDK: calendar, bell, checkmarkCircle, clock, speechBubble, phone, eye, \
                 exclamationTriangle, smartGlasses…; no existe mic), "image" (uri https), "button" \
-                (label, style primary|secondary|outline, icon, action dismiss|on_phone|talk) y \
+                (label, style primary|secondary|outline, icon, action dismiss|on_phone|talk, \
+                primary_action true en MÁXIMO uno = recibe el foco) y \
                 "button_group" (alignment, buttons). Máximo 2 botones propios (el HUD agrega "Atrás"). \
                 Lo largo va al teléfono, no al HUD.
                 """,

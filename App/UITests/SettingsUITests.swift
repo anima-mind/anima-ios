@@ -59,7 +59,7 @@ final class SettingsUITests: AnimaUITestCase {
         for _ in 0..<3 where !title.exists {
             waitUntil(replay, "isHittable == true")
             replay.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).tap()
-            _ = title.waitForExistence(timeout: 3)
+            _ = title.waitForExistence(timeout: scaled(3))
         }
         waitFor(title)
         XCTAssertFalse(app.tabBars.firstMatch.exists)

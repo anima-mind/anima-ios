@@ -154,6 +154,8 @@ struct UITestScriptedProvider: Provider {
 /// devuelve un transcript fijo al terminar (≈1.5 s o "Listo"); cancel → nil.
 final class UITestScriptedVoice: VoiceCapturePort, @unchecked Sendable {
     static let transcript = "hola por voz"
+    static let timeScale: Double = max(1, ProcessInfo.processInfo.environment["UITEST_TIMEOUT_SCALE"]
+        .flatMap(Double.init) ?? 1)
     private let lock = NSLock()
     private var cancelled = false
     private var finished = false
@@ -168,7 +170,10 @@ final class UITestScriptedVoice: VoiceCapturePort, @unchecked Sendable {
         onRoute(.phoneMic)
         try? await Task.sleep(for: .milliseconds(300))
         onPartial("hola por")
-        for _ in 0..<12 where !state().finished && !state().cancelled {
+        // Ventana de escucha × UITEST_TIMEOUT_SCALE: en runners lentos la barra
+        // debe vivir lo suficiente para que el test la observe.
+        let ticks = Int(12 * Self.timeScale)
+        for _ in 0..<ticks where !state().finished && !state().cancelled {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return state().cancelled ? nil : Self.transcript

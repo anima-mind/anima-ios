@@ -238,10 +238,15 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
         DATDisplay(display: try session.addDisplay())
     }
 
-    // MARK: Cámara POV (MWDATCamera, re-verificado contra el .swiftinterface 1.0.0:
-    // addCamera(config:) → Camera?.stream → start → capturePhoto(.jpeg) →
-    // photoDataPublisher). ⚠️ Pendiente de device: convivencia display+cámara en
-    // la misma sesión y latencia real del primer frame.
+    // MARK: Cámara POV (MWDATCamera 1.0.0, re-verificado contra el .swiftinterface)
+    // Política (reintento + fallback) en GlassesPhotoCapture (AnimaKit, testeada):
+    //   1. `Camera.photo` standalone (experimental 1.0): listeners ANTES de
+    //      `photo.start()`, captura en el primer `.started` con
+    //      `capturePhoto(resolution: .large, quality: .high)` → PhotoCaptureData;
+    //   2. fallback: el flujo viejo por stream (stream.start → .streaming →
+    //      capturePhoto(format: .jpeg) → photoDataPublisher).
+    // Cada intento usa una cámara NUEVA (addCamera): una detenida queda inválida.
+    // ⚠️ Pendiente de device: latencia/calidad reales de la standalone.
     func capturePhoto() async throws -> Data {
         #if canImport(MWDATCamera)
         let status = try await wearables.checkPermissionStatus(.camera)
@@ -250,6 +255,85 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
                 throw DATCameraError.permissionDenied
             }
         }
+        let session = self.session
+        return try await GlassesPhotoCapture.capture(
+            standalone: { try await Self.standalonePhoto(session) },
+            stream: { try await Self.streamPhoto(session) },
+            onPath: { path, why in
+                NSLog("[Anima] glasses photo via %@%@", path.rawValue, why.map { " (\($0))" } ?? "")
+            })
+        #else
+        throw DATCameraError.unavailable
+        #endif
+    }
+
+    #if canImport(MWDATCamera)
+    /// Resolución de la standalone: `.large` + `.high`. `.full` (sensor nativo) es
+    /// el camino más lento según la doc y el pipeline baja a ≤1568 px igual
+    /// (ImageDownscaler), así que pagaría latencia de transferencia por nada.
+    static let photoResolution: PhotoResolution = .large
+    static let photoQuality: PhotoQuality = .high
+    static let photoStartTimeout: UInt64 = 6_000_000_000
+    static let photoTimeout: UInt64 = 25_000_000_000
+
+    static func standalonePhoto(_ session: DeviceSession) async throws -> Data {
+        guard let camera = try session.addCamera(config: StreamConfiguration()) else {
+            throw DATCameraError.unavailable
+        }
+        defer { camera.stop() }
+        let photo = camera.photo
+        let once = DATOnce<Result<Data, Error>>()
+        let requested = DATFlag()
+        let starting = DATFlag()
+        var tokens: [any AnyListenerToken] = []
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
+            once.set { continuation.resume(with: $0) }
+            // Registrar TODO antes de start(): los publishers no re-emiten.
+            tokens.append(photo.photoDataPublisher.listen { capture in
+                // El shutter físico publica en el mismo canal: solo vale tras pedirla.
+                if requested.isSet { once.fire(.success(capture.imageData)) }
+            })
+            tokens.append(photo.errorPublisher.listen { error in once.fire(.failure(map(error))) })
+            tokens.append(photo.statePublisher.listen { state in
+                switch state {
+                case .starting:
+                    starting.set()
+                case .started:
+                    // `.started` puede repetirse: capturar solo en el primero.
+                    if requested.setOnce() { photo.capturePhoto(resolution: photoResolution, quality: photoQuality) }
+                case .stopped:
+                    if starting.isSet, !requested.isSet {
+                        once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+                    }
+                default:
+                    break
+                }
+            })
+            photo.start()
+            Task {
+                try? await Task.sleep(nanoseconds: photoStartTimeout)
+                if !requested.isSet { once.fire(.failure(GlassesPhotoError.setupFailed("timeout"))) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: photoTimeout)
+                once.fire(.failure(DATCameraError.timeout))
+            }
+        }
+        for token in tokens { await token.cancel() }
+        photo.stop()
+        return data
+    }
+
+    static func map(_ error: PhotoError) -> GlassesPhotoError {
+        switch error {
+        case .sessionSetupFailed: return .setupFailed(error.description)
+        case .serviceUnavailable, .notReady: return .unsupported(error.description)
+        default: return .failed(error.description)
+        }
+    }
+
+    /// El flujo PRE-1.0 (frame del stream): fallback de la standalone.
+    static func streamPhoto(_ session: DeviceSession) async throws -> Data {
         guard let camera = try session.addCamera(config: StreamConfiguration()) else {
             throw DATCameraError.unavailable
         }
@@ -274,10 +358,8 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
         for token in tokens { await token.cancel() }
         stream.stop()
         return photo
-        #else
-        throw DATCameraError.unavailable
-        #endif
     }
+    #endif
 }
 
 enum DATCameraError: Error, CustomStringConvertible {
@@ -288,6 +370,21 @@ enum DATCameraError: Error, CustomStringConvertible {
         case .permissionDenied: return "sin permiso de cámara en Meta AI"
         case .timeout: return "la foto no llegó a tiempo"
         }
+    }
+}
+
+/// Bandera atómica (listeners del SDK llegan en cualquier hilo).
+final class DATFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
+    /// true solo para el primero que la levanta.
+    func setOnce() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if value { return false }
+        value = true
+        return true
     }
 }
 

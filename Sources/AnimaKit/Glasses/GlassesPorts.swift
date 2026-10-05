@@ -93,7 +93,8 @@ public protocol GlassesSessionPort: AnyObject, Sendable {
     func faultUpdates() -> AsyncStream<GlassesFault>
     /// Un display por sesión.
     func addDisplay() throws -> any GlassesDisplayPort
-    /// Foto POV (MWDATCamera: addCamera → stream.capturePhoto(.jpeg)).
+    /// Foto POV (MWDATCamera 1.0: `Camera.photo` standalone, fallback al stream —
+    /// política en GlassesPhotoCapture).
     func capturePhoto() async throws -> Data
 }
 

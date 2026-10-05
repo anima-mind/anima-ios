@@ -249,6 +249,11 @@ final class AppModel: ObservableObject {
             // `--uitest`: sin apis → el validador acepta offline con warning (sin red).
             apis: UITestMode.isActive ? [:] : apis,
             selfModel: selfModel,
+            selfModelResolver: { [weak self] in
+                guard let self else { return nil }
+                await self.ensureBootstrapped()
+                return await self.selfModel
+            },
             defaults: Self.onboardingDefaults,
             isReplay: replayingOnboarding,
             account: account,

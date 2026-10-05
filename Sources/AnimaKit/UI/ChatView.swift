@@ -1070,6 +1070,7 @@ struct ListeningBar: View {
                 Text("Escuchando…")
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.accentText)
+                    .accessibilityIdentifier("chat.listening.label")
                 if !transcript.isEmpty {
                     Text(transcript)
                         .font(Theme.Type_.body)

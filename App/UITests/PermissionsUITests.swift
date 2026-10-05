@@ -82,7 +82,7 @@ final class PermissionsUITests: AnimaUITestCase {
             }
             waitUntil(button, "isHittable == true")
             button.tap()
-            if alert.waitForNonExistence(timeout: 3) { return }
+            if alert.waitForNonExistence(timeout: scaled(3)) { return }
         }
         XCTAssertFalse(alert.exists, "El diálogo TCC no se cerró tras 3 taps")
     }

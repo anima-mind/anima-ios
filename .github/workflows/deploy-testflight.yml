@@ -1,0 +1,68 @@
+name: Deploy TestFlight
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: Archive + upload a TestFlight
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Secrets del build (gitignored en el repo)
+        env:
+          GOOGLE_PLIST_B64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_B64 }}
+          MWDAT_XCCONFIG_B64: ${{ secrets.MWDAT_SECRETS_XCCONFIG_B64 }}
+        run: |
+          echo "$GOOGLE_PLIST_B64" | base64 -d > App/GoogleService-Info.plist
+          echo "$MWDAT_XCCONFIG_B64" | base64 -d > App/Secrets.xcconfig
+      - name: Generate project
+        run: xcodegen generate --spec App/project.yml
+      - name: API key de App Store Connect (cloud signing)
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+      - name: Cache SPM (Xcode)
+        uses: actions/cache@v4
+        with:
+          path: .spm-ci
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('App/project.yml', 'Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
+      - name: Archive (build number = run number)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: >
+          xcodebuild -project App/Anima.xcodeproj -scheme Anima
+          -destination 'generic/platform=iOS'
+          -archivePath build/Anima.xcarchive
+          -clonedSourcePackagesDirPath .spm-ci
+          -allowProvisioningUpdates
+          -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          -authenticationKeyID "$ASC_KEY_ID"
+          -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          CURRENT_PROJECT_VERSION=${{ github.run_number }}
+          archive
+      - name: Export + upload a TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: >
+          xcodebuild -exportArchive
+          -archivePath build/Anima.xcarchive
+          -exportOptionsPlist App/ExportOptions.plist
+          -allowProvisioningUpdates
+          -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          -authenticationKeyID "$ASC_KEY_ID"
+          -authenticationKeyIssuerID "$ASC_ISSUER_ID"

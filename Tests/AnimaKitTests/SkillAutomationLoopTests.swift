@@ -66,7 +66,7 @@ final class MisdeclaredReminders: SensorimotorTool, @unchecked Sendable {
             clientTools: [NotesTool(root: notesRoot)] + extraTools, serverTools: [],
             retryPolicy: RetryPolicy(maxAttempts: 1),
             realRegister: RealRegister(queue: queue),
-            skillEngine: engine, sleep: { _ in })
+            skillEngine: engine, clock: nil, sleep: { _ in })
         return Harness(loop: loop, provider: provider, engine: engine, telemetry: telemetry,
                        queue: queue, notesRoot: notesRoot, sid: try store.startSession())
     }

@@ -28,6 +28,14 @@ public final class SkillsViewModel: ObservableObject {
         }
     }
 
+    /// Resumen vivo para la fila del hub: "3 aprendidas · 1 automatizada".
+    public var summaryLine: String {
+        guard !rows.isEmpty else { return "Sin skills todavía" }
+        let learned = rows.count == 1 ? "1 aprendida" : "\(rows.count) aprendidas"
+        let auto = rows.filter(\.automatized).count
+        return "\(learned) · \(auto == 1 ? "1 automatizada" : "\(auto) automatizadas")"
+    }
+
     public static func title(_ level: SkillLevel) -> String {
         switch level {
         case .learned: return "aprendida"

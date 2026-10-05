@@ -54,8 +54,8 @@ final class NavigationUITests: AnimaUITestCase {
             waitUntil(app.tabBars.buttons[tab], "isSelected == true")
         }
 
-        // Repetir onboarding desde Ajustes → abandonarlo a mitad con la X → de vuelta en Ajustes.
-        openTab(app, "Ajustes")
+        // Repetir onboarding desde Ajustes → Mente → abandonarlo a mitad con la X → de vuelta en Ajustes.
+        openSettings(app, "mind")
         let replay = app.buttons["settings.replayOnboarding"]
         scrollTo(replay, in: app)
         let title = text(app, "Qué es Anima")

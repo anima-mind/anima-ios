@@ -212,6 +212,7 @@ final class AppModel: ObservableObject {
             let skillEngine = SkillEngine(queue: queue, directory: skillsDir)
             self.skillEngine = skillEngine
             settings.skills = SkillsViewModel(engine: skillEngine)
+            settings.selfModel = selfModel
             settings.glasses = glassesModel
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }

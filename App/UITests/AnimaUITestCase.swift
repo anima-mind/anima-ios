@@ -120,6 +120,16 @@ class AnimaUITestCase: XCTestCase {
         tap(button)
     }
 
+    /// Ajustes es un hub (FIX F): abre la tab y empuja la sub-pantalla `section`
+    /// (account | model | skills | glasses | mind).
+    @MainActor
+    func openSettings(_ app: XCUIApplication, _ section: String) {
+        openTab(app, "Ajustes")
+        let row = element(app, "settings.hub.\(section)")
+        waitFor(row)
+        tap(row)
+    }
+
     // MARK: Onboarding
 
     enum ProviderChoice {

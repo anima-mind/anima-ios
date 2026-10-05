@@ -191,6 +191,19 @@ public final class Telemetry: Sendable {
     public func totalCostUSD() throws -> Double {
         try summary().reduce(0) { $0 + $1.costUSD }
     }
+
+    /// Gasto desde `start` (p.ej. el 1.º del mes, para el resumen del hub de Ajustes).
+    public func costUSD(since start: Date) throws -> Double {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT model, SUM(input_tokens) AS i, SUM(output_tokens) AS o, SUM(cache_read_tokens) AS c
+                FROM turn_telemetry WHERE ts >= ? GROUP BY model
+                """, arguments: [start.timeIntervalSince1970]).reduce(0) { total, row in
+                total + Pricing.cost(model: row["model"], input: row["i"] ?? 0, output: row["o"] ?? 0,
+                                     cacheRead: row["c"] ?? 0)
+            }
+        }
+    }
 }
 
 /// Precios USD por millón de tokens (§7). Cache reads ~0.1× del input.

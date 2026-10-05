@@ -1,5 +1,6 @@
-// SettingsUITests.swift — Ajustes: los 3 modos (availability fake = disponible),
-// la sección Cuenta con el mock (sin cuenta) y "Repetir onboarding".
+// SettingsUITests.swift — Ajustes como hub (FIX F): filas con resumen vivo que
+// pushean sub-pantallas. Modelo (los 3 modos, availability fake = disponible),
+// Cuenta con el mock (sin cuenta) y "Repetir onboarding".
 
 import XCTest
 
@@ -12,6 +13,16 @@ final class SettingsUITests: AnimaUITestCase {
         // Con token (camino Anthropic) los 3 modos son elegibles.
         onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
         openTab(app, "Ajustes")
+
+        // Hub: una fila por sección con su resumen vivo.
+        for section in ["account", "model", "skills", "glasses", "mind"] {
+            waitFor(element(app, "settings.hub.\(section)"))
+        }
+        XCTAssertTrue(element(app, "settings.hub.model").label.contains("Claude"),
+                      "modelo: \(element(app, "settings.hub.model").label)")
+        XCTAssertTrue(element(app, "settings.hub.mind").label.contains("ciclo #0"),
+                      "mente: \(element(app, "settings.hub.mind").label)")
+        tap(element(app, "settings.hub.model"))
 
         // Una fila por provider (radio de activo + estado inline) + toggle Híbrido.
         let claude = app.buttons["settings.provider.anthropic.radio"]
@@ -45,12 +56,17 @@ final class SettingsUITests: AnimaUITestCase {
         XCTAssertTrue(claude.isSelected, "guardar otra key no cambia el activo")
 
         // Cuenta (PreviewAccountProvider, signedOut): "Sin cuenta" + Sign in with Apple.
+        app.navigationBars.buttons.firstMatch.tap()   // ← Ajustes
+        XCTAssertTrue(element(app, "settings.hub.account").label.contains("Sin cuenta"))
+        tap(element(app, "settings.hub.account"))
         let status = element(app, "settings.account.status")
         waitFor(status)
         XCTAssertTrue(status.label.contains("Sin cuenta"), "cuenta: \(status.label)")
         XCTAssertTrue(element(app, "account.appleSignIn").exists)
 
-        // Repetir onboarding → vuelve al flujo (entra directo al primer paso).
+        // Repetir onboarding (Ajustes → Mente) → vuelve al flujo (entra directo al primer paso).
+        app.navigationBars.buttons.firstMatch.tap()   // ← Ajustes
+        tap(element(app, "settings.hub.mind"))
         let replay = app.buttons["settings.replayOnboarding"]
         scrollTo(replay, in: app)
         // La fila es un Button .plain sin contentShape: solo el texto recibe el

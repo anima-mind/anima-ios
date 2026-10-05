@@ -73,6 +73,18 @@ public final class GlassesViewModel: ObservableObject {
         return status.bodyLabel.prefix(1).uppercased() + status.bodyLabel.dropFirst() + name
     }
 
+    /// Resumen de la fila "Gafas" del hub: "No vinculadas" | "Conectadas · 43%".
+    public var hubSummary: String {
+        guard status.configured else { return "Sin configurar" }
+        switch status.registration {
+        case .registering: return "Vinculando…"
+        case .available, .unavailable: return "No vinculadas"
+        case .registered: break
+        }
+        let label = status.bodyLabel.prefix(1).uppercased() + status.bodyLabel.dropFirst()
+        return status.batteryPercent.map { "\(label) · \($0)%" } ?? label
+    }
+
     public var batteryText: String {
         status.batteryPercent.map { "\($0)%" } ?? "no la reporta el SDK"
     }

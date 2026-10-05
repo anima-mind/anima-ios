@@ -22,6 +22,7 @@ struct AnimaApp: App {
             FirebaseApp.configure()
         }
         AppModel.registerConsolidationTask()
+        AppModel.registerPulseTask()
         HandoffNotifications.install()
     }
 
@@ -36,6 +37,7 @@ struct AnimaApp: App {
             if phase == .background {
                 app.markCleanShutdown()
                 app.scheduleConsolidation()
+                app.schedulePulse()
             }
             app.glassesForeground(phase == .active)
             // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
@@ -124,8 +126,9 @@ final class AppModel: ObservableObject {
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
     static let shared = ConsolidatorHolder()
 
-    /// Instancia única del proceso: la escena y el BGTask comparten el mismo
-    /// cableado (un solo SelfModel, un solo Consolidator).
+    /// Instancia única del proceso: la escena, los BGTasks (sueño y pulso) y las
+    /// acciones de notificación comparten el mismo cableado (un solo SelfModel,
+    /// un solo Consolidator).
     static let live = AppModel()
 
     private var bootstrapTask: Task<Void, Never>?
@@ -425,8 +428,9 @@ final class AppModel: ObservableObject {
             self.desireEngine = engine
             desireEngine = engine
             // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.
+            // Un despertar en background NO lo corre: ese pulso es del BGTask y notifica.
             let sid = sessionId
-            if !UITestMode.isActive {
+            if !UITestMode.isActive, !Self.launchedInBackground {
                 Task.detached { _ = try? await engine.pulse(sessionId: sid) }
             }
         }
@@ -522,6 +526,48 @@ final class AppModel: ObservableObject {
                 task.setTaskCompleted(success: success)
             }
         }
+        #endif
+    }
+
+    /// Registro del BGAppRefreshTask del pulso (§5.8). Siempre completa el task.
+    static func registerPulseTask() {
+        #if os(iOS)
+        PulseScheduler().register { task in
+            nonisolated(unsafe) let task = task
+            let work = Task { @MainActor in
+                await AppModel.live.ensureBootstrapped()
+                let outcome = await AppModel.live.runBackgroundPulse()
+                PulseScheduler().submit()
+                task.setTaskCompleted(success: outcome != nil)
+            }
+            task.expirationHandler = { work.cancel() }
+        }
+        #endif
+    }
+
+    /// El pulso en background: recordatorios vencidos → pulso del deseo →
+    /// Intentions como notificación local. nil si el harness no está cableado.
+    func runBackgroundPulse() async -> PulseRunner.Outcome? {
+        guard let store, reconciler != nil else { return nil }
+        let (sessionId, _) = resolveSession(store)
+        let runner = PulseRunner(reconciler: reconciler, engine: desireEngine, scheduler: proactiveScheduler)
+        let outcome = await runner.run(sessionId: sessionId)
+        chatModel?.appendProactive(outcome.delivered)
+        return outcome
+    }
+
+    func schedulePulse() {
+        #if os(iOS)
+        PulseScheduler().submit()
+        #endif
+    }
+
+    /// ¿iOS lanzó el proceso sin UI (BGTask / acción de notificación)?
+    static var launchedInBackground: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .background
+        #else
+        return false
         #endif
     }
 
@@ -650,9 +696,13 @@ final class AppModel: ObservableObject {
                 }
                 chatModel?.focus(.checkIn(goalId: id))
             }
-        case .intention:
+        case .intention(let id):
             guard deferUntilReady(link) else { return }
             selectedTab = .chat
+            Task {
+                await chatModel?.loadProactiveIntentions()
+                chatModel?.focus(.intention(id: id))
+            }
         }
     }
 

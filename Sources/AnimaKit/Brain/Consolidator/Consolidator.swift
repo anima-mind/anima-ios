@@ -92,8 +92,22 @@ public actor Consolidator {
     /// el nombre de la etapa recién completada; si devuelve true, corta limpio en
     /// frontera de etapa (modela el expirationHandler del BGProcessingTask). El
     /// próximo `cycle()` retoma donde iba.
+    /// Ciclo en curso: el actor es reentrante en cada `await`, así que dos
+    /// disparadores simultáneos (BGTask + fallback foreground + "Simular una
+    /// noche") se coalescen en UNO — sin esto ambos corren el mismo n y la
+    /// maduración del self queda indeterminada.
+    private var inFlight: Task<CycleReport, Error>?
+
     @discardableResult
     public func cycle(interrupting shouldStop: (@Sendable (String) -> Bool)? = nil) async throws -> CycleReport {
+        if let inFlight { return try await inFlight.value }
+        let task = Task { try await self.runCycle(interrupting: shouldStop) }
+        inFlight = task
+        defer { inFlight = nil }
+        return try await task.value
+    }
+
+    private func runCycle(interrupting shouldStop: (@Sendable (String) -> Bool)?) async throws -> CycleReport {
         // Fail-closed (§5.5): las aprobaciones vencidas expiran a Rejected antes de nada.
         _ = await selfModel?.expireStale()
         let (n, startStage) = try currentCycle()

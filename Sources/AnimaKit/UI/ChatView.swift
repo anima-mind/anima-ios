@@ -439,6 +439,7 @@ public struct ChatView: View {
                 Spacer()
                 Button {
                     showMindSheet = true
+                    Task { await model.loadMind() }
                 } label: {
                     PlasticityBadge(mind: model.mind)
                 }

@@ -9,7 +9,9 @@ import FirebaseCore
 
 @main
 struct AnimaApp: App {
-    @StateObject private var app = AppModel()
+    /// La MISMA instancia que alcanza el runner del BGProcessingTask (lanzamiento
+    /// en background sin escena: el `.task` de la vista jamás corre).
+    @StateObject private var app = AppModel.live
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -26,7 +28,7 @@ struct AnimaApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(app: app)
-                .task { await app.bootstrap() }
+                .task { await app.ensureBootstrapped() }
                 .onOpenURL { app.handleOpenURL($0) }
                 .preferredColorScheme(.dark)
         }
@@ -36,6 +38,8 @@ struct AnimaApp: App {
                 app.scheduleConsolidation()
             }
             app.glassesForeground(phase == .active)
+            // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
+            if phase == .active { app.refreshMind() }
         }
     }
 }
@@ -108,6 +112,23 @@ final class AppModel: ObservableObject {
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
     static let shared = ConsolidatorHolder()
+
+    /// Instancia única del proceso: la escena y el BGTask comparten el mismo
+    /// cableado (un solo SelfModel, un solo Consolidator).
+    static let live = AppModel()
+
+    private var bootstrapTask: Task<Void, Never>?
+
+    /// Idempotente: la escena (`.task`) y el runner del BGTask lo llaman; el
+    /// cableado ocurre UNA vez. Sin esto, un lanzamiento en background (iOS
+    /// despierta la app para el sueño SIN escena) encontraba el holder vacío y
+    /// el ciclo nocturno jamás corría por esa vía.
+    func ensureBootstrapped() async {
+        if let bootstrapTask { return await bootstrapTask.value }
+        let task = Task { await self.bootstrap() }
+        bootstrapTask = task
+        await task.value
+    }
 
     /// Defaults del onboarding/modo: `.standard`, o la suite efímera en `--uitest`.
     static let onboardingDefaults = OnboardingDefaults(
@@ -338,6 +359,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()
+                    await self?.chatModel?.loadMind()
                 }
             }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
@@ -360,7 +382,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        // El SelfModel vivo alimenta el badge, el Mind sheet ("noches") y el nombre del header.
+        let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine,
+                                 selfModel: selfModel)
         // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
         chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
                          previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
@@ -393,6 +417,11 @@ final class AppModel: ObservableObject {
         return resolved
     }
 
+    func refreshMind() {
+        guard let chatModel else { return }
+        Task { await chatModel.loadMind() }
+    }
+
     /// scenePhase .background: cierre limpio de la sesión activa.
     func markCleanShutdown() {
         guard let store, let activeSessionId else { return }
@@ -419,6 +448,8 @@ final class AppModel: ObservableObject {
             let expired = ExpirationFlag()
             task.expirationHandler = { expired.mark() }
             Task {
+                // Lanzamiento en background: cablea el harness si la escena no lo hizo.
+                await AppModel.live.ensureBootstrapped()
                 let success = await AppModel.shared.run(isExpired: { expired.value })
                 task.setTaskCompleted(success: success)
             }

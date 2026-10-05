@@ -21,7 +21,7 @@ struct HUDTests {
     ]
 
     @Test func catalogoDeIconosEsElDelSDK() {
-        #expect(HUDIcon.allCases.count == 116)   // exacto del .swiftinterface 0.9.0 (el doc dice "~115")
+        #expect(HUDIcon.allCases.count == 116)   // exacto del .swiftinterface 1.0.0 (= 0.9.0; el doc dice "~115")
         #expect(HUDIcon(rawValue: "mic") == nil)
         #expect(HUDIcon(rawValue: "inbox") == nil)
         #expect(HUDIcon(rawValue: "exclamationTriangle") != nil)

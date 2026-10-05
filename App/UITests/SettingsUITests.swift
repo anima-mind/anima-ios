@@ -13,21 +13,36 @@ final class SettingsUITests: AnimaUITestCase {
         onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
         openTab(app, "Ajustes")
 
-        let onDevice = app.buttons["settings.mode.on_device_only"]
-        let claude = app.buttons["settings.mode.claude"]
-        let hybrid = app.buttons["settings.mode.hybrid"]
-        [onDevice, claude, hybrid].forEach { waitFor($0) }
+        // Una fila por provider (radio de activo + estado inline) + toggle Híbrido.
+        let claude = app.buttons["settings.provider.anthropic.radio"]
+        let local = app.buttons["settings.provider.on_device.radio"]
+        let hybrid = app.switches["settings.mode.hybrid"]
+        [claude, local].forEach { waitFor($0) }
+        waitUntil(claude, "isSelected == true")
+        XCTAssertTrue(element(app, "settings.provider.anthropic.status").label.contains("key guardada"))
         // El onboarding con key + modelo local disponible deja Híbrido.
-        waitUntil(hybrid, "isSelected == true")
+        waitUntil(hybrid, "value == '1'")
+
+        tap(local, until: local, "isSelected == true")
+        XCTAssertFalse(claude.isSelected)
+        XCTAssertFalse(hybrid.exists)   // Solo teléfono: sin Híbrido
 
         tap(claude, until: claude, "isSelected == true")
-        XCTAssertFalse(hybrid.isSelected)
+        waitFor(hybrid)
 
-        tap(onDevice, until: onDevice, "isSelected == true")
-        XCTAssertFalse(claude.isSelected)
-        XCTAssertFalse(element(app, "settings.mode.notice").exists)
-
-        tap(hybrid, until: hybrid, "isSelected == true")
+        // Gemini sin key: radio deshabilitado → "Agregar key" expande su campo inline.
+        let geminiStatus = element(app, "settings.provider.google.status")
+        waitFor(geminiStatus)
+        XCTAssertTrue(geminiStatus.label.contains("sin key"))
+        tap(app.buttons["settings.provider.google.action"])
+        let field = app.secureTextFields["settings.provider.google.field"]
+        tap(field)
+        XCTAssertEqual(field.placeholderValue, "AIza…")
+        XCTAssertTrue(app.buttons["settings.provider.google.save"].exists)
+        field.typeText("AIzaSyUITest123\n")   // return = Guardar (el teclado tapa el botón)
+        waitUntil(field, "exists == false")
+        waitUntil(geminiStatus, "label CONTAINS 'key guardada'")
+        XCTAssertTrue(claude.isSelected, "guardar otra key no cambia el activo")
 
         // Cuenta (PreviewAccountProvider, signedOut): "Sin cuenta" + Sign in with Apple.
         let status = element(app, "settings.account.status")

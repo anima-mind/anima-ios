@@ -239,6 +239,12 @@ final class AppModel: ObservableObject {
         guard let store, let telemetry, let configProvider else { return }
         let snapshot = configProvider.snapshot()
         let mode = Self.onboardingDefaults.modeStore.mode
+        // Ajustes → Modelo valida las keys como el onboarding (`--uitest`: offline).
+        var settingsAPIs: [ModelProvider: ProviderAPIConfig] = [:]
+        for provider in ModelProvider.remoteCases where !UITestMode.isActive {
+            if let api = snapshot.config(for: provider)?.api { settingsAPIs[provider] = api }
+        }
+        settingsModel?.apis = settingsAPIs
         let remoteKind = Self.onboardingDefaults.remoteStore.provider
 
         // Córtex remoto (Claude / OpenAI / Gemini): solo con token reconocible

@@ -395,7 +395,7 @@ import Testing
         defer { ud.removePersistentDomain(forName: suite) }
         model.load()
         #expect(!model.hasToken)
-        #expect(model.blocker(for: .remote) == "Requiere tu API key de Claude (abajo).")
+        #expect(model.blocker(for: .remote) == "Requiere tu API key de Claude (en su fila).")
         var changes = 0
         model.onModeChanged = { _ in changes += 1 }
         model.tokenInput = "sk-proj-no-es-anthropic"

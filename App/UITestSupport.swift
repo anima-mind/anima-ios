@@ -30,6 +30,8 @@ enum UITestMode {
         guard shouldReset else { return }
         defaults.removePersistentDomain(forName: suiteName)
         try? KeychainStore(service: keychainService).delete()
+        let tokens = ProviderTokenStore(service: keychainService)
+        for provider in ModelProvider.remoteCases { try? tokens.delete(provider) }
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         for suffix in ["", "-wal", "-shm"] {

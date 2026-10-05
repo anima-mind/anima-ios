@@ -28,6 +28,14 @@ final class ChatUITests: AnimaUITestCase {
 
         // El composer vuelve a estar listo para otro turno.
         XCTAssertTrue(app.textFields["chat.input"].isEnabled)
+
+        // Campo #10: cerrar y reabrir (sin reset) NO deja el chat vacío.
+        app.terminate()
+        let relaunched = launch(reset: false)
+        waitForChat(relaunched)
+        waitFor(relaunched.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'hola'")).firstMatch)
+        waitFor(assistantMessage(relaunched, labelContains: fixedReply))
     }
 
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
@@ -78,23 +86,6 @@ final class ChatUITests: AnimaUITestCase {
         tap(app.buttons["nav.close.listening"])
         waitUntil(element(app, "chat.listeningBar"), "exists == false")
         XCTAssertEqual(app.staticTexts.matching(identifier: "chat.userMessage").count, 1)
-    }
-
-    /// Campo #10: cerrar y reabrir NO deja el chat vacío — la sesión se reanuda.
-    @MainActor
-    func testRelaunchKeepsTheConversation() {
-        let first = launch()
-        onboard(first)
-        send(first, "hola")
-        waitFor(assistantMessage(first, value: "done", labelContains: fixedReply), timeout: 15)
-        first.terminate()
-
-        let second = launch(reset: false)
-        waitForChat(second)
-        let bubble = second.staticTexts.matching(identifier: "chat.userMessage")
-            .matching(NSPredicate(format: "label == 'hola'")).firstMatch
-        waitFor(bubble)
-        waitFor(assistantMessage(second, labelContains: fixedReply))
     }
 
     /// Campo #11: cámara del composer → menú → (picker guionado) → thumb → enviar → burbuja con thumb.

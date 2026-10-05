@@ -1,4 +1,4 @@
-// DATGlassesRuntime.swift — capa HUMILDE sobre el DAT SDK 0.9.0 (Meta Wearables).
+// DATGlassesRuntime.swift — capa HUMILDE sobre el DAT SDK 1.0.0 (Meta Wearables).
 // Sin lógica propia: traduce los puertos de AnimaKit (GlassesRuntime /
 // GlassesSessionPort / GlassesDisplayPort) a MWDATCore/MWDATDisplay/MWDATCamera.
 // Toda la lógica (sesión única, generaciones, re-send, dolencias) vive en
@@ -70,6 +70,8 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
                         guard let device = wearables.deviceForIdentifier(id) else { continue }
                         device.addLinkStateListener { _ in emit() }.store(in: bag)
                         device.addCompatibilityListener { _ in emit() }.store(in: bag)
+                        // 1.0: batería/temperatura/don llegan por DeviceState.
+                        device.addDeviceStateListener { _ in emit() }.store(in: bag)
                     }
                     emit()
                 }
@@ -138,10 +140,10 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
             case .sdkUpdateRequired: compatibility = .sdkUpdateRequired
             default: compatibility = .undefined
             }
-            // DAT 0.9.0 no expone nivel de batería (solo .batteryCritical).
             return GlassesDeviceSnapshot(id: id, name: device.nameOrId(), link: link,
                                          compatibility: compatibility,
-                                         supportsDisplay: device.supportsDisplay(), batteryPercent: nil)
+                                         supportsDisplay: device.supportsDisplay(),
+                                         batteryPercent: device.batteryLevel)
         }
     }
 }
@@ -160,7 +162,7 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     func start() throws { try session.start() }
     func stop() { session.stop() }
 
-    /// 0.9: termina al llegar `.stopped` (GlassesBody re-suscribe por generación).
+    /// ≥0.9: termina al llegar `.stopped` (GlassesBody re-suscribe por generación).
     func stateUpdates() -> AsyncStream<GlassesSessionState> {
         let source = session.stateStream()
         return AsyncStream { continuation in
@@ -200,6 +202,8 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
         case .peakPowerShutdown: return .peakPowerShutdown
         case .batteryCritical: return .batteryCritical
         case .datAppOnTheGlassesUpdateRequired: return .datAppUpdateRequired
+        case .insufficientSDKVersion: return .sdkUpdateRequired     // 1.0, terminal
+        case .dwaOutOfStuRange: return .compatibilityWarning        // 1.0, no bloqueante
         case .noEligibleDevice: return .noEligibleDevice
         default: return .other(error.description)
         }
@@ -209,7 +213,7 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
         DATDisplay(display: try session.addDisplay())
     }
 
-    // MARK: Cámara POV (MWDATCamera, verificado contra el .swiftinterface 0.9.0:
+    // MARK: Cámara POV (MWDATCamera, re-verificado contra el .swiftinterface 1.0.0:
     // addCamera(config:) → Camera?.stream → start → capturePhoto(.jpeg) →
     // photoDataPublisher). ⚠️ Pendiente de device: convivencia display+cámara en
     // la misma sesión y latencia real del primer frame.

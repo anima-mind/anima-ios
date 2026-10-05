@@ -3,7 +3,7 @@
 //   · selector ÚNICO (vive en el runtime) + sesión ÚNICA, reutilizada; stop()
 //     SIEMPRE en teardown → cero sesiones zombie (`noEligibleDevice` eterno).
 //   · elegibilidad por compatibilidad (listener), no solo link state.
-//   · 0.9: stateStream/errorStream TERMINAN en `.stopped` → cada sesión es una
+//   · ≥0.9: stateStream/errorStream TERMINAN en `.stopped` → cada sesión es una
 //     GENERACIÓN nueva con sus propias suscripciones; eventos de generaciones
 //     viejas se ignoran.
 //   · el display duerme: cada `.started` re-envía la vista actual (cero estado
@@ -386,6 +386,11 @@ public actor GlassesBody {
             await fail(.battery, raw: "\(fault)")
         case .datAppUpdateRequired:
             await fail(.updateRequired, raw: "\(fault)")
+        case .sdkUpdateRequired:
+            await fail(.versionMismatch, raw: "\(fault)")
+        case .compatibilityWarning:
+            // No bloqueante (DAT 1.0): la sesión sigue; solo queda en el RealRegister.
+            await record(errorClass: GlassesAilment.versionMismatch.errorClass, raw: "\(fault)")
         case .hingesClosed:
             // Se quitó las gafas: fin de sesión limpio, no es un fallo.
             let wasLive = session != nil

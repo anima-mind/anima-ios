@@ -174,6 +174,7 @@ struct GlassesBodyTests {
             (.batteryCritical, .battery, "glasses_battery"),
             (.peakPowerShutdown, .battery, "glasses_battery"),
             (.datAppUpdateRequired, .updateRequired, "glasses_version_mismatch"),
+            (.sdkUpdateRequired, .versionMismatch, "glasses_version_mismatch"),
         ]
         for (fault, ailment, errorClass) in cases {
             let register = RealRegister(queue: try AnimaDatabase.temporary())
@@ -199,6 +200,19 @@ struct GlassesBodyTests {
         }
         #expect(GlassesAilment.versionMismatch.errorClass == "glasses_version_mismatch")
         #expect(GlassesStatus.ailmentLabel(.versionMismatch) == "versión no compatible")
+    }
+
+    @Test func avisoDeCompatibilidadNoBloqueaLaSesion() async throws {
+        let register = RealRegister(queue: try AnimaDatabase.temporary())
+        let runtime = MockRuntime()
+        let body = await readyBody(runtime, realRegister: register)
+        try await body.ensureActive()
+        #expect(await body.waitUntilActive())
+        runtime.lastSession?.fault(.compatibilityWarning)
+        #expect(await eventually { await register.insistence(Self.key("glasses_version_mismatch")) == 1 })
+        #expect(await body.hasSession)
+        #expect(await body.currentStatus().body == .active)
+        #expect(runtime.liveSessions == 1)
     }
 
     @Test func otrosFallosDeSesion() async throws {

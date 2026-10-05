@@ -598,7 +598,8 @@ final class AppModel: ObservableObject {
     private static func skillsDirectory() -> URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return dir.appendingPathComponent("skills", isDirectory: true)
+        return dir.appendingPathComponent(UITestMode.isActive ? UITestMode.skillsDirectoryName : "skills",
+                                          isDirectory: true)
     }
 
     private static func databasePath() -> String {

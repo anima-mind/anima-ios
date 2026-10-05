@@ -21,11 +21,12 @@ enum UITestMode {
     static let suiteName = "com.joshuamoreno1.anima.uitest"
     static let keychainService = "dev.joshua.anima.provider-token.uitest"
     static let databaseName = "anima-uitest.sqlite"
+    static let skillsDirectoryName = "skills-uitest"
 
     /// Suite efímera: jamás toca `UserDefaults.standard` del dueño.
     static var defaults: UserDefaults { UserDefaults(suiteName: suiteName) ?? .standard }
 
-    /// Borra flags de onboarding/modo, token y base de datos del modo UI-test.
+    /// Borra flags de onboarding/modo, token, base de datos y skills del modo UI-test.
     static func resetIfRequested() {
         guard shouldReset else { return }
         defaults.removePersistentDomain(forName: suiteName)
@@ -37,6 +38,7 @@ enum UITestMode {
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(databaseName + suffix))
         }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(skillsDirectoryName, isDirectory: true))
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.

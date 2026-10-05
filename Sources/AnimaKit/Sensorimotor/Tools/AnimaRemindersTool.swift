@@ -35,7 +35,8 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 cancel {id}, snooze {id, minutes}. fire_at en ISO 8601 CON offset, resuelto \
                 contra la línea "Ahora:" del contexto (p.ej. 2026-10-06T09:00:00-05:00). \
                 goal_id liga el recordatorio a una meta (ver tool goals). Todo menos list \
-                requiere confirmación.
+                requiere confirmación, que la pide el harness: llama la tool directo, sin \
+                preguntar antes en el chat.
                 """,
             inputSchema: .object([
                 "type": .string("object"),

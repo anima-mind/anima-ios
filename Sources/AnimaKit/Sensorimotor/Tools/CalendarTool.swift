@@ -35,7 +35,8 @@ public struct CalendarTool: SensorimotorTool {
                 N días), search (por texto), create (nuevo evento), delete (borrar por \
                 id). Para citas/eventos/"agéndame"/"ponlo en el calendario" (no para \
                 "recuérdame X": eso es anima_reminders). Crear y borrar requieren \
-                confirmación del dueño. Fechas en ISO 8601.
+                confirmación del dueño, que la pide el harness: llama la tool directo, sin \
+                preguntar antes en el chat. Fechas en ISO 8601.
                 """,
             inputSchema: .object([
                 "type": .string("object"),

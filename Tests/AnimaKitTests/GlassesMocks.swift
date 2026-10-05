@@ -5,7 +5,7 @@ import Testing
 // Dobles del DAT SDK para `swift test` en macOS. MockDeviceKit del SDK NO es
 // viable aquí: es un XCFramework iOS-only y, además, su `GlassesModel` no
 // incluye Meta Ray-Ban Display (no simula Display). Por eso: puertos finos
-// (GlassesPorts) + estos mocks, que reproducen el contrato 0.9.0 verificado en
+// (GlassesPorts) + estos mocks, que reproducen el contrato ≥0.9 (vigente en 1.0.0) verificado en
 // hardware por Relay (streams que TERMINAN en .stopped, display que duerme).
 
 struct MockError: Error, CustomStringConvertible {

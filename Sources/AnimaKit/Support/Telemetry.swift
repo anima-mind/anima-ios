@@ -100,6 +100,33 @@ public final class Telemetry: Sendable {
         }
     }
 
+    // MARK: - Voice invocation ("Hey Meta, start Anima")
+
+    public func recordVoiceInvocation(_ row: VoiceInvocationRecord) throws {
+        let now = Date().timeIntervalSince1970
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO voice_invocation_telemetry
+                (phase, kind, device_id, outcome, delivered, detail, latency_ms, ts)
+                VALUES (?,?,?,?,?,?,?,?)
+                """, arguments: [row.phase.rawValue, row.kind.rawValue, row.deviceId, row.outcome,
+                                 row.delivered.map { $0 ? 1 : 0 }, row.detail, row.latencyMs, now])
+        }
+    }
+
+    public func voiceInvocations() throws -> [VoiceInvocationRecord] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM voice_invocation_telemetry ORDER BY id").map {
+                let delivered: Int? = $0["delivered"]
+                return VoiceInvocationRecord(
+                    phase: VoiceInvocationRecord.Phase(rawValue: $0["phase"]) ?? .received,
+                    kind: VoiceInvocationKind(rawValue: $0["kind"]) ?? .unsupported,
+                    deviceId: $0["device_id"], outcome: $0["outcome"], delivered: delivered.map { $0 == 1 },
+                    detail: $0["detail"], latencyMs: $0["latency_ms"])
+            }
+        }
+    }
+
     // MARK: - Agregados de costos
 
     public struct CostRow: Sendable, Equatable {

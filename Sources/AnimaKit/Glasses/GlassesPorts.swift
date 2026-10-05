@@ -2,7 +2,7 @@
 // y mockeables: el SDK real (MWDATCore/MWDATDisplay/MWDATCamera, iOS-only y
 // binario) vive SOLO en el app shell (App/Glasses/DATGlassesRuntime.swift) y
 // conforma estos puertos; AnimaKit sigue compilando y testeando en macOS.
-// Los enums calcan los del `.swiftinterface` 0.9.0 (RegistrationState,
+// Los enums calcan los del `.swiftinterface` 1.0.0 (RegistrationState,
 // Compatibility, LinkState, DeviceSessionState, DisplayState, DeviceSessionError
 // + StreamError) sin importarlos.
 
@@ -28,8 +28,7 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
     public var link: GlassesLink
     public var compatibility: GlassesCompatibility
     public var supportsDisplay: Bool
-    /// El DAT SDK 0.9.0 NO expone nivel de batería (solo `.batteryCritical`):
-    /// queda nil salvo que una versión futura lo exponga.
+    /// DAT 1.0.0: `Device.batteryLevel` (nil hasta que las gafas lo reportan).
     public var batteryPercent: Int?
 
     public init(id: String, name: String, link: GlassesLink, compatibility: GlassesCompatibility,
@@ -58,6 +57,10 @@ public enum GlassesFault: Sendable, Equatable {
     case peakPowerShutdown
     case batteryCritical
     case datAppUpdateRequired
+    /// 1.0 `insufficientSDKVersion`: TERMINAL, hay que publicar la app con un SDK nuevo.
+    case sdkUpdateRequired
+    /// 1.0 `dwaOutOfStuRange`: aviso NO bloqueante de compatibilidad; la sesión sigue.
+    case compatibilityWarning
     case noEligibleDevice
     case hingesClosed
     case other(String)
@@ -76,7 +79,7 @@ public protocol GlassesDisplayPort: AnyObject, Sendable {
 public protocol GlassesSessionPort: AnyObject, Sendable {
     func start() throws
     func stop()
-    /// 0.9: el stream TERMINA al llegar `.stopped` (re-suscribir por sesión).
+    /// ≥0.9: el stream TERMINA al llegar `.stopped` (re-suscribir por sesión).
     func stateUpdates() -> AsyncStream<GlassesSessionState>
     func faultUpdates() -> AsyncStream<GlassesFault>
     /// Un display por sesión.

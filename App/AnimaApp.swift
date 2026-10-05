@@ -96,6 +96,14 @@ final class AppModel: ObservableObject {
     private var previousSessionId: SessionID?
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
+    /// "Hey Meta, start Anima" (DAT 1.0): el stream se abre en el init — ANTES de
+    /// la UI — para capturar el cold-launch por voz; el cuerpo se enchufa en bootstrap.
+    let voiceInvocations: VoiceInvocationOrchestrator
+
+    init() {
+        voiceInvocations = VoiceInvocationOrchestrator(port: Self.makeVoiceInvocationsPort())
+        voiceInvocations.start()
+    }
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
     /// (registrado en app launch) lo alcance cuando ya esté cableado.
@@ -146,6 +154,10 @@ final class AppModel: ObservableObject {
             self.glassesBody = glassesBody
             self.glassesActivation = activation
             self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation, host: glassesHost)
+            glassesModel?.observeVoiceInvocations(voiceInvocations)
+            voiceInvocations.bind(target: activation, record: { [telemetry] row in
+                try? telemetry.recordVoiceInvocation(row)
+            })
             Task {
                 await glassesBody.setHandlers(onAction: nil, onExit: { Task { await activation.userExited() } })
                 await glassesBody.start()
@@ -445,6 +457,16 @@ final class AppModel: ObservableObject {
         return DATGlassesRuntime()
         #else
         return AbsentGlassesRuntime()
+        #endif
+    }
+
+    /// Voice invocations: SDK real fuera de `--uitest` (sin gafas ni Meta AI ahí).
+    static func makeVoiceInvocationsPort() -> (any VoiceInvocationsPort)? {
+        if UITestMode.isActive { return nil }
+        #if canImport(MWDATCore)
+        return VoiceInvocationsController()
+        #else
+        return nil
         #endif
     }
 

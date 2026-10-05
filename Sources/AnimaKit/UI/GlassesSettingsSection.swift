@@ -11,6 +11,8 @@ import SwiftUI
 public final class GlassesViewModel: ObservableObject {
     @Published public private(set) var status = GlassesStatus()
     @Published public var notice: String?
+    /// "Hey Meta, start Anima": estado del stream de voice invocations.
+    @Published public private(set) var voiceStatus: VoiceInvocationsStatus = .unavailable
 
     /// Próxima card de "Probar iconos" (diagnóstico de campo del catálogo).
     @Published public private(set) var iconProbeIndex = 0
@@ -19,6 +21,7 @@ public final class GlassesViewModel: ObservableObject {
     private let activation: GlassesActivation?
     private let host: (any GlassesToolHost)?
     private var observeTask: Task<Void, Never>?
+    private var voiceTask: Task<Void, Never>?
 
     public init(body: GlassesBody?, activation: GlassesActivation?, host: (any GlassesToolHost)? = nil) {
         self.body = body
@@ -32,7 +35,18 @@ public final class GlassesViewModel: ObservableObject {
         }
     }
 
-    deinit { observeTask?.cancel() }
+    deinit {
+        observeTask?.cancel()
+        voiceTask?.cancel()
+    }
+
+    public func observeVoiceInvocations(_ orchestrator: VoiceInvocationOrchestrator) {
+        voiceTask?.cancel()
+        let updates = orchestrator.statusUpdates()
+        voiceTask = Task { [weak self] in
+            for await status in updates { self?.voiceStatus = status }
+        }
+    }
 
     public var isRegistered: Bool { status.isRegistered }
     public var bodyLabel: String { status.bodyLabel }
@@ -120,6 +134,8 @@ struct GlassesSettingsSection: View {
                 .foregroundStyle(Theme.Colors.textMuted)
             VStack(spacing: 0) {
                 row("Estado", model.stateText, id: "state")
+                Divider().background(Theme.Colors.border)
+                row("\u{201C}Hey Meta, start Anima\u{201D}", model.voiceStatus.label, id: "voice")
                 if model.isRegistered {
                     Divider().background(Theme.Colors.border)
                     row("Batería", model.batteryText, id: "battery")

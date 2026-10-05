@@ -137,7 +137,9 @@ struct GlassesStreamingSpeechTests {
         await surface.handle(.action(.send))
         #expect(await eventually { runner.continuation.value != nil })
         runner.yield(.textDelta("Primera. Segunda"))
-        #expect(await eventually { if case .speaking = await surface.state.screen { return true } else { return false } })
+        // Precondición REAL del escenario: la primera oración ya se habló (no solo
+        // el estado .speaking — el back podía colarse antes del speak y dejar spoken=[]).
+        #expect(await eventually { voice.spoken.value == ["Primera."] })
         await surface.handle(.action(.back))
         #expect(surface.state.screen == .home(status: nil))
         runner.yield(.textDelta(". Tercera. Cuarta."))

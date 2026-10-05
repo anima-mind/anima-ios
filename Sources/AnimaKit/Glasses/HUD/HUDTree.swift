@@ -1,6 +1,7 @@
 // HUDTree.swift — el vocabulario CERRADO del HUD de Meta Ray-Ban Display (DAT SDK
-// 0.9.0) como DATOS puros. Espejo 1:1 del `.swiftinterface` de MWDATDisplay
-// (verificado contra el checkout 0.9.0): 7 componentes, enums exactos, nada más.
+// 1.0.0) como DATOS puros. Espejo 1:1 del `.swiftinterface` de MWDATDisplay
+// (re-verificado contra el checkout 1.0.0; sin cambios de componentes vs 0.9.0
+// salvo `Button.actionRole(.primary)`, aún no modelado): 7 componentes, enums exactos.
 // El renderer produce estos árboles; el adapter del app shell (App/Glasses) los
 // traduce a FlexBox/Text/Icon/Button/ButtonGroup/Image reales. Así el HUD es
 // testeable sin hardware y NINGÚN árbol fuera del vocabulario puede existir.
@@ -31,7 +32,7 @@ public enum HUDAlignment: String, Sendable, Equatable, CaseIterable { case start
 public enum HUDBackground: String, Sendable, Equatable, CaseIterable { case none, card }
 public enum HUDButtonGroupAlignment: String, Sendable, Equatable, CaseIterable { case start, center, end }
 
-/// Catálogo `IconName` del SDK 0.9.0 — CERRADO (116 glyphs, contados del .swiftinterface). No hay `mic`,
+/// Catálogo `IconName` del SDK 1.0.0 — CERRADO (116 glyphs, idéntico a 0.9.0; diff del .swiftinterface). No hay `mic`,
 /// `inbox` ni `github`; "warning" es `exclamationTriangle`. rawValue = el nombre
 /// del case del SDK (el adapter hace `IconName(rawValue:)`).
 public enum HUDIcon: String, Sendable, Equatable, CaseIterable {

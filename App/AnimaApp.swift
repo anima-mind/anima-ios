@@ -23,7 +23,7 @@ struct AnimaApp: App {
         }
         AppModel.registerConsolidationTask()
         AppModel.registerPulseTask()
-        HandoffNotifications.install()
+        AnimaNotifications.install()
     }
 
     var body: some Scene {
@@ -213,6 +213,8 @@ final class AppModel: ObservableObject {
                                                          otherModel: otherModel,
                                                          selfName: { await selfModel.name() })
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+            let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore)
+            notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
@@ -243,6 +245,7 @@ final class AppModel: ObservableObject {
             settings.skills = skills
             settings.selfModel = selfModel
             settings.glasses = glassesModel
+            settings.notifications = notificationsModel
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -554,6 +557,25 @@ final class AppModel: ObservableObject {
         let outcome = await runner.run(sessionId: sessionId)
         chatModel?.appendProactive(outcome.delivered)
         return outcome
+    }
+
+    /// Acción de una notificación (Hecho / En 1 hora / Sí, avancé / Hoy no): corre
+    /// sin abrir la app, sobre el harness ya cableado.
+    func handleNotificationAction(_ action: ProactiveNotificationAction) async {
+        await ensureBootstrapped()
+        let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
+                                             scheduler: proactiveScheduler)
+        await handler.handle(action)
+        await goalsModel?.refresh()
+        await settingsModel?.notifications?.refresh()
+    }
+
+    static func openNotificationSettings() {
+        #if os(iOS)
+        if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+        #endif
     }
 
     func schedulePulse() {

@@ -1,7 +1,8 @@
 // HandoffNotifications.swift — "ver en el teléfono" desde las gafas (doc 05
 // §3.2 patrón handoff). El teléfono suele estar en el bolsillo: se publica una
 // notificación local con el deep link `anima://chat?turn=…`; al tocarla, iOS
-// abre la app y el shell salta al turno. Verificable solo en device.
+// abre la app y el shell salta al turno (el delegate es AnimaNotifications).
+// Verificable solo en device.
 
 import Foundation
 import AnimaKit
@@ -10,23 +11,17 @@ import AnimaKit
 import UIKit
 import UserNotifications
 
-final class HandoffNotifications: NSObject, UNUserNotificationCenterDelegate, Sendable {
-    static let shared = HandoffNotifications()
-    static let linkKey = "anima.deeplink"
+enum HandoffNotifications {
+    static let linkKey = ProactiveNotificationIDs.linkKey
     static let categoryPrefix = "handoff-"
     static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
-
-    static func install() {
-        UNUserNotificationCenter.current().delegate = shared
-    }
 
     static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {
         Task { @MainActor in
             // Con la app al frente el shell ya saltó al turno: sin notificación.
             guard UIApplication.shared.applicationState != .active else { return }
+            guard await NotificationPermission.shared.requestIfNeeded() else { return }
             let center = UNUserNotificationCenter.current()
-            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
-            guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = "Anima"
             content.body = body
@@ -36,27 +31,10 @@ final class HandoffNotifications: NSObject, UNUserNotificationCenterDelegate, Se
             try? await center.add(request)
         }
     }
-
-    // Tocar la notificación → abrir el deep link (lo recibe onOpenURL del shell).
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
-                                withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let raw = response.notification.request.content.userInfo[Self.linkKey] as? String,
-           let url = URL(string: raw) {
-            Task { @MainActor in UIApplication.shared.open(url) }
-        }
-        completionHandler()
-    }
-
-    // Con la app al frente se conserva el default de iOS (sin banner).
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([])
-    }
 }
 #else
 enum HandoffNotifications {
     static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
-    static func install() {}
     static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {}
 }
 #endif

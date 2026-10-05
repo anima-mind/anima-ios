@@ -11,9 +11,8 @@ import UserNotifications
 
 struct UserNotificationApprovalNotifier: ApprovalNotifier {
     func notifyPendingApproval(_ approval: PendingApproval) async {
+        guard await NotificationPermission.shared.requestIfNeeded() else { return }
         let center = UNUserNotificationCenter.current()
-        let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
-        guard granted else { return }
         let content = UNMutableNotificationContent()
         content.title = "Anima propone un cambio de identidad"
         content.body = "\(approval.field.rawValue): \(approval.after). Requiere tu aprobación."

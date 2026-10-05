@@ -86,7 +86,8 @@ targets:
         # Sueño (§5.4): el ciclo corre como BGProcessingTask; sin este array el
         # register(forTaskWithIdentifier:) crashea al lanzar (auditoría v1 gap #1).
         # + gafas (DAT, calcado de Relay verificado en hardware): accesorio + BT.
-        UIBackgroundModes: [processing, external-accessory, bluetooth-peripheral]
+        # + pulso del deseo en background (BGAppRefreshTask mind.anima.pulse): fetch.
+        UIBackgroundModes: [processing, fetch, external-accessory, bluetooth-peripheral]
         UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
         # URL scheme propio: callback de Meta AI en el registro DAT (handleUrl) y
         # deep link del handoff "ver en el teléfono" (anima://chat?turn=…).
@@ -101,7 +102,7 @@ targets:
         NSBluetoothAlwaysUsageDescription: "Anima se conecta a tus gafas Meta para mostrarte respuestas en la cara y escucharte manos libres."
         NSLocalNetworkUsageDescription: "Las gafas Meta envían la foto que autorizas por Wi-Fi local al teléfono."
         NSBonjourServices: [_bonjour._tcp]
-        BGTaskSchedulerPermittedIdentifiers: [mind.anima.consolidate]
+        BGTaskSchedulerPermittedIdentifiers: [mind.anima.consolidate, mind.anima.pulse]
         NSCameraUsageDescription: "Anima usa la cámara solo cuando tú se lo pides o confirmas, para ver y comentar una foto que le muestras."
         NSMicrophoneUsageDescription: "Anima usa el micrófono (del teléfono o de tus gafas) para escucharte cuando tú lo inicias; el audio se transcribe en el teléfono."
         NSSpeechRecognitionUsageDescription: "La transcripción de tus notas de voz ocurre en el dispositivo (es-CO); el audio no sale del teléfono."

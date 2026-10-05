@@ -26,6 +26,67 @@ public enum GoalStatus: String, Sendable, Codable, Equatable {
     case pendingConfirmation = "pending_confirmation"
 }
 
+/// Cada cuánto Anima le pregunta al dueño por una meta (opt-in, hora local).
+public struct CheckInCadence: Sendable, Equatable, Codable {
+    public static let defaultHour = 20
+
+    public var cadence: ProactiveCadence
+    public var hour: Int
+    public var minute: Int
+    /// Solo weekly: 1=domingo … 7=sábado.
+    public var weekday: Int?
+
+    public init(cadence: ProactiveCadence, hour: Int = CheckInCadence.defaultHour, minute: Int = 0,
+                weekday: Int? = nil) {
+        self.cadence = cadence
+        self.hour = hour
+        self.minute = minute
+        self.weekday = weekday
+    }
+
+    public static let off = CheckInCadence(cadence: .none)
+
+    public var isActive: Bool { cadence != .none }
+
+    public var isValid: Bool {
+        (0...23).contains(hour) && (0...59).contains(minute)
+            && (cadence != .weekly || (weekday.map { (1...7).contains($0) } ?? false))
+    }
+
+    /// "cada día a las 20:00", "entre semana a las 07:30", "cada lunes a las 09:00".
+    public var phrase: String {
+        let time = String(format: "%02d:%02d", hour, minute)
+        switch cadence {
+        case .none: return "sin check-in"
+        case .daily: return "cada día a las \(time)"
+        case .weekdays: return "entre semana a las \(time)"
+        case .weekly: return "cada \(Self.weekdayName(weekday ?? 2)) a las \(time)"
+        }
+    }
+
+    public static func weekdayName(_ weekday: Int) -> String {
+        let names = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+        return names[(max(1, min(7, weekday))) - 1]
+    }
+}
+
+public enum CheckInAnswer: String, Sendable, Codable, Equatable, CaseIterable {
+    case yes, partial, no, skipped
+
+    /// Cuenta como avance (racha y predicado progress_check_in).
+    public var isProgress: Bool { self == .yes || self == .partial }
+}
+
+/// Un check-in de una meta: preguntado (asked) y, si hubo, respondido.
+public struct GoalCheckIn: Sendable, Equatable, Identifiable {
+    public var id: String
+    public var goalId: String
+    public var askedAt: Date
+    public var answeredAt: Date?
+    public var answer: CheckInAnswer?
+    public var note: String
+}
+
 /// Una meta del dueño, evaluable sin LLM contra el estado del teléfono.
 public struct Goal: Sendable, Equatable, Identifiable, Codable {
     public var id: String
@@ -38,10 +99,11 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
     public var confirmedByOther: Bool
     public var createdAt: Date
     public var updatedAt: Date
+    public var checkIn: CheckInCadence
 
     public init(id: String, statement: String, desiredState: ObservablePredicate,
                 source: GoalSource, status: GoalStatus, priority: Int, evidence: String,
-                confirmedByOther: Bool, createdAt: Date, updatedAt: Date) {
+                confirmedByOther: Bool, createdAt: Date, updatedAt: Date, checkIn: CheckInCadence = .off) {
         self.id = id
         self.statement = statement
         self.desiredState = desiredState
@@ -52,6 +114,7 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
         self.confirmedByOther = confirmedByOther
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.checkIn = checkIn
     }
 
     /// Un goal motiva acciones solo si está activo y, cuando es inferred, fue
@@ -64,9 +127,12 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
 public actor OtherModel {
     private let queue: DatabaseQueue
     private let now: @Sendable () -> Date
+    private let calendar: Calendar
 
-    public init(queue: DatabaseQueue, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(queue: DatabaseQueue, calendar: Calendar = .current,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.queue = queue
+        self.calendar = calendar
         self.now = now
     }
 
@@ -175,6 +241,124 @@ public actor OtherModel {
         }
     }
 
+    // MARK: - Check-in (opt-in por meta)
+
+    /// Fija la cadencia del check-in. false si la meta no existe o la cadencia es inválida.
+    @discardableResult
+    public func setCheckIn(id: String, _ checkIn: CheckInCadence) -> Bool {
+        guard checkIn.isValid else { return false }
+        let ts = now().timeIntervalSince1970
+        let changed = (try? queue.write { db -> Int in
+            try db.execute(sql: """
+                UPDATE goal SET checkin_cadence=?, checkin_hour=?, checkin_minute=?, checkin_weekday=?, updated_at=?
+                WHERE id=?
+                """, arguments: [checkIn.cadence.rawValue, checkIn.hour, checkIn.minute,
+                                 checkIn.cadence == .weekly ? checkIn.weekday : nil, ts, id])
+            return db.changesCount
+        }) ?? 0
+        return changed > 0
+    }
+
+    @discardableResult
+    public func clearCheckIn(id: String) -> Bool {
+        guard let goal = goal(id: id) else { return false }
+        return setCheckIn(id: id, CheckInCadence(cadence: .none, hour: goal.checkIn.hour, minute: goal.checkIn.minute))
+    }
+
+    /// Anima preguntó (deep link del check-in): fila sin respuesta. nil si la meta no existe.
+    @discardableResult
+    public func markCheckInAsked(goalId: String) -> String? {
+        guard goal(id: goalId) != nil else { return nil }
+        let id = UUID().uuidString
+        try? queue.write { db in
+            try db.execute(sql: "INSERT INTO goal_checkin (id, goal_id, asked_at) VALUES (?,?,?)",
+                           arguments: [id, goalId, now().timeIntervalSince1970])
+        }
+        return id
+    }
+
+    /// La respuesta del dueño (chat o acción de la notificación). Responde la
+    /// pregunta abierta de las últimas 24h si la hay; si no, crea la fila.
+    @discardableResult
+    public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "") -> GoalCheckIn? {
+        guard goal(id: goalId) != nil else { return nil }
+        let ts = now().timeIntervalSince1970
+        let id = try? queue.write { db -> String in
+            if let open = try String.fetchOne(db, sql: """
+                SELECT id FROM goal_checkin WHERE goal_id=? AND answered_at IS NULL AND asked_at > ?
+                ORDER BY asked_at DESC LIMIT 1
+                """, arguments: [goalId, ts - 24 * 3600]) {
+                try db.execute(sql: "UPDATE goal_checkin SET answered_at=?, answer=?, note=? WHERE id=?",
+                               arguments: [ts, answer.rawValue, note, open])
+                return open
+            }
+            let fresh = UUID().uuidString
+            try db.execute(sql: """
+                INSERT INTO goal_checkin (id, goal_id, asked_at, answered_at, answer, note) VALUES (?,?,?,?,?,?)
+                """, arguments: [fresh, goalId, ts, ts, answer.rawValue, note])
+            return fresh
+        }
+        return id.flatMap { checkIn(id: $0) }
+    }
+
+    public func lastCheckIn(goalId: String) -> GoalCheckIn? {
+        checkIns(goalId: goalId, limit: 1).first
+    }
+
+    public func checkIns(goalId: String, limit: Int = 30) -> [GoalCheckIn] {
+        (try? queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM goal_checkin WHERE goal_id=? ORDER BY asked_at DESC LIMIT ?",
+                             arguments: [goalId, limit]).map(Self.checkIn(from:))
+        }) ?? []
+    }
+
+    /// ¿Ya respondió hoy (día local)? Evita repetir la pregunta en el chat.
+    public func answeredToday(goalId: String) -> Bool {
+        let start = calendar.startOfDay(for: now()).timeIntervalSince1970
+        let count = (try? queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM goal_checkin WHERE goal_id=? AND answered_at >= ?",
+                             arguments: [goalId, start])
+        }).flatMap { $0 } ?? 0
+        return count > 0
+    }
+
+    /// Días consecutivos (local) con avance (yes/partial), terminando hoy o ayer.
+    public func streak(goalId: String) -> Int {
+        let days = Set(progressDates(goalId: goalId).map { calendar.startOfDay(for: $0) })
+        let today = calendar.startOfDay(for: now())
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return 0 }
+        var cursor = days.contains(today) ? today : yesterday
+        var count = 0
+        while days.contains(cursor) {
+            count += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
+            cursor = previous
+        }
+        return count
+    }
+
+    /// Días completos desde el último avance (yes/partial). nil si nunca hubo.
+    public func daysSinceProgress(goalId: String) -> Int? {
+        guard let last = progressDates(goalId: goalId).first else { return nil }
+        return max(0, Int(now().timeIntervalSince(last) / 86_400))
+    }
+
+    private func progressDates(goalId: String) -> [Date] {
+        (try? queue.read { db in
+            try Double.fetchAll(db, sql: """
+                SELECT answered_at FROM goal_checkin
+                WHERE goal_id=? AND answer IN ('yes','partial') AND answered_at IS NOT NULL
+                ORDER BY answered_at DESC
+                """, arguments: [goalId]).map(Date.init(timeIntervalSince1970:))
+        }) ?? []
+    }
+
+    private func checkIn(id: String) -> GoalCheckIn? {
+        (try? queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM goal_checkin WHERE id=?", arguments: [id]).map(Self.checkIn(from:))
+        }) ?? nil
+    }
+
     // MARK: - Lectura
 
     public func goal(id: String) -> Goal? {
@@ -212,6 +396,20 @@ public actor OtherModel {
             evidence: row["evidence"] ?? "",
             confirmedByOther: (row["confirmed_by_other"] as Int? ?? 0) == 1,
             createdAt: Date(timeIntervalSince1970: row["created_at"]),
-            updatedAt: Date(timeIntervalSince1970: row["updated_at"]))
+            updatedAt: Date(timeIntervalSince1970: row["updated_at"]),
+            checkIn: CheckInCadence(cadence: ProactiveCadence(rawValue: row["checkin_cadence"] ?? "none") ?? .none,
+                                    hour: row["checkin_hour"] ?? CheckInCadence.defaultHour,
+                                    minute: row["checkin_minute"] ?? 0,
+                                    weekday: row["checkin_weekday"]))
+    }
+
+    static func checkIn(from row: Row) -> GoalCheckIn {
+        GoalCheckIn(
+            id: row["id"],
+            goalId: row["goal_id"],
+            askedAt: Date(timeIntervalSince1970: row["asked_at"]),
+            answeredAt: (row["answered_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            answer: (row["answer"] as String?).flatMap(CheckInAnswer.init(rawValue:)),
+            note: row["note"] ?? "")
     }
 }

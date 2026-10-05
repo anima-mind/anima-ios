@@ -41,6 +41,7 @@ import GRDB
             .sleepHours(atLeast: 7, lastDays: 5),
             .calendarFreeSlot(minMinutes: 45, withinDays: 3),
             .daysSinceLastMention(topic: "tesis", atMost: 4),
+            .progressCheckIn(everyDays: 2),
         ]
         for predicate in cases {
             let data = try JSONEncoder().encode(predicate)

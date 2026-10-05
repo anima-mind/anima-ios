@@ -48,6 +48,8 @@ public final class SettingsViewModel: ObservableObject {
     public var skills: SkillsViewModel?
     /// Sección Gafas (track G); la inyecta el shell con el GlassesBody vivo.
     public var glasses: GlassesViewModel?
+    /// Sección Notificaciones (capa proactiva); la inyecta el shell.
+    public var notifications: NotificationsSettingsModel?
     /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
     public var nightSimulator: NightSimulator?
     /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
@@ -345,7 +347,7 @@ public final class SettingsViewModel: ObservableObject {
 /// Ajustes como HUB (campo batch 3, FIX F; patrón iOS Settings): la raíz es una
 /// lista compacta de filas con resumen vivo que pushean sub-pantallas.
 public enum SettingsRoute: String, Hashable, CaseIterable, Sendable {
-    case account, model, skills, glasses, mind
+    case account, model, skills, glasses, mind, notifications
 }
 
 public struct SettingsView: View {
@@ -377,6 +379,10 @@ public struct SettingsView: View {
                         }
                         hubDivider
                         hubRow(.mind, title: "Mente", subtitle: model.mindSummary, glyph: "moon")
+                        if let notifications = model.notifications {
+                            hubDivider
+                            NotificationsHubRow(notifications: notifications)
+                        }
                     }
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.Radius.card)
@@ -429,6 +435,10 @@ public struct SettingsView: View {
             }
         case .mind:
             SettingsSubScreen(title: "Mente") { MindSettingsContent(model: model) }
+        case .notifications:
+            if let notifications = model.notifications {
+                SettingsSubScreen(title: "Notificaciones") { NotificationsSettingsSection(model: notifications) }
+            }
         }
     }
 }
@@ -504,6 +514,18 @@ private struct GlassesHubRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.glasses")
+    }
+}
+
+private struct NotificationsHubRow: View {
+    @ObservedObject var notifications: NotificationsSettingsModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.notifications) {
+            SettingsHubRowLabel(title: "Notificaciones", subtitle: notifications.hubSummary, glyph: "bell")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.notifications")
+        .task { await notifications.refresh() }
     }
 }
 

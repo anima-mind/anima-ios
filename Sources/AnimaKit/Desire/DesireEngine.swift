@@ -20,6 +20,12 @@ public struct Lack: Sendable, Equatable {
     public var reading: ObservableReading
 }
 
+/// De dónde salió el pulso: al abrir la app (ya está en el chat) o en background
+/// (BGAppRefreshTask; llega como notificación local).
+public enum IntentionOrigin: String, Sendable, Codable, Equatable {
+    case foreground, background
+}
+
 /// El log de una propuesta proactiva. outcome lo alimentan los botones del chat.
 public struct Intention: Sendable, Equatable, Identifiable, Codable {
     public enum Outcome: String, Sendable, Codable, Equatable {
@@ -32,6 +38,7 @@ public struct Intention: Sendable, Equatable, Identifiable, Codable {
     public var proposedText: String
     public var outcome: Outcome
     public var createdAt: Date
+    public var origin: IntentionOrigin = .foreground
 }
 
 public actor DesireEngine {
@@ -91,7 +98,7 @@ public actor DesireEngine {
     /// Un pulso: evalúa gaps (gratis), y si hay presupuesto y un gap fuera de
     /// cooldown, produce como máximo UNA Intention. Devuelve las producidas (0 o 1).
     @discardableResult
-    public func pulse(sessionId: SessionID? = nil) async throws -> [Intention] {
+    public func pulse(sessionId: SessionID? = nil, origin: IntentionOrigin = .foreground) async throws -> [Intention] {
         let gaps = await self.gaps()
         guard !gaps.isEmpty else { return [] }
 
@@ -102,7 +109,7 @@ public actor DesireEngine {
         // Presupuesto duro: el 5º pulso del día no corre; el gap espera.
         guard pulsesToday() < dailyBudget else { return [] }
 
-        let intention = try await drive(top, sessionId: sessionId)
+        let intention = try await drive(top, sessionId: sessionId, origin: origin)
         return [intention]
     }
 
@@ -110,7 +117,7 @@ public actor DesireEngine {
     public func gaps() async -> [Lack] {
         var out: [Lack] = []
         for goal in await otherModel.desire() {
-            let reading = await goal.desiredState.evaluate(in: environment)
+            let reading = await goal.desiredState.evaluate(in: environment, goalId: goal.id)
             if !reading.satisfied { out.append(Lack(goal: goal, reading: reading)) }
         }
         return out
@@ -128,7 +135,7 @@ public actor DesireEngine {
 
     // MARK: - drive: redactar la Intention (Haiku)
 
-    private func drive(_ lack: Lack, sessionId: SessionID?) async throws -> Intention {
+    private func drive(_ lack: Lack, sessionId: SessionID?, origin: IntentionOrigin) async throws -> Intention {
         // Contexto barato para hacer la propuesta concreta (huecos del calendario).
         let slots = await environment.freeSlots(minMinutes: 45, withinDays: 7)
         let slotHint = slots.first.map { Self.describeSlot($0) } ?? "sin un hueco claro; sugiere cómo abrirlo"
@@ -147,7 +154,7 @@ public actor DesireEngine {
             ? fallbackText(lack)
             : text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let intention = persist(lack: lack, proposedText: proposed)
+        let intention = persist(lack: lack, proposedText: proposed, origin: origin)
         // Persiste como turno del agente marcado proactive (canónico: entra al
         // contexto del próximo turno). La distinción visual la lleva el chat vía
         // el log de Intentions.
@@ -164,21 +171,21 @@ public actor DesireEngine {
 
     // MARK: - Log de Intentions (goal_id NOT NULL = eval #4)
 
-    private func persist(lack: Lack, proposedText: String) -> Intention {
+    private func persist(lack: Lack, proposedText: String, origin: IntentionOrigin) -> Intention {
         let id = UUID().uuidString
         let ts = now()
         let observables = ObservableLog(predicate: lack.goal.desiredState, detail: lack.reading.detail)
         let observablesJSON = String(data: (try? JSONEncoder().encode(observables)) ?? Data(), encoding: .utf8) ?? "{}"
         try? queue.write { db in
             try db.execute(sql: """
-                INSERT INTO intention (id, goal_id, observables_json, gap, proposed_text, outcome, created_at)
-                VALUES (?,?,?,?,?, 'pending', ?)
+                INSERT INTO intention (id, goal_id, observables_json, gap, proposed_text, outcome, created_at, origin)
+                VALUES (?,?,?,?,?, 'pending', ?, ?)
                 """, arguments: [id, lack.goal.id, observablesJSON, lack.reading.detail, proposedText,
-                                 ts.timeIntervalSince1970])
+                                 ts.timeIntervalSince1970, origin.rawValue])
         }
         return Intention(id: id, goalId: lack.goal.id, observablesJSON: observablesJSON,
                          gap: lack.reading.detail, proposedText: proposedText,
-                         outcome: .pending, createdAt: ts)
+                         outcome: .pending, createdAt: ts, origin: origin)
     }
 
     /// Intentions aún sin resolver (para pintarlas como mensajes proactivos).
@@ -187,6 +194,12 @@ public actor DesireEngine {
             try Row.fetchAll(db, sql: "SELECT * FROM intention WHERE outcome='pending' ORDER BY created_at ASC")
                 .map(Self.intention(from:))
         }) ?? []
+    }
+
+    public func intention(id: String) -> Intention? {
+        (try? queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM intention WHERE id=?", arguments: [id]).map(Self.intention(from:))
+        }) ?? nil
     }
 
     public func allIntentions(limit: Int = 200) -> [Intention] {
@@ -276,7 +289,8 @@ public actor DesireEngine {
             gap: row["gap"] ?? "",
             proposedText: row["proposed_text"] ?? "",
             outcome: Intention.Outcome(rawValue: row["outcome"]) ?? .pending,
-            createdAt: Date(timeIntervalSince1970: row["created_at"]))
+            createdAt: Date(timeIntervalSince1970: row["created_at"]),
+            origin: IntentionOrigin(rawValue: row["origin"] ?? "foreground") ?? .foreground)
     }
 }
 

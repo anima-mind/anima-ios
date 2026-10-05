@@ -63,6 +63,9 @@ public actor WorkingMemory {
     /// Instrucciones volátiles de una sesión de propósito (p.ej. el taller de
     /// skills): van en el mismo bloque system que el estado corporal.
     private var taskInstructions: String?
+    // Reloj del harness: la última línea del system volátil (el modelo resuelve
+    // "mañana a las 9" contra ella). Va al final para no romper lo cacheado antes.
+    private var clockLine: String?
 
     // Bloques compaction emitidos por el server; se re-anexan cada turno (contrato beta).
     private var compactionBlocks: [ContentBlock] = []
@@ -119,6 +122,11 @@ public actor WorkingMemory {
         let body = [bodyStatusLine, surfaceHint, taskInstructions].compactMap { $0 }.filter { !$0.isEmpty }
         if !body.isEmpty {
             messages.append(Message(role: .system, content: [.text(body.joined(separator: "\n"))]))
+        }
+
+        // 3d. reloj del harness: SIEMPRE el último system del turno.
+        if let clockLine {
+            messages.append(Message(role: .system, content: [.text(clockLine)]))
         }
 
         // 4. contexto activado — memorias del Brain (Fase 2: vacío por ahora).
@@ -279,6 +287,25 @@ public actor WorkingMemory {
 
     public func updateSurfaceHint(_ hint: String?) {
         surfaceHint = hint
+    }
+
+    /// Reloj del harness: fija (o quita con nil) la línea "Ahora: …" del turno.
+    public func updateClock(_ now: Date?, timeZone: TimeZone = .current) {
+        clockLine = now.map { Self.clockLine(for: $0, timeZone: timeZone) }
+    }
+
+    /// `Ahora: lunes 5 de octubre 2026, 14:30 (America/Bogota, UTC-5)` en es_CO.
+    public static func clockLine(for date: Date, timeZone: TimeZone) -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "es_CO")
+        df.timeZone = timeZone
+        df.dateFormat = "EEEE d 'de' MMMM yyyy, HH:mm"
+        let seconds = timeZone.secondsFromGMT(for: date)
+        let hours = seconds / 3600
+        let minutes = abs(seconds % 3600) / 60
+        let sign = seconds < 0 ? "-" : "+"
+        let offset = minutes == 0 ? "UTC\(sign)\(abs(hours))" : String(format: "UTC%@%d:%02d", sign, abs(hours), minutes)
+        return "Ahora: \(df.string(from: date)) (\(timeZone.identifier), \(offset))"
     }
 
     /// Fase 3 (§5.6): fija (o limpia con nil) el banner de restructure del turno.

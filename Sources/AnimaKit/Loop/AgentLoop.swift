@@ -50,6 +50,8 @@ public actor AgentLoop {
     private let bodyStatus: (@Sendable () async -> String?)?
     /// Sesión de propósito (taller de skills): system volátil de tarea. nil ⇒ nada cambia.
     private let taskInstructions: String?
+    /// Reloj del harness (línea "Ahora: …" del system volátil). nil ⇒ sin reloj.
+    private let clock: (@Sendable () -> Date)?
 
     /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(
@@ -75,6 +77,7 @@ public actor AgentLoop {
         skillEngine: SkillEngine? = nil,
         bodyStatus: (@Sendable () async -> String?)? = nil,
         taskInstructions: String? = nil,
+        clock: (@Sendable () -> Date)? = { Date() },
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -85,7 +88,7 @@ public actor AgentLoop {
                   toolTimeout: toolTimeout, stopConditions: stopConditions, retryPolicy: retryPolicy,
                   brain: brain, inbox: inbox, memoryBudget: memoryBudget, selfModel: selfModel,
                   realRegister: realRegister, skillEngine: skillEngine, bodyStatus: bodyStatus,
-                  taskInstructions: taskInstructions, sleep: sleep)
+                  taskInstructions: taskInstructions, clock: clock, sleep: sleep)
     }
 
     /// Init por modo de operación: el selector decide el córtex de cada turno y
@@ -110,6 +113,7 @@ public actor AgentLoop {
         skillEngine: SkillEngine? = nil,
         bodyStatus: (@Sendable () async -> String?)? = nil,
         taskInstructions: String? = nil,
+        clock: (@Sendable () -> Date)? = { Date() },
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
@@ -131,6 +135,7 @@ public actor AgentLoop {
         self.skillEngine = skillEngine
         self.bodyStatus = bodyStatus
         self.taskInstructions = taskInstructions
+        self.clock = clock
         self.sleep = sleep
     }
 
@@ -208,6 +213,7 @@ public actor AgentLoop {
             }
             await workingMemory.updateSurfaceHint(surface == .glassesHUD ? Self.glassesSurfaceHint : nil)
             if let taskInstructions { await workingMemory.updateTaskInstructions(taskInstructions) }
+            await workingMemory.updateClock(clock?())
 
             // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno
             // y las memorias entran como bloque etiquetado antes del turn input.

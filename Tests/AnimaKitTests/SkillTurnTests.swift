@@ -138,7 +138,7 @@ import Testing
             authMode: .apiKey, token: "sk-ant-api03-xyz",
             clientTools: [NotesTool(root: notesRoot)], serverTools: [],
             stopConditions: stop, retryPolicy: RetryPolicy(maxAttempts: 1),
-            skillEngine: engine, sleep: { _ in })
+            skillEngine: engine, clock: nil, sleep: { _ in })
         return Harness(loop: loop, provider: provider, engine: engine, telemetry: telemetry,
                        sid: try store.startSession())
     }

@@ -475,7 +475,9 @@ enum HUDDATMapper {
 
     static func button(_ b: HUDButton, _ onAction: @escaping @Sendable (HUDActionID) -> Void) -> Button {
         let action = b.action
-        return Button(label: b.label, style: buttonStyle(b.style), iconName: b.icon.map(iconName)) { onAction(action) }
+        let button = Button(label: b.label, style: buttonStyle(b.style), iconName: b.icon.map(iconName)) { onAction(action) }
+        // DAT 1.0: el primer botón con rol primary recibe el foco al renderizar.
+        return b.isPrimaryAction ? button.actionRole(.primary) : button
     }
 
     /// El catálogo HUDIcon es 1:1 con IconName (test de catálogo en AnimaKit).

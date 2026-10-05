@@ -73,7 +73,8 @@ public enum HUDRenderer {
                               body: "“" + HUDSummary.clip(transcript, HUDValidator.bodyLimit - 2) + "”",
                               group: HUDButtonGroup(alignment: .end, buttons: [
                                   HUDButton("Otra vez", style: .outline, icon: .twoArrowsClockwise, action: .again),
-                                  HUDButton("Enviar", style: .primary, icon: .paperAirplane, action: .send),
+                                  HUDButton("Enviar", style: .primary, icon: .paperAirplane, action: .send,
+                                            isPrimaryAction: true),
                               ]))),
             ]))
 
@@ -112,7 +113,8 @@ public enum HUDRenderer {
                               body: HUDSummary.clip(reason, HUDValidator.bodyLimit),
                               group: HUDButtonGroup(alignment: .end, buttons: [
                                   HUDButton("No", style: .outline, icon: .x, action: .cameraDeny),
-                                  HUDButton("Tomar foto", style: .primary, icon: .checkmarkCircle, action: .cameraAllow),
+                                  HUDButton("Tomar foto", style: .primary, icon: .checkmarkCircle, action: .cameraAllow,
+                                            isPrimaryAction: true),
                               ]))),
             ]))
 
@@ -120,7 +122,8 @@ public enum HUDRenderer {
             return HUDView(name: "agentCard", root: root(back: true, [.flexBox(box)]))
 
         case .handoff:
-            return HUDView(name: "handoff", root: root(back: true, [
+            // Su único botón es la salida: el foco cae ahí (actionRole primary).
+            return HUDView(name: "handoff", root: root(back: true, backIsPrimary: true, [
                 .flexBox(card(icon: .phone, meta: "En el teléfono", heading: "Sigue en el teléfono.",
                               body: "Toca la notificación: la conversación está ahí, intacta.", group: nil)),
             ]))
@@ -134,16 +137,20 @@ public enum HUDRenderer {
             .flexBox(card(icon: icon, meta: meta, heading: reply.heading,
                           body: reply.body.isEmpty ? nil : reply.body,
                           group: HUDButtonGroup(alignment: .end, buttons: [
-                              HUDButton("Responder", style: .primary, icon: .speechBubble, action: .reply),
+                              HUDButton("Responder", style: .primary, icon: .speechBubble, action: .reply,
+                                        isPrimaryAction: true),
                               HUDButton("En el teléfono", style: .secondary, icon: .phone, action: .onPhone),
                           ]))),
         ]))
     }
 
     /// Root de toda vista: FlexBox(column, spacing 12, padding 16) [+ Atrás].
-    static func root(back: Bool, _ children: [HUDNode]) -> HUDFlexBox {
+    static func root(back: Bool, backIsPrimary: Bool = false, _ children: [HUDNode]) -> HUDFlexBox {
         var nodes: [HUDNode] = []
-        if back { nodes.append(.button(HUDButton("Atrás", style: .outline, icon: .arrowLeft, action: .back))) }
+        if back {
+            nodes.append(.button(HUDButton("Atrás", style: .outline, icon: .arrowLeft, action: .back,
+                                           isPrimaryAction: backIsPrimary)))
+        }
         nodes.append(contentsOf: children)
         return HUDFlexBox(direction: .column, spacing: 12, padding: 16, children: nodes)
     }

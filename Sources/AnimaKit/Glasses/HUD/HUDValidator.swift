@@ -25,6 +25,7 @@ public enum HUDValidationError: Error, Equatable, Sendable, CustomStringConverti
     case tooManyButtons(Int)
     case tooManyInteractive(Int)
     case missingBack
+    case multiplePrimaryActions(Int)
     case textTooLong(style: HUDTextStyle, count: Int, limit: Int)
     case emptyText
     case emptyButtonGroup
@@ -42,6 +43,8 @@ public enum HUDValidationError: Error, Equatable, Sendable, CustomStringConverti
         case .tooManyButtons(let n): return "demasiados botones (\(n); máximo 3 por vista)"
         case .tooManyInteractive(let n): return "demasiados elementos interactivos (\(n); máximo 4)"
         case .missingBack: return "toda vista no-raíz necesita un botón Atrás (action back)"
+        case .multiplePrimaryActions(let n):
+            return "\(n) botones con primary_action (máximo 1 por vista: solo uno recibe el foco)"
         case .textTooLong(let style, let count, let limit):
             return "texto \(style.rawValue) de \(count) caracteres (máximo \(limit)); el resto va al teléfono"
         case .emptyText: return "texto vacío"
@@ -68,6 +71,8 @@ public enum HUDValidator {
     public static let maxButtons = 3
     public static let maxInteractive = 4
     public static let maxDepth = 5
+    /// `actionRole(.primary)`: el foco es UNO; dos primarios no tienen sentido.
+    public static let maxPrimaryActions = 1
 
     /// Valida una vista completa contra el checklist. Devuelve el primer error.
     public static func validate(_ view: HUDView) throws(HUDValidationError) {
@@ -76,6 +81,8 @@ public enum HUDValidator {
         let interactive = view.actions.count
         if interactive > maxInteractive { throw .tooManyInteractive(interactive) }
         if !view.isRoot, !view.actions.contains(.back) { throw .missingBack }
+        let primaries = view.buttons.filter(\.isPrimaryAction).count
+        if primaries > maxPrimaryActions { throw .multiplePrimaryActions(primaries) }
         try validate(.flexBox(view.root), depth: 1)
     }
 
@@ -132,7 +139,9 @@ public enum HUDValidator {
 ///                {"type":"icon","name":"bell","style":"outline"},
 ///                {"type":"image","uri":"https://…","size":"icon","corner_radius":"small"},
 ///                {"type":"button_group","alignment":"end","buttons":[
-///                    {"type":"button","label":"Listo","style":"primary","icon":"checkmark","action":"dismiss"}]}]}
+///                    {"type":"button","label":"Listo","style":"primary","icon":"checkmark","action":"dismiss",
+///                     "primary_action":true}]}]}
+/// `primary_action` (opcional) = `actionRole(.primary)`: recibe el foco; máximo uno por vista.
 /// Las acciones que el agente puede cablear son un set cerrado: dismiss / on_phone / talk.
 public enum HUDTreeParser {
     public static let agentActions: Set<HUDActionID> = [.dismiss, .onPhone, .talk]
@@ -200,7 +209,14 @@ public enum HUDTreeParser {
             icon = parsed
         }
         guard let action = try action(obj, "action") else { throw .missingField("action") }
-        return HUDButton(label, style: try enumValue(obj, "style", default: .primary), icon: icon, action: action)
+        var primary = false
+        switch obj["primary_action"] {
+        case nil, .null?: break
+        case .bool(let flag)?: primary = flag
+        case let other?: throw .unknownValue(field: "primary_action", value: "\(other)")
+        }
+        return HUDButton(label, style: try enumValue(obj, "style", default: .primary), icon: icon, action: action,
+                         isPrimaryAction: primary)
     }
 
     private static func action(_ obj: [String: JSONValue], _ key: String) throws(HUDValidationError) -> HUDActionID? {

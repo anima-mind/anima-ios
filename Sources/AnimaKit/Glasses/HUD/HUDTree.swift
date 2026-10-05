@@ -94,11 +94,16 @@ public struct HUDButton: Sendable, Equatable {
     public var style: HUDButtonStyle
     public var icon: HUDIcon?
     public var action: HUDActionID
-    public init(_ label: String, style: HUDButtonStyle = .primary, icon: HUDIcon? = nil, action: HUDActionID) {
+    /// DAT 1.0 `Button.actionRole(.primary)`: el primer botón con este rol recibe
+    /// el FOCO al renderizar (menos navegación con captouch). Máximo UNO por vista.
+    public var isPrimaryAction: Bool
+    public init(_ label: String, style: HUDButtonStyle = .primary, icon: HUDIcon? = nil, action: HUDActionID,
+                isPrimaryAction: Bool = false) {
         self.label = label
         self.style = style
         self.icon = icon
         self.action = action
+        self.isPrimaryAction = isPrimaryAction
     }
 }
 

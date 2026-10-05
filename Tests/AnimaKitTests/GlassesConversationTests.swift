@@ -11,6 +11,9 @@ final class MockVoice: VoiceCapturePort, SpeechOutputPort, @unchecked Sendable {
     let cancels = Locked(0)
     let stops = Locked(0)
     let hold = Locked(false)
+    /// Karaoke: el TTS simulado reporta el rango de CADA palabra de la
+    /// utterance (como AVSpeechSynthesizer), con una pausa entre cada una.
+    let wordRanges = Locked(false)
 
     func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
         onRoute(route.value)
@@ -19,6 +22,16 @@ final class MockVoice: VoiceCapturePort, SpeechOutputPort, @unchecked Sendable {
     }
     func cancel() { cancels.mutate { $0 += 1 }; hold.mutate { $0 = false } }
     func speak(_ text: String) async { spoken.mutate { $0.append(text) } }
+    func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
+        if wordRanges.value {
+            let ns = text as NSString
+            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byWords) { _, range, _, _ in
+                onRange(range)
+            }
+            for _ in 0..<3 { try? await Task.sleep(nanoseconds: 2_000_000) }
+        }
+        await speak(text)
+    }
     func stop() { stops.mutate { $0 += 1 } }
 }
 
@@ -115,7 +128,8 @@ struct GlassesConversationTests {
         #expect(received.surface == .glassesHUD)
         #expect(received.content == [.text(AudioTool.transcriptText("¿qué tengo mañana?"))])
         // TTS corto + card con el gist.
-        #expect(rig.voice.spoken.value == ["Mañana: standup a las 9. Almuerzo con Ana a la 1."])
+        // TTS por oración: la primera se dice apenas llega, la siguiente se encola.
+        #expect(rig.voice.spoken.value == ["Mañana: standup a las 9.", "Almuerzo con Ana a la 1."])
         let answer = try #require(rig.lastView)
         #expect(answer.texts.contains { $0.content == "Mañana: standup a las 9." && $0.style == .heading })
         try HUDValidator.validate(answer)

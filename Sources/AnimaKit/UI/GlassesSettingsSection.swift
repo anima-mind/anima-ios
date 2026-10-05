@@ -14,14 +14,19 @@ public final class GlassesViewModel: ObservableObject {
     /// "Hey Meta, start Anima": estado del stream de voice invocations.
     @Published public private(set) var voiceStatus: VoiceInvocationsStatus = .unavailable
 
+    /// Próxima card de "Probar iconos" (diagnóstico de campo del catálogo).
+    @Published public private(set) var iconProbeIndex = 0
+
     private let body: GlassesBody?
     private let activation: GlassesActivation?
+    private let host: (any GlassesToolHost)?
     private var observeTask: Task<Void, Never>?
     private var voiceTask: Task<Void, Never>?
 
-    public init(body: GlassesBody?, activation: GlassesActivation?) {
+    public init(body: GlassesBody?, activation: GlassesActivation?, host: (any GlassesToolHost)? = nil) {
         self.body = body
         self.activation = activation
+        self.host = host
         guard let body else { return }
         observeTask = Task { [weak self] in
             for await status in await body.statusUpdates() {
@@ -93,6 +98,28 @@ public final class GlassesViewModel: ObservableObject {
         guard let activation else { return }
         Task { await activation.userRequested() }
     }
+
+    /// "Probar iconos" solo con las gafas activas y la superficie HUD cableada.
+    public var canProbeIcons: Bool { status.isActive && host != nil }
+
+    public var iconProbeLabel: String {
+        "Probar iconos (\(iconProbeIndex + 1)/\(HUDIconProbe.cardCount))"
+    }
+
+    /// Proyecta la siguiente card de iconos por el camino normal (card del agente).
+    public func probeIcons() {
+        guard let host else { return }
+        let index = iconProbeIndex
+        Task {
+            let shown = await host.project(HUDIconProbe.card(index))
+            if shown {
+                iconProbeIndex = (index + 1) % HUDIconProbe.cardCount
+                notice = "Card \(index + 1)/\(HUDIconProbe.cardCount) en las gafas: anota qué nombres salen como sol."
+            } else {
+                notice = "No se pudo proyectar: termina la conversación en las gafas y reintenta."
+            }
+        }
+    }
 }
 
 struct GlassesSettingsSection: View {
@@ -135,6 +162,13 @@ struct GlassesSettingsSection: View {
             }
             .font(Theme.Type_.secondary)
             .frame(minHeight: Theme.minHitTarget)
+            if model.canProbeIcons {
+                Button(model.iconProbeLabel) { model.probeIcons() }
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(minHeight: Theme.minHitTarget)
+                    .accessibilityIdentifier("settings.glasses.probeIcons")
+            }
             if model.needsDATUpdate {
                 Button("Actualizar la app DAT de las gafas") { model.openDATUpdate() }
                     .font(Theme.Type_.secondary)

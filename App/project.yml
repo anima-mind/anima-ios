@@ -102,6 +102,10 @@ targets:
         NSCalendarsFullAccessUsageDescription: "Anima lee tu calendario para responder qué tienes agendado y crea eventos solo tras tu confirmación."
         NSRemindersFullAccessUsageDescription: "Anima lee tus recordatorios para ayudarte a no olvidar pendientes y crea nuevos solo tras tu confirmación."
         NSLocationWhenInUseUsageDescription: "Anima usa tu ubicación para dar respuestas con contexto de dónde estás; nunca la comparte."
+        # HealthKit: PhoneContextTool referencia las APIs (ITMS-90683 exige el string
+        # aunque los paths sean stubs); el acceso real siempre es opt-in del dueño.
+        NSHealthShareUsageDescription: "Anima lee datos básicos de salud (pasos, sueño) solo si tú lo permites, para darte contexto en tus conversaciones."
+        NSHealthUpdateUsageDescription: "Anima no escribe datos de salud hoy; el permiso existe por las capacidades del asistente y siempre requiere tu autorización explícita."
         NSContactsUsageDescription: "Anima busca en tus contactos cuando necesitas datos de alguien; la información se queda en tu teléfono."
     settings:
       base:

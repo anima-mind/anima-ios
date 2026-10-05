@@ -87,6 +87,7 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
     private let lock = NSLock()
     private var detector: TurnEndDetector
     private var cancelled = false
+    private var finishRequested = false
 
     public init(audio: any AudioSessionPort, detector: TurnEndDetector = TurnEndDetector(),
                 settle: TimeInterval = 2, poll: TimeInterval = 0.1,
@@ -104,8 +105,9 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
     /// `recognizer` resuelve permisos y disponibilidad ANTES de tocar el audio:
     /// nil = no se captura (y la sesión de audio queda intacta).
     public func run(recognizer: () async -> (any SpeechRecognitionPort)?,
-                    onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
-        withLock { cancelled = false; detector = template }
+                    onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                    onPartial: (@Sendable (String) -> Void)? = nil) async -> String? {
+        withLock { cancelled = false; finishRequested = false; detector = template }
         guard let recognizer = await recognizer() else { return nil }
         let route = await AudioRoutePlanner.settleCapture(audio, settle: settle, poll: min(poll, 0.1), sleep: sleep)
         onRoute(route)
@@ -114,7 +116,10 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
             return nil
         }
         do {
-            try recognizer.start { [weak self] text in self?.partial(text) }
+            try recognizer.start { [weak self] text in
+                self?.partial(text)
+                onPartial?(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
         } catch {
             recognizer.stop()
             AudioRoutePlanner.releaseCapture(audio)
@@ -123,7 +128,7 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
         withLock { detector.start(at: Date()) }
         while !isCancelled {
             await sleep(poll)
-            let done = withLock { detector.isFinished(at: Date()) }
+            let done = withLock { finishRequested || detector.isFinished(at: Date()) }
             if done || Task.isCancelled { break }
         }
         let (transcript, wasCancelled) = withLock { (detector.transcript, cancelled) }
@@ -134,6 +139,11 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
 
     public func cancel() {
         withLock { cancelled = true }
+    }
+
+    /// "Listo": corta la escucha conservando lo oído.
+    public func finish() {
+        withLock { finishRequested = true }
     }
 
     private func partial(_ text: String) {
@@ -185,7 +195,34 @@ public protocol VoiceCapturePort: Sendable {
     /// Devuelve el transcript (nil si no se oyó nada o se canceló). `onRoute`
     /// informa la ruta real (gafas HFP o fallback al teléfono).
     func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String?
+    /// Igual, con el transcript EN VIVO (parciales) para mostrarlo mientras habla.
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void) async -> String?
+    /// Descarta: la captura devuelve nil.
     func cancel()
+    /// "Listo": termina YA conservando lo oído (sin esperar el silencio).
+    func finish()
+}
+
+public extension VoiceCapturePort {
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void) async -> String? {
+        await capture(onRoute: onRoute)
+    }
+    func finish() {}
+}
+
+/// Fuerza el micrófono del TELÉFONO (composer del chat): nunca toca HFP aunque
+/// haya gafas conectadas — `settleCapture` va directo a `activatePhoneMic`.
+public struct PhoneMicAudioSession: AudioSessionPort {
+    private let base: any AudioSessionPort
+    public init(_ base: any AudioSessionPort) { self.base = base }
+    public func hfpInputAvailable() -> Bool { false }
+    public func activateHFP() throws { try base.activatePhoneMic() }
+    public func currentInputIsHFP() -> Bool { false }
+    public func activatePhoneMic() throws { try base.activatePhoneMic() }
+    public func activatePlaybackA2DP() throws { try base.activatePlaybackA2DP() }
+    public func deactivate() { base.deactivate() }
 }
 
 /// Salida por voz (TTS). `speak` retorna al terminar de hablar.

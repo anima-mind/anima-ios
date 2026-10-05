@@ -61,16 +61,34 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
     }
 
     public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
+        await capture(onRoute: onRoute, onPartial: { _ in })
+    }
+
+    public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                        onPartial: @escaping @Sendable (String) -> Void) async -> String? {
         let locale = self.locale
         return await loop.run(recognizer: {
-            guard await Self.authorized(), let recognizer = SFSpeechRecognizer(locale: locale),
-                  recognizer.isAvailable else { return nil }
+            guard await Self.authorized(), await Self.microphoneGranted(),
+                  let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else { return nil }
             return SpeechRecognition(recognizer)
-        }, onRoute: onRoute)
+        }, onRoute: onRoute, onPartial: onPartial)
     }
 
     public func cancel() {
         loop.cancel()
+    }
+
+    public func finish() {
+        loop.finish()
+    }
+
+    /// Permiso de micrófono (TCC normal; el primer uso muestra el diálogo).
+    static func microphoneGranted() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return true
+        case .undetermined: return await AVAudioApplication.requestRecordPermission()
+        default: return false
+        }
     }
 
     static func authorized() async -> Bool {

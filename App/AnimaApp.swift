@@ -326,6 +326,7 @@ final class AppModel: ObservableObject {
 
         let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
         chat.glasses = glassesModel
+        chat.voice = Self.makePhoneVoice()
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
@@ -392,6 +393,17 @@ final class AppModel: ObservableObject {
         return DATGlassesRuntime()
         #else
         return AbsentGlassesRuntime()
+        #endif
+    }
+
+    /// Mic del composer: el pipeline de voz de las gafas forzado al micrófono
+    /// del TELÉFONO (nunca HFP). `--uitest`: voz guionada con transcript fijo.
+    static func makePhoneVoice() -> (any VoiceCapturePort)? {
+        if UITestMode.isActive { return UITestScriptedVoice() }
+        #if os(iOS)
+        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()))
+        #else
+        return nil
         #endif
     }
 

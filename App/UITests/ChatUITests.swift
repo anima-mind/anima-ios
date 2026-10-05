@@ -53,4 +53,30 @@ final class ChatUITests: AnimaUITestCase {
         XCTAssertTrue(regime.label.contains("infancia"), "régimen: \(regime.label)")
         XCTAssertTrue(cycles.label.contains("0"), "ciclos: \(cycles.label)")
     }
+
+    /// Campo #9: mic del composer → listening bar → transcript → turno de voz en el chat.
+    @MainActor
+    func testComposerMicSendsVoiceTurn() {
+        let app = launch()
+        onboard(app)
+
+        tap(app.buttons["chat.mic"])
+        waitFor(element(app, "chat.listeningBar"))
+        waitFor(text(app, "Escuchando…"))
+        waitFor(element(app, "chat.listening.transcript"))
+        // Fin por silencio (voz guionada ≈1.5 s): la barra se va y el turno entra.
+        let bubble = app.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'hola por voz'")).firstMatch
+        waitFor(bubble)
+        waitFor(element(app, "chat.userMessage.voice"))
+        waitUntil(element(app, "chat.listeningBar"), "exists == false")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+
+        // Cancelar con la X: no se envía nada nuevo.
+        tap(app.buttons["chat.mic"])
+        waitFor(element(app, "chat.listeningBar"))
+        tap(app.buttons["nav.close.listening"])
+        waitUntil(element(app, "chat.listeningBar"), "exists == false")
+        XCTAssertEqual(app.staticTexts.matching(identifier: "chat.userMessage").count, 1)
+    }
 }

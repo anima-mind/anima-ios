@@ -23,6 +23,8 @@ public final class ChatViewModel: ObservableObject {
         public var isProactive: Bool = false
         public var intentionId: String?
         public var resolved: Bool = false
+        /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
+        public var isVoice: Bool = false
     }
 
     /// Estado de la mente para el badge y el Mind sheet.
@@ -70,7 +72,13 @@ public final class ChatViewModel: ObservableObject {
     private var shownIntentionIds: Set<String> = []
     /// Track G: el cuerpo-gafas (línea de cuerpo del header + Mind sheet). nil ⇒ solo teléfono.
     public var glasses: GlassesViewModel?
-    private var lastUserText: String?
+    private var lastUserContent: [ContentBlock]?
+    /// Voz desde el composer (mic del TELÉFONO). nil ⇒ el mic no está disponible.
+    public var voice: (any VoiceCapturePort)?
+    /// Listening bar en lugar del composer + transcript en vivo.
+    @Published public private(set) var isListening = false
+    @Published public private(set) var liveTranscript = ""
+    private var voiceCancelled = false
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
                 selfModel: SelfModel? = nil) {
@@ -125,21 +133,66 @@ public final class ChatViewModel: ObservableObject {
         guard !text.isEmpty, !isStreaming else { return }
         input = ""
         eventSink.yield(.userText(text))
-        await run(text: text, addUserBubble: true)
+        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
+    }
+
+    // MARK: Voz (mic del composer → mismo pipeline que las gafas, ruta teléfono)
+
+    /// Tap al mic: listening bar + transcript en vivo; fin por silencio o "Listo".
+    public func startVoice() {
+        guard let voice, !isListening, !isStreaming else { return }
+        isListening = true
+        liveTranscript = ""
+        voiceCancelled = false
+        Task { [weak self] in
+            let transcript = await voice.capture(onRoute: { _ in }, onPartial: { partial in
+                Task { @MainActor in
+                    guard let self, self.isListening else { return }
+                    self.liveTranscript = partial
+                }
+            })
+            await self?.voiceEnded(transcript)
+        }
+    }
+
+    /// "Listo": envía lo oído sin esperar el silencio.
+    public func finishVoice() {
+        guard isListening else { return }
+        voice?.finish()
+    }
+
+    /// X o tap fuera: descarta sin enviar.
+    public func cancelVoice() {
+        guard isListening else { return }
+        voiceCancelled = true
+        isListening = false
+        liveTranscript = ""
+        voice?.cancel()
+    }
+
+    func voiceEnded(_ transcript: String?) async {
+        let cancelled = voiceCancelled
+        isListening = false
+        liveTranscript = ""
+        guard !cancelled else { return }
+        let text = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isStreaming else { return }
+        eventSink.yield(.voiceTranscript(text))
+        await run(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
     }
 
     /// "Try again" del error card: reintenta el último turno sin duplicar la
     /// burbuja del usuario — el mensaje nunca se pierde.
     public func retry() async {
-        guard let text = lastUserText, !isStreaming else { return }
-        await run(text: text, addUserBubble: false)
+        guard let content = lastUserContent, !isStreaming else { return }
+        await run(nil, content: content)
     }
 
-    private func run(text: String, addUserBubble: Bool) async {
+    private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
         errorText = nil
-        lastUserText = text
-        if addUserBubble {
-            messages.append(DisplayMessage(role: .user, text: text))
+        lastUserContent = content
+        if let bubble {
+            messages.append(bubble)
         }
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
@@ -147,7 +200,7 @@ public final class ChatViewModel: ObservableObject {
         let index = messages.count - 1
         isStreaming = true
 
-        for await event in await loop.run(sessionId: sessionId, userText: text) {
+        for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
             switch event {
             case .textDelta(let d):
                 assistant.text += d
@@ -245,7 +298,10 @@ public struct ChatView: View {
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
-                    .simultaneousGesture(TapGesture().onEnded { inputFocused = false })
+                    .simultaneousGesture(TapGesture().onEnded {
+                        inputFocused = false
+                        model.cancelVoice()   // tap fuera de la listening bar: descarta
+                    })
                     .accessibilityIdentifier("chat.messages")
                     .onChange(of: model.messages.last?.text) { _, _ in
                         if let last = model.messages.last {
@@ -256,7 +312,13 @@ public struct ChatView: View {
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
                 }
-                composer
+                if model.isListening {
+                    ListeningBar(transcript: model.liveTranscript,
+                                 onDone: { model.finishVoice() },
+                                 onCancel: { model.cancelVoice() })
+                } else {
+                    composer
+                }
             }
         }
         .task {
@@ -321,9 +383,18 @@ public struct ChatView: View {
     private func userBubble(_ message: ChatViewModel.DisplayMessage) -> some View {
         HStack {
             Spacer(minLength: 0)
-            Text(message.text)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
+            VStack(alignment: .trailing, spacing: 4) {
+                if message.isVoice {
+                    Label("voz", systemImage: "waveform")
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .accessibilityIdentifier("chat.userMessage.voice")
+                }
+                Text(message.text)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                    .accessibilityIdentifier("chat.userMessage")
+            }
                 .padding(Theme.Space.cardPad)
                 .background(
                     RoundedRectangle(cornerRadius: Theme.Radius.card)
@@ -334,7 +405,6 @@ public struct ChatView: View {
                 .containerRelativeFrame(.horizontal, count: 5, span: 4, spacing: 0,
                                         alignment: .trailing)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("chat.userMessage")
         }
     }
 
@@ -613,11 +683,11 @@ public struct ChatView: View {
                 .accessibilityIdentifier("chat.input")
 
             Button {
+                inputFocused = false
                 if hasDraft {
-                    inputFocused = false
                     Task { await model.send() }
                 } else {
-                    captureNotice = "Las notas de voz llegan pronto; por ahora escríbele."
+                    model.startVoice()
                 }
             } label: {
                 Image(systemName: hasDraft ? "arrow.up" : "mic")
@@ -629,8 +699,9 @@ public struct ChatView: View {
                             .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
             }
             .buttonStyle(.plain)
-            .disabled(model.isStreaming && hasDraft)
-            .accessibilityIdentifier("chat.send")
+            .disabled(model.isStreaming || (!hasDraft && model.voice == nil))
+            .accessibilityLabel(hasDraft ? "Enviar" : "Hablar")
+            .accessibilityIdentifier(hasDraft ? "chat.send" : "chat.mic")
         }
         .padding(Theme.Space.screenInset)
     }
@@ -845,6 +916,68 @@ struct MarkdownMessage: View {
                 }
             }
         }
+    }
+}
+
+/// Listening bar (components.md): borde accent, 5 barras de onda escalonadas,
+/// "Escuchando…" + transcript en vivo, acción de texto "Listo" y X para descartar.
+struct ListeningBar: View {
+    let transcript: String
+    let onDone: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: Theme.Space.stack) {
+            NavCloseButton("listening", action: onCancel)
+            VoiceWave()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Escuchando…")
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                if !transcript.isEmpty {
+                    Text(transcript)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .lineLimit(3)
+                        .accessibilityIdentifier("chat.listening.transcript")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Listo", action: onDone)
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.accentText)
+                .frame(minHeight: Theme.minHitTarget)
+                .accessibilityIdentifier("chat.voice.done")
+        }
+        .padding(.horizontal, Theme.Space.unit)
+        .padding(.vertical, 6)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.control)
+                .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+        .padding(Theme.Space.screenInset)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.listeningBar")
+    }
+}
+
+/// 5 barras de onda escalonadas (Theme.Motion.voiceWave, stagger 0.15).
+struct VoiceWave: View {
+    @State private var up = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<5, id: \.self) { i in
+                Capsule()
+                    .fill(Theme.Colors.accent)
+                    .frame(width: 3, height: up ? 18 : 6)
+                    .animation(.easeInOut(duration: Theme.Motion.voiceWave)
+                        .repeatForever(autoreverses: true)
+                        .delay(Double(i) * Theme.Motion.voiceWaveStagger), value: up)
+            }
+        }
+        .frame(height: 20)
+        .onAppear { up = true }
+        .accessibilityHidden(true)
     }
 }
 #endif

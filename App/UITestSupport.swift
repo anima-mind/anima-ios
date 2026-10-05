@@ -131,3 +131,39 @@ struct UITestScriptedProvider: Provider {
         return out
     }
 }
+
+/// Voz guionada del modo UI-test (mic del composer): emite un parcial en vivo y
+/// devuelve un transcript fijo al terminar (≈1.5 s o "Listo"); cancel → nil.
+final class UITestScriptedVoice: VoiceCapturePort, @unchecked Sendable {
+    static let transcript = "hola por voz"
+    private let lock = NSLock()
+    private var cancelled = false
+    private var finished = false
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
+        await capture(onRoute: onRoute, onPartial: { _ in })
+    }
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void) async -> String? {
+        set(cancelled: false, finished: false)
+        onRoute(.phoneMic)
+        try? await Task.sleep(for: .milliseconds(300))
+        onPartial("hola por")
+        for _ in 0..<12 where !state().finished && !state().cancelled {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return state().cancelled ? nil : Self.transcript
+    }
+
+    func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+    func finish() { lock.lock(); finished = true; lock.unlock() }
+
+    private func set(cancelled: Bool, finished: Bool) {
+        lock.lock(); self.cancelled = cancelled; self.finished = finished; lock.unlock()
+    }
+    private func state() -> (cancelled: Bool, finished: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (cancelled, finished)
+    }
+}

@@ -177,9 +177,9 @@ class AnimaUITestCase: XCTestCase {
 
     /// Birth conversacional: chip, chip, texto libre → summary card → Comenzar.
     @MainActor
-    func completeBirth(_ app: XCUIApplication) {
+    func completeBirth(_ app: XCUIApplication, name: String = "Anima") {
         waitFor(text(app, "Nacimiento"))
-        tap(app.buttons["birth.chip.Anima"])
+        tap(app.buttons["birth.chip.\(name)"])
         tap(app.buttons["birth.chip.Cálido y tranquilo"])
         waitFor(app.buttons["birth.chip.Actúa y me cuentas"])
         let input = app.textFields["birth.input"]
@@ -190,7 +190,7 @@ class AnimaUITestCase: XCTestCase {
         let summary = element(app, "birth.summary")
         waitFor(summary)
         XCTAssertTrue(summary.staticTexts["ASÍ NAZCO"].exists)
-        XCTAssertTrue(summary.staticTexts["Anima"].exists)
+        XCTAssertTrue(summary.staticTexts[name].exists)
         XCTAssertTrue(summary.staticTexts["Cálido y tranquilo"].exists)
         XCTAssertTrue(summary.staticTexts["Pregunta siempre"].exists)
         tap(app.buttons["birth.begin"])
@@ -198,12 +198,12 @@ class AnimaUITestCase: XCTestCase {
 
     /// Onboarding completo hasta aterrizar en Chat.
     @MainActor
-    func onboard(_ app: XCUIApplication, provider: ProviderChoice = .onDevice) {
+    func onboard(_ app: XCUIApplication, provider: ProviderChoice = .onDevice, name: String = "Anima") {
         startFromLanding(app)
         passTutorialAndAccount(app)
         chooseProvider(app, provider)
         passPermissionsAndGlasses(app)
-        completeBirth(app)
+        completeBirth(app, name: name)
         waitForChat(app)
     }
 

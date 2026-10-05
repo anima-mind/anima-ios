@@ -95,6 +95,8 @@ public final class ChatViewModel: ObservableObject {
     @Published public var isStreaming: Bool = false
     @Published public var errorText: String?
     @Published public private(set) var mind = MindState()
+    /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
+    @Published public private(set) var selfName: String = Birth.seed.name
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -135,6 +137,8 @@ public final class ChatViewModel: ObservableObject {
     /// Refresca p/ciclos/régimen para el badge (anima 600 ms al cambiar).
     public func loadMind() async {
         guard let selfModel else { return }
+        let name = await selfModel.name()
+        if name != selfName { selfName = name }
         let cycles = await selfModel.cycles()
         let state = MindState(p: Plasticity.value(cycles: cycles), cycles: cycles,
                               regime: Plasticity.regime(cycles: cycles))
@@ -427,26 +431,39 @@ public struct ChatView: View {
         #endif
     }
 
-    // MARK: Header (body line + título + badge + regla que se desvanece)
+    // MARK: Header (mark + nombre del self centrados; body line y badge a los lados)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            BodyLine(glasses: model.glasses)
-            HStack(alignment: .firstTextBaseline) {
-                Text("Anima")
-                    .font(Theme.Type_.screenTitle)
-                    .foregroundStyle(Theme.Colors.text)
-                Spacer()
-                Button {
-                    showMindSheet = true
-                    Task { await model.loadMind() }
-                } label: {
-                    PlasticityBadge(mind: model.mind)
+        VStack(spacing: 6) {
+            ZStack(alignment: .top) {
+                HStack(alignment: .top) {
+                    BodyLine(glasses: model.glasses)
+                        .padding(.top, 4)
+                    Spacer()
+                    Button {
+                        showMindSheet = true
+                        Task { await model.loadMind() }
+                    } label: {
+                        PlasticityBadge(mind: model.mind)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat.plasticityBadge")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("chat.plasticityBadge")
+                VStack(spacing: 2) {
+                    BreathMark(size: 22, p: model.mind.p, phase: .breathing)
+                        .accessibilityHidden(true)
+                    Text(model.selfName)
+                        .font(Theme.Type_.screenTitle)
+                        .foregroundStyle(Theme.Colors.text)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: 180)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("chat.selfName")
             }
-            LinearGradient(colors: [Theme.Colors.border, Theme.Colors.border.opacity(0)],
+            LinearGradient(colors: [Theme.Colors.border.opacity(0), Theme.Colors.border, Theme.Colors.border.opacity(0)],
                            startPoint: .leading, endPoint: .trailing)
                 .frame(height: Theme.Stroke.hairline)
         }

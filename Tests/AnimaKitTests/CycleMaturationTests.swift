@@ -82,6 +82,7 @@ struct CycleMaturationTests {
         await chat.loadMind()
         #expect(chat.mind.cycles == 1)
         #expect(chat.mind.p == Plasticity.value(cycles: 1))
+        #expect(chat.selfName == "Anima")
     }
     #endif
 }

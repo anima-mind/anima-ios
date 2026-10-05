@@ -124,3 +124,31 @@ import Testing
         #expect(await model.plasticity() < p0)
     }
 }
+
+// Campo batch 3 / FIX D: el header muestra el NOMBRE del self, no la marca.
+@Suite("Campo — nombre del self para el header")
+struct SelfNameTests {
+    @Test func seDerivaDeLaIdentidadDelBirth() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let selfModel = SelfModel(queue: queue)
+        #expect(await selfModel.name() == "Anima")   // pre-Birth: la marca
+        await selfModel.seed(from: Birth(name: "Budosky", tone: "directo", language: "es"))
+        #expect(await selfModel.name() == "Budosky")
+    }
+
+    @Test func renombrarConversandoCambiaElNombre() async throws {
+        let selfModel = SelfModel(queue: try AnimaDatabase.temporary())
+        await selfModel.seed(from: Birth(name: "Iris", tone: "x", language: "es"))
+        _ = await selfModel.apply(SelfProposal(field: .identity, value: "Eres Betty, la asistente de Joshua.",
+                                               rationale: "el dueño la llama Betty", origin: .owner))
+        #expect(await selfModel.name() == "Betty")
+    }
+
+    @Test func patronesYCasosSinNombre() {
+        #expect(SelfView.name(fromIdentity: "Soy Eco. Existo para ti.") == "Eco")
+        #expect(SelfView.name(fromIdentity: "Me llamo Ana María, tu asistente") == "Ana María")
+        #expect(SelfView.name(fromIdentity: "Eres un asistente personal.") == nil)
+        #expect(SelfView.name(fromIdentity: "Asistente sin nombre") == nil)
+        #expect(SelfView.name(fromIdentity: "Eres \"Nova\", la mente del teléfono") == "Nova")
+    }
+}

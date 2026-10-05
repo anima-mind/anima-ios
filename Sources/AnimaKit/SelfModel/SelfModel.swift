@@ -29,6 +29,29 @@ public struct SelfView: Sendable, Equatable, Codable {
     }
 }
 
+extension SelfView {
+    /// El nombre del self, derivado de la identidad viva ("Eres Budosky, …"):
+    /// si el dueño lo renombra conversando y la identidad cambia, el nombre
+    /// cambia con ella. nil si la identidad no lo dice de forma reconocible.
+    public var name: String? { Self.name(fromIdentity: identity) }
+
+    static func name(fromIdentity identity: String) -> String? {
+        let text = identity.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lead = ["eres ", "soy ", "me llamo ", "mi nombre es ", "tu nombre es ", "te llamas "]
+        let lower = text.lowercased()
+        guard let prefix = lead.first(where: { lower.hasPrefix($0) }) else { return nil }
+        let rest = text.dropFirst(prefix.count)
+        let stop = rest.firstIndex(where: { ",.;:!?\n(".contains($0) }) ?? rest.endIndex
+        var candidate = String(rest[..<stop]).trimmingCharacters(in: .whitespaces)
+        // "Eres un asistente…" no nombra a nadie.
+        let firstWord = candidate.split(separator: " ").first.map { $0.lowercased() } ?? ""
+        if ["un", "una", "el", "la", "tu", "su"].contains(firstWord) { return nil }
+        candidate = candidate.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”«» "))
+        guard !candidate.isEmpty, candidate.count <= 32, candidate.split(separator: " ").count <= 3 else { return nil }
+        return candidate
+    }
+}
+
 /// Semilla del onboarding "Birth" (pregunta abierta #8): seed mínimo + bootstrap
 /// libre. Puede nacer casi vacío; aquí un seed continuo con la Fase 1.
 public struct Birth: Sendable, Equatable {
@@ -169,6 +192,10 @@ public actor SelfModel {
     public func view() -> SelfView {
         (try? loadView()) ?? Birth.seed.seedView
     }
+
+    /// Nombre vivo del self (header del chat); "Anima" antes del Birth o si la
+    /// identidad no lo dice.
+    public func name() -> String { view().name ?? Birth.seed.name }
 
     public func cycles() -> Int {
         let value: Int?? = try? queue.read { db in

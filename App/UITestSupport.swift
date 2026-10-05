@@ -7,6 +7,9 @@
 
 import Foundation
 import AnimaKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum UITestMode {
     static let flag = "--uitest"
@@ -48,6 +51,19 @@ enum UITestMode {
             values[key] as? String ?? ""
         }
         return StaticConfigProvider(snapshot)
+    }
+
+    /// Foto fixture del picker guionado (JPEG 800×600 de color plano).
+    static func fixturePhoto() -> Data? {
+        #if canImport(UIKit)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 800, height: 600))
+        return renderer.jpegData(withCompressionQuality: 0.8) { ctx in
+            UIColor(red: 0.58, green: 0.74, blue: 0.89, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+        }
+        #else
+        return nil
+        #endif
     }
 
     /// El modelo local se reporta disponible (el provider guionado lo reemplaza).

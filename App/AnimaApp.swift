@@ -335,6 +335,9 @@ final class AppModel: ObservableObject {
                          previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
+        // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
+        chat.photosAvailable = mode != .onDeviceOnly
+        if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)

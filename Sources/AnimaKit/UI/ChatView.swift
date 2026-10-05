@@ -27,7 +27,17 @@ public final class ChatViewModel: ObservableObject {
         public var isVoice: Bool = false
         /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
         public var isSessionDivider: Bool = false
+        /// Foto del turno del dueño (JPEG ya reducido): thumb sobre la burbuja.
+        public var imageData: Data?
     }
+
+    /// Foto elegida en el composer, esperando el texto opcional del dueño.
+    public struct PendingImage: Sendable, Equatable {
+        public var block: ContentBlock
+        public var thumb: Data
+    }
+
+    public static let photosNeedRemoteNote = "Las fotos necesitan un modelo remoto (Claude, OpenAI o Gemini)."
 
     public static let sessionDividerText = "— nueva sesión —"
 
@@ -36,7 +46,8 @@ public final class ChatViewModel: ObservableObject {
     /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
     public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
         func message(_ turn: VisibleTurn) -> DisplayMessage {
-            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice)
+            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                           imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
         }
         var out = previous.map(message)
         if !out.isEmpty {
@@ -105,6 +116,12 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var isListening = false
     @Published public private(set) var liveTranscript = ""
     private var voiceCancelled = false
+    /// Foto del composer (cámara o galería) pendiente de enviar.
+    @Published public private(set) var pendingImage: PendingImage?
+    /// Solo-teléfono (FoundationModels) no ve imágenes: el menú lo dice y no adjunta.
+    public var photosAvailable = true
+    /// `--uitest`: el picker es un doble que entrega una imagen fixture.
+    public var injectedPhoto: (@MainActor () -> Data?)?
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
                 selfModel: SelfModel? = nil) {
@@ -156,10 +173,39 @@ public final class ChatViewModel: ObservableObject {
 
     public func send() async {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+        let image = pendingImage
+        guard !text.isEmpty || image != nil, !isStreaming else { return }
         input = ""
-        eventSink.yield(.userText(text))
-        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
+        pendingImage = nil
+        if !text.isEmpty { eventSink.yield(.userText(text)) }
+        var content: [ContentBlock] = []
+        if let image { content.append(image.block) }
+        if !text.isEmpty { content.append(.text(text)) }
+        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb), content: content)
+    }
+
+    // MARK: Foto (cámara / galería → ImageDownscaler → thumb en el composer)
+
+    /// Bytes crudos del picker → ≤1568px JPEG. false si no es imagen o no hay modelo que la vea.
+    @discardableResult
+    public func attachPhoto(_ data: Data) -> Bool {
+        guard let block = ImageDownscaler.imageBlock(from: data) else { return false }
+        return attach(block)
+    }
+
+    /// Image block ya reducido (CameraPicker / PhotoLibraryPicker).
+    @discardableResult
+    public func attach(_ block: ContentBlock) -> Bool {
+        guard photosAvailable, case .image(_, let base64) = block, let thumb = Data(base64Encoded: base64) else {
+            return false
+        }
+        pendingImage = PendingImage(block: block, thumb: thumb)
+        return true
+    }
+
+    /// X del thumb: se envía solo el texto.
+    public func removePhoto() {
+        pendingImage = nil
     }
 
     // MARK: Voz (mic del composer → mismo pipeline que las gafas, ruta teléfono)
@@ -295,7 +341,8 @@ public struct ChatView: View {
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
-    @State private var captureNotice: String?
+    @State private var showPhotoMenu = false
+    @State private var photoSource: PhotoSource?
     /// Foco del composer: el teclado se cierra al enviar, al arrastrar la
     /// lista y al tocar el área de mensajes (la tab bar vuelve a verse).
     @FocusState private var inputFocused: Bool
@@ -358,14 +405,26 @@ public struct ChatView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
         }
-        .alert("Disponible pronto", isPresented: Binding(
-            get: { captureNotice != nil },
-            set: { if !$0 { captureNotice = nil } }
-        )) {
-            Button("Entendido", role: .cancel) {}
+        .confirmationDialog("Foto para Anima", isPresented: $showPhotoMenu, titleVisibility: .visible) {
+            if model.photosAvailable {
+                Button("Tomar foto") { pickPhoto(.camera) }
+                Button("Elegir de la galería") { pickPhoto(.library) }
+            }
+            Button("Cancelar", role: .cancel) {}
         } message: {
-            Text(captureNotice ?? "")
+            if !model.photosAvailable { Text(ChatViewModel.photosNeedRemoteNote) }
         }
+        #if os(iOS)
+        .sheet(item: $photoSource) { source in
+            Group {
+                switch source {
+                case .camera: CameraPicker { model.attach($0) }
+                case .library: PhotoLibraryPicker { model.attach($0) }
+                }
+            }
+            .ignoresSafeArea()
+        }
+        #endif
     }
 
     // MARK: Header (body line + título + badge + regla que se desvanece)
@@ -419,16 +478,22 @@ public struct ChatView: View {
         HStack {
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 4) {
+                if let data = message.imageData {
+                    PhotoThumb(data: data, width: 160, height: 110)
+                        .accessibilityIdentifier("chat.userMessage.photo")
+                }
                 if message.isVoice {
                     Label("voz", systemImage: "waveform")
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
                         .accessibilityIdentifier("chat.userMessage.voice")
                 }
-                Text(message.text)
-                    .font(Theme.Type_.body)
-                    .foregroundStyle(Theme.Colors.text)
-                    .accessibilityIdentifier("chat.userMessage")
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(Theme.Colors.text)
+                        .accessibilityIdentifier("chat.userMessage")
+                }
             }
                 .padding(Theme.Space.cardPad)
                 .background(
@@ -681,13 +746,48 @@ public struct ChatView: View {
     // MARK: Composer — cámara (40×40) · campo (surface h40) · mic/send
 
     private var hasDraft: Bool {
-        !model.input.trimmingCharacters(in: .whitespaces).isEmpty
+        !model.input.trimmingCharacters(in: .whitespaces).isEmpty || model.pendingImage != nil
+    }
+
+    enum PhotoSource: String, Identifiable {
+        case camera, library
+        var id: String { rawValue }
+    }
+
+    private func pickPhoto(_ source: PhotoSource) {
+        if let injected = model.injectedPhoto {
+            if let data = injected() { model.attachPhoto(data) }
+        } else {
+            photoSource = source
+        }
+    }
+
+    /// Thumb de la foto pendiente en el composer, con X para quitarla.
+    @ViewBuilder
+    private var attachmentPreview: some View {
+        if let image = model.pendingImage {
+            HStack {
+                ZStack(alignment: .topTrailing) {
+                    PhotoThumb(data: image.thumb, width: 96, height: 66)
+                    NavCloseButton("attachment") { model.removePhoto() }
+                        .offset(x: 14, y: -14)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.attachment")
+                Spacer()
+            }
+            .padding(.horizontal, Theme.Space.screenInset)
+            .padding(.top, Theme.Space.stack)
+        }
     }
 
     private var composer: some View {
+        VStack(spacing: 0) {
+        attachmentPreview
         HStack(spacing: Theme.Space.stack) {
             Button {
-                captureNotice = "La cámara de Anima llega pronto; por ahora escríbele."
+                inputFocused = false
+                showPhotoMenu = true
             } label: {
                 Image(systemName: "camera")
                     .font(.system(size: 16, weight: .light))
@@ -739,6 +839,7 @@ public struct ChatView: View {
             .accessibilityIdentifier(hasDraft ? "chat.send" : "chat.mic")
         }
         .padding(Theme.Space.screenInset)
+        }
     }
 }
 
@@ -1013,6 +1114,31 @@ struct VoiceWave: View {
         .frame(height: 20)
         .onAppear { up = true }
         .accessibilityHidden(true)
+    }
+}
+
+/// Miniatura de una foto (radius 8, recorte .fill). Sin UIKit, un placeholder.
+struct PhotoThumb: View {
+    let data: Data
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Group {
+            #if canImport(UIKit)
+            if let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Theme.Colors.surface
+            }
+            #else
+            Theme.Colors.surface
+            #endif
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
+            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
     }
 }
 #endif

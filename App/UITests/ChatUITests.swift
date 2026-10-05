@@ -96,4 +96,30 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(bubble)
         waitFor(assistantMessage(second, labelContains: fixedReply))
     }
+
+    /// Campo #11: cámara del composer → menú → (picker guionado) → thumb → enviar → burbuja con thumb.
+    @MainActor
+    func testComposerPhotoAttachesAndSends() {
+        let app = launch()
+        // Con modelo remoto (en Solo-teléfono el menú solo explica que hace falta uno).
+        onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
+
+        tap(app.buttons["chat.camera"])
+        tap(app.buttons["Elegir de la galería"])
+        waitFor(element(app, "chat.attachment"))
+        // Quitar y volver a adjuntar con "Tomar foto".
+        tap(app.buttons["nav.close.attachment"])
+        waitUntil(element(app, "chat.attachment"), "exists == false")
+        tap(app.buttons["chat.camera"])
+        tap(app.buttons["Tomar foto"])
+        waitFor(element(app, "chat.attachment"))
+
+        let input = app.textFields["chat.input"]
+        tap(input)
+        input.typeText("mira esto")
+        tap(app.buttons["chat.send"])
+        waitFor(element(app, "chat.userMessage.photo"))
+        waitUntil(element(app, "chat.attachment"), "exists == false")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+    }
 }

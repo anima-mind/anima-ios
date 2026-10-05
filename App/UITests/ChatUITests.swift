@@ -79,4 +79,21 @@ final class ChatUITests: AnimaUITestCase {
         waitUntil(element(app, "chat.listeningBar"), "exists == false")
         XCTAssertEqual(app.staticTexts.matching(identifier: "chat.userMessage").count, 1)
     }
+
+    /// Campo #10: cerrar y reabrir NO deja el chat vacío — la sesión se reanuda.
+    @MainActor
+    func testRelaunchKeepsTheConversation() {
+        let first = launch()
+        onboard(first)
+        send(first, "hola")
+        waitFor(assistantMessage(first, value: "done", labelContains: fixedReply), timeout: 15)
+        first.terminate()
+
+        let second = launch(reset: false)
+        waitForChat(second)
+        let bubble = second.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'hola'")).firstMatch
+        waitFor(bubble)
+        waitFor(assistantMessage(second, labelContains: fixedReply))
+    }
 }

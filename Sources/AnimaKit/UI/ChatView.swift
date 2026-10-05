@@ -25,6 +25,32 @@ public final class ChatViewModel: ObservableObject {
         public var resolved: Bool = false
         /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
         public var isVoice: Bool = false
+        /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
+        public var isSessionDivider: Bool = false
+    }
+
+    public static let sessionDividerText = "— nueva sesión —"
+
+    /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
+    /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
+    /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
+    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
+        func message(_ turn: VisibleTurn) -> DisplayMessage {
+            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice)
+        }
+        var out = previous.map(message)
+        if !out.isEmpty {
+            out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
+        }
+        out += current.map(message)
+        return out
+    }
+
+    /// Carga el historial al cablearse (antes de cualquier turno nuevo).
+    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = []) {
+        let restored = Self.history(current: current, previous: previous)
+        guard !restored.isEmpty else { return }
+        messages = restored + messages
     }
 
     /// Estado de la mente para el badge y el Mind sheet.
@@ -295,6 +321,7 @@ public struct ChatView: View {
                         }
                         .padding(Theme.Space.screenInset)
                     }
+                    .defaultScrollAnchor(.bottom)
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
@@ -371,11 +398,19 @@ public struct ChatView: View {
 
     @ViewBuilder
     private func bubble(_ message: ChatViewModel.DisplayMessage) -> some View {
-        switch message.role {
-        case .user:
-            userBubble(message)
-        default:
-            mindMessage(message)
+        if message.isSessionDivider {
+            Text(message.text)
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Theme.Colors.textFaint)
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("chat.sessionDivider")
+        } else {
+            switch message.role {
+            case .user:
+                userBubble(message)
+            default:
+                mindMessage(message)
+            }
         }
     }
 

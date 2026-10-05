@@ -31,7 +31,10 @@ struct AnimaApp: App {
                 .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { app.scheduleConsolidation() }
+            if phase == .background {
+                app.markCleanShutdown()
+                app.scheduleConsolidation()
+            }
             app.glassesForeground(phase == .active)
         }
     }
@@ -89,6 +92,8 @@ final class AppModel: ObservableObject {
     private let glassesHost = LateBoundGlassesHost()
     private let surfaceRouter = SurfaceRouter()
     private var glassesSurface: GlassesHUDSurface?
+    private var activeSessionId: SessionID?
+    private var previousSessionId: SessionID?
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
 
@@ -309,7 +314,7 @@ final class AppModel: ObservableObject {
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
-        let sessionId = (try? store.startSession()) ?? UUID().uuidString
+        let (sessionId, previousSession) = resolveSession(store)
         var desireEngine: DesireEngine?
         if let otherModel {
             let engine = DesireEngine(otherModel: otherModel, environment: SystemObservableEnvironment(),
@@ -325,12 +330,39 @@ final class AppModel: ObservableObject {
         }
 
         let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine)
+        // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
+        chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
+                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
+    }
+
+    /// Sesión activa del proceso: se decide UNA vez al abrir (Recovery.decideLaunch:
+    /// reanuda la última salvo >8 h sin actividad); los re-cableados la reusan.
+    private func resolveSession(_ store: SymbolicStore) -> (SessionID, SessionID?) {
+        if let activeSessionId { return (activeSessionId, previousSessionId) }
+        let recovery = Recovery(queue: store.database, store: store)
+        let decision = (try? recovery.decideLaunch()) ?? .fresh(previous: nil)
+        let resolved: (SessionID, SessionID?)
+        switch decision {
+        case .resume(let id):
+            resolved = (id, nil)
+        case .fresh(let previous):
+            resolved = ((try? store.startSession()) ?? UUID().uuidString, previous)
+        }
+        activeSessionId = resolved.0
+        previousSessionId = resolved.1
+        return resolved
+    }
+
+    /// scenePhase .background: cierre limpio de la sesión activa.
+    func markCleanShutdown() {
+        guard let store, let activeSessionId else { return }
+        try? store.markCleanShutdown(activeSessionId)
     }
 
     /// Fallback foreground (§5.4): si pasaron >48h sin ciclo completo, se corre al

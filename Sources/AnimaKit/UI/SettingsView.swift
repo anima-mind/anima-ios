@@ -36,6 +36,13 @@ public final class SettingsViewModel: ObservableObject {
     public var skills: SkillsViewModel?
     /// Sección Gafas (track G); la inyecta el shell con el GlassesBody vivo.
     public var glasses: GlassesViewModel?
+    /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
+    public var nightSimulator: NightSimulator?
+    /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
+    public var onNightSimulated: (() -> Void)?
+    @Published public private(set) var simulatingNight = false
+    @Published public private(set) var nightSummary: String?
+
     /// El shell re-cablea el harness con el nuevo modo (sin re-onboarding).
     public var onModeChanged: ((OperatingMode) -> Void)?
     private let availabilityProbe: () -> OnDeviceAvailability
@@ -112,6 +119,17 @@ public final class SettingsViewModel: ObservableObject {
             ("Conversación", ProviderSelector.plannedBackend(mode: mode, turn: .interactive)),
             ("Sueño, pulsos y destilado", ProviderSelector.plannedBackend(mode: mode, turn: .consolidation)),
         ]
+    }
+
+    public func simulateNight() async {
+        guard let nightSimulator, !simulatingNight else { return }
+        simulatingNight = true
+        nightSummary = nil
+        if let summary = await nightSimulator.run() {
+            nightSummary = summary
+            onNightSimulated?()
+        }
+        simulatingNight = false
     }
 
     public func replayOnboarding() {
@@ -336,6 +354,32 @@ public struct SettingsView: View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
             label("Mente")
             VStack(spacing: 0) {
+                if model.nightSimulator != nil {
+                    Button {
+                        Task { await model.simulateNight() }
+                    } label: {
+                        HStack {
+                            Text("Simular una noche")
+                                .font(Theme.Type_.body)
+                                .foregroundStyle(model.simulatingNight ? Theme.Colors.textFaint : Theme.Colors.accentText)
+                            Spacer()
+                            if model.simulatingNight {
+                                ProgressView().controlSize(.small).tint(Theme.Colors.accent)
+                            } else {
+                                Image(systemName: "moon")
+                                    .font(.system(size: 12, weight: .light))
+                                    .foregroundStyle(Theme.Colors.textFaint)
+                            }
+                        }
+                        .frame(height: 48)
+                        .padding(.horizontal, Theme.Space.cardPad)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.simulatingNight)
+                    .accessibilityIdentifier("settings.simulateNight")
+                    Divider().background(Theme.Colors.border)
+                }
                 Button {
                     model.replayOnboarding()
                 } label: {
@@ -357,6 +401,12 @@ public struct SettingsView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            if let summary = model.nightSummary {
+                Text(summary)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .accessibilityIdentifier("settings.simulateNight.summary")
+            }
             Text("Re-corre el flujo sin borrar memoria; la identidad solo se re-siembra si lo confirmas.")
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textFaint)

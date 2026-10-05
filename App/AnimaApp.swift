@@ -309,6 +309,17 @@ final class AppModel: ObservableObject {
                                             realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
             Self.shared.set(consolidator, scheduler: sleepScheduler)
+            // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
+            let other = otherModel
+            settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
+                await other?.allGoals().count ?? 0
+            })
+            settingsModel?.onNightSimulated = { [weak self] in
+                Task { @MainActor in
+                    await self?.memoryModel?.load()
+                    await self?.goalsModel?.refresh()
+                }
+            }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
             if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
         }

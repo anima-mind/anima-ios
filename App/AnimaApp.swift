@@ -147,6 +147,7 @@ final class AppModel: ObservableObject {
             self.glassesBody = glassesBody
             self.glassesActivation = activation
             self.glassesModel = GlassesViewModel(body: glassesBody, activation: activation)
+            glassesModel?.observeVoiceInvocations(voiceInvocations)
             voiceInvocations.bind(target: activation, record: { [telemetry] row in
                 try? telemetry.recordVoiceInvocation(row)
             })

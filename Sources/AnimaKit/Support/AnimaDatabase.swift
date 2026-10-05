@@ -73,6 +73,23 @@ public enum AnimaDatabase {
             try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN surface TEXT")
         }
 
+        // DAT 1.0: "Hey Meta, start Anima" — una fila por fase de cada invocación.
+        m.registerMigration("v10-voice-invocation") { db in
+            try db.execute(sql: """
+                CREATE TABLE voice_invocation_telemetry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phase TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    outcome TEXT,
+                    delivered INTEGER,
+                    detail TEXT,
+                    latency_ms REAL,
+                    ts REAL NOT NULL
+                )
+                """)
+        }
+
         return m
     }
 

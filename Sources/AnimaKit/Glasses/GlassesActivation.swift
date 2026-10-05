@@ -76,3 +76,49 @@ public actor GlassesActivation {
 
     public var isSuppressed: Bool { suppressed }
 }
+
+// MARK: - "Hey Meta, start Anima" (VoiceInvocationOrchestrator)
+
+extension GlassesActivation: VoiceLaunchTarget {
+    /// Invocación por voz = interacción explícita: limpia la supresión. Idempotente
+    /// con sesión viva; en cold-launch espera (acotado) a que el DAT reporte el device.
+    public func launchFromVoice(eligibilityTimeout: TimeInterval) async -> VoiceLaunchOutcome {
+        suppressed = false
+        if await body.hasSession { return .alreadyActive }
+        guard await waitUntilEligible(timeout: eligibilityTimeout) else {
+            return .failed(await body.currentStatus().bodyLabel)
+        }
+        do {
+            try await body.ensureActive()
+            return .activated
+        } catch {
+            return .failed("\(error)")
+        }
+    }
+
+    public func presentHome() async {
+        guard await body.waitUntilActive() else { return }
+        if await body.lastRendered() == nil {
+            await body.render(initialView(await body.currentStatus()))
+        }
+    }
+
+    func waitUntilEligible(timeout: TimeInterval) async -> Bool {
+        if await body.isEligible { return true }
+        let updates = await body.statusUpdates()
+        let body = self.body
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in updates where await body.isEligible { return true }
+                return false
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
+}

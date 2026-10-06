@@ -136,7 +136,9 @@ public enum LocalToolAdapter {
             guard let parsedWhen = args.raw("when").flatMap({ when.parse($0) }) else {
                 return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
-            guard let modelCadence = args.cadence("repeat") else { return invalid(cadenceHelp("repeat")) }
+            // Una repetición no soportada (del dueño o del modelo: "monthly") no es
+            // un error: se ignora la del modelo antes de validarla.
+            let modelCadence = when.unsupportedCadence != nil ? .none : (args.cadence("repeat") ?? .none)
             // La repetición que dijo el dueño gana; si fijó un único momento
             // ("mañana a las 9") no se repite (medido: el 3B ponía daily); si no
             // dijo nada, la del modelo.
@@ -157,8 +159,8 @@ public enum LocalToolAdapter {
             guard let statement = args.text("statement") else {
                 return invalid(missing("statement", "la meta en palabras del dueño"))
             }
-            guard let modelCadence = args.cadence("checkin") else { return invalid(cadenceHelp("checkin")) }
-            let cadence = when.ownerCadence ?? (when.unsupportedCadence != nil ? .none : modelCadence)
+            let modelCadence = when.unsupportedCadence != nil ? .none : (args.cadence("checkin") ?? .none)
+            let cadence = when.ownerCadence ?? modelCadence
             // "recuérdame todos los días a las 8 tomar agua" es un recordatorio,
             // no una meta (regla de la app: "recuérdame…" ⇒ recordatorio).
             if when.ownerAsksForAReminder {
@@ -197,9 +199,11 @@ public enum LocalToolAdapter {
 
         case "add_calendar_event":
             guard let title = args.text("title") else { return invalid(missing("title", "el título de la cita")) }
-            guard let start = args.raw("start").flatMap({ when.parse($0) }) else {
+            guard let modelStart = args.raw("start").flatMap({ when.parse($0, repair: false) }) else {
                 return invalid(missing("start", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
+            let modelEnd = args.raw("end").flatMap { when.parse($0, repair: false) }
+            let start = when.eventStart(modelStart, modelEnd: modelEnd)
             // "recuérdame … la cita" es un recordatorio, no un evento (medido: el
             // 3B agendaba "Cita"); con "agéndame/calendario/evento" sí es agenda.
             let owner = LocalWhen.fold(ownerText)
@@ -214,7 +218,8 @@ public enum LocalToolAdapter {
                 return reminder(text: text, at: when.withPlausibleHour(start), cadence: cadence, now: now, when: when,
                                 calendar: calendar)
             }
-            let end = when.eventEnd(start: start, modelEnd: args.raw("end").flatMap { when.parse($0, repair: false) })
+            let swapped = modelEnd.map { $0 < modelStart } ?? false
+            let end = when.eventEnd(start: start, modelEnd: swapped ? modelStart : modelEnd)
             return .real(name: tool.realTool, input: .object([
                 "action": .string("create"), "title": .string(title),
                 "start": .string(when.isoLocal(start)), "end": .string(when.isoLocal(end)),
@@ -413,7 +418,7 @@ public enum LocalToolAdapter {
     /// Lo que ella dice al entregarlo cuando el modelo local no lo redactó.
     public static func spokenFallback(_ text: String) -> String {
         let clean = text.trimmingCharacters(in: CharacterSet(charactersIn: "¡!¿?.,;: ").union(.whitespacesAndNewlines))
-        return "Oye, acuérdate de \(clean)."
+        return "Oye, acuérdate de \(clean.prefix(1).lowercased() + clean.dropFirst())."
     }
 
     /// El texto del recordatorio: el del modelo si nombra algo de lo que dijo el
@@ -522,7 +527,10 @@ struct Args {
     /// Ausente o vacío ⇒ none (default seguro). Desconocido ⇒ nil (error).
     func cadence(_ key: String) -> ProactiveCadence? {
         guard let value = raw(key)?.lowercased(), !value.isEmpty else { return ProactiveCadence.none }
-        return Self.cadenceSynonyms[value.folding(options: .diacriticInsensitive, locale: nil)]
+        let folded = value.folding(options: .diacriticInsensitive, locale: nil)
+        if let known = Self.cadenceSynonyms[folded] { return known }
+        if folded.hasPrefix("every ") || folded.hasPrefix("cada ") { return ProactiveCadence.none }
+        return nil
     }
 
     static let cadenceSynonyms: [String: ProactiveCadence] = [
@@ -533,6 +541,9 @@ struct Args {
         "weekdays": .weekdays, "weekday": .weekdays, "entre semana": .weekdays, "dias habiles": .weekdays,
         "laborables": .weekdays,
         "weekly": .weekly, "semanal": .weekly, "cada semana": .weekly, "week": .weekly, "semanalmente": .weekly,
+        // Lo que la app no repite: una vez (nunca diario/semanal inventado).
+        "monthly": .none, "biweekly": .none, "fortnightly": .none, "mensual": .none, "quincenal": .none,
+        "yearly": .none, "anual": .none,
     ]
 
     /// 0-23; ausente ⇒ la hora default del check-in; "8 pm"/"20:00" también.
@@ -580,6 +591,9 @@ struct LocalWhen {
         }
         if let clock = explicitTimes(owner).first {
             parts.hour = clock.hour; parts.minute = clock.minute
+        } else if let said = times(owner).first(where: \.afterLas), said.clock.hour == 12, parts.hour == 0 {
+            parts.hour = 12   // "a las 12" no es medianoche
+            parts.minute = said.clock.minute
         } else if let said = times(owner).first(where: \.afterLas), let hour = parts.hour,
                   hour % 12 != said.clock.hour % 12 {
             // "a las 10" y el modelo mandó otra hora (medido: 00:00): la del dueño;
@@ -593,6 +607,9 @@ struct LocalWhen {
     /// Fin de un evento: "de 9 am a 11 am" ⇒ la última hora explícita del
     /// dueño; si no, el fin del modelo cuando es posterior al inicio; si no, 1 h.
     func eventEnd(start: Date, modelEnd: Date?) -> Date {
+        if let range = ownerRange,
+           let end = calendar.date(bySettingHour: range.end.hour, minute: range.end.minute, second: 0, of: start),
+           end > start { return end }
         let times = explicitTimes(scheduleText)
         if times.count >= 2, let last = times.last,
            let end = calendar.date(bySettingHour: last.hour, minute: last.minute, second: 0, of: start), end > start {
@@ -600,6 +617,40 @@ struct LocalWhen {
         }
         if let modelEnd, modelEnd > start, modelEnd.timeIntervalSince(start) <= 12 * 3600 { return modelEnd }
         return start.addingTimeInterval(3600)
+    }
+
+    /// "de 12 a 1", "de 2 a 3 de la tarde", "de 9 am a 11 am": inicio y fin.
+    /// Sin am/pm se lee horario de oficina (1-6 ⇒ tarde, 12 ⇒ mediodía).
+    var ownerRange: (start: (hour: Int, minute: Int), end: (hour: Int, minute: Int))? {
+        let owner = scheduleText
+        guard let m = owner.firstMatch(of: /\bde (\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)? a (\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)?(?! de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/),
+              let h1 = Int(m.1), let h2 = Int(m.4), (0...23).contains(h1), (0...23).contains(h2) else { return nil }
+        let afternoon = owner.contains("de la tarde") || owner.contains("de la noche")
+        func hour(_ raw: Int, _ meridiem: Substring?) -> Int {
+            if let meridiem { return meridiem.hasPrefix("p") ? (raw < 12 ? raw + 12 : raw) : (raw == 12 ? 0 : raw) }
+            if raw >= 13 { return raw }
+            if afternoon { return raw < 12 ? raw + 12 : raw }
+            return (1...6).contains(raw) ? raw + 12 : raw
+        }
+        var start = hour(h1, m.3 ?? m.6), end = hour(h2, m.6)
+        if end <= start, end < 12 { end += 12 }
+        if start > end, start >= 12, start - 12 < end { start -= 12 }
+        return ((start, m.2.flatMap { Int($0) } ?? 0), (end, m.5.flatMap { Int($0) } ?? 0))
+    }
+
+    /// Inicio de un evento: el rango del dueño gana; si no, `repaired`.
+    func eventStart(_ modelStart: Date, modelEnd: Date?) -> Date {
+        var start = repaired(modelStart)
+        if let range = ownerRange,
+           let ranged = calendar.date(bySettingHour: range.start.hour, minute: range.start.minute, second: 0, of: start) {
+            start = ranged
+        } else if let modelEnd, explicitTimes(scheduleText).isEmpty, modelEnd < modelStart,
+                  calendar.isDate(modelEnd, inSameDayAs: modelStart) {
+            // El 3B invirtió inicio y fin (13:00–12:00).
+            start = calendar.date(bySettingHour: calendar.component(.hour, from: modelEnd),
+                                  minute: calendar.component(.minute, from: modelEnd), second: 0, of: start) ?? start
+        }
+        return start
     }
 
     // MARK: Lo que dijo el dueño
@@ -645,7 +696,7 @@ struct LocalWhen {
         if let m = owner.firstMatch(of: /cada (\d{1,3}|dos|tres|cuatro|cinco|diez|quince|veinte|treinta) (dias|semanas|meses)/) {
             let n = Int(m.1) ?? numbers[String(m.1)] ?? 0
             guard n > 0 else { return nil }
-            let phrase = String(m.0)
+            let phrase = Self.original(ownerText, matching: String(m.0)) ?? String(m.0)
             switch m.2 {
             case "dias": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: n, months: 0)
             case "semanas": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: 7 * n, months: 0)
@@ -705,10 +756,30 @@ struct LocalWhen {
     }
 
     /// Borrar, cambiar o dar por logrado ("elimina mi meta", "ya cumplí…").
+    /// Solo si el cambio es la intención principal: al inicio de la frase o
+    /// sobre una meta/recordatorio/evento; nunca con un verbo de creación
+    /// ("recuérdame el viernes cambiar el aceite" es un recordatorio).
     static func asksToChange(_ ownerText: String) -> Bool {
+        let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        if ["recuerd", "recordarme", "agend", "anota", "apunta", "toma nota"].contains(where: owner.contains) {
+            return false
+        }
+        let verb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
+        let opening = try? Regex("^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(verb))")
+        let object = try? Regex("\(verb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
+        return (opening.map { owner.firstMatch(of: $0) != nil } ?? false)
+            || (object.map { owner.firstMatch(of: $0) != nil } ?? false)
+    }
+
+    /// La nota cuando el dueño pidió cambiar algo y el turno terminó sin tool
+    /// (medido: "ya cumplí mi meta" ⇒ felicitaba y la meta seguía activa).
+    static func changeHint(_ ownerText: String) -> String? {
+        guard asksToChange(ownerText) else { return nil }
         let owner = fold(ownerText)
-        return ["elimin", "borr", "cancel", "quit", "cambi", "modific", "cumpli", "logre", "termine",
-                "complete", "ya no"].contains(where: owner.contains)
+        if owner.contains("recordatorio") { return "Para cambiarlo o borrarlo, hazlo en la tab Recordatorios." }
+        if owner.contains("evento") || owner.contains("cita") { return "Eso se cambia en tu app Calendario." }
+        return owner.contains("cumpl") || owner.contains("logr") || owner.contains("termin")
+            ? "Márcala como lograda en la tab Metas." : "Para cambiarla o borrarla, hazlo en la tab Metas."
     }
 
     /// "recuérdame…" sin hablar de una meta.
@@ -720,6 +791,19 @@ struct LocalWhen {
     var ownerMentionsTime: Bool { times(scheduleText).contains { $0.explicit || $0.afterLas } }
     var ownerExplicitTime: (hour: Int, minute: Int)? { explicitTimes(scheduleText).first }
     var ownerDay: Date? { day(scheduleText) }
+
+    /// El tramo del texto original que corresponde a un tramo plegado (con tildes).
+    static func original(_ text: String, matching folded: String) -> String? {
+        let lower = text.lowercased()
+        let chars = Array(lower)
+        let target = Array(folded)
+        guard target.count <= chars.count else { return nil }
+        for start in 0...(chars.count - target.count) {
+            let slice = String(chars[start..<start + target.count])
+            if fold(slice) == folded { return slice }
+        }
+        return nil
+    }
 
     static func fold(_ text: String) -> String {
         text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))

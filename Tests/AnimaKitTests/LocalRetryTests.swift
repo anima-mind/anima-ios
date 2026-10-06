@@ -73,7 +73,7 @@ extension LocalLoopHarness.Run {
     @Test func legibleAndAdmissions() {
         #expect(ToolFailureNotice.legible("Error: falta 'id'.") == "falta 'id'")
         #expect(ToolFailureNotice.legible("Error: SQLite error 1: no such table: x - while executing `INSERT …`")
-                == "SQLite error 1: no such table: x")
+                == "hubo un problema al guardarlo")
         #expect(ToolFailureNotice.legible("Falta `when`. Corrige y llama remind_me otra vez. Ej: {}") == "Falta `when`")
         #expect(ToolFailureNotice.legible("") == "la herramienta falló")
         #expect(ToolFailureNotice.legible("Acción cancelada: el dueño no la confirmó.") == "no lo confirmaste")
@@ -139,7 +139,7 @@ extension LocalLoopHarness.Run {
             LocalLoopHarness.text("Listo, te recuerdo x."),
         ], tools: [AnimaRemindersTool(store: w.reminders)], router: try OnDeviceTestConfig.router(),
            policy: .app(ownerAllowlist: { [] }), text: "recuérdame el 2 de enero a las 9 x")
-        #expect(r.notice?.hasPrefix("⚠️ No pude crear el recordatorio: SQLite error") == true)
+        #expect(r.notice == "⚠️ No pude crear el recordatorio: hubo un problema al guardarlo.")
         #expect(r.text == r.notice)
         let window = try r.store.window(sessionId: r.sid)
         let errors = window.flatMap(\.content).compactMap { block -> String? in

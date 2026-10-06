@@ -94,9 +94,10 @@ import Testing
             .contains("`when`") == true)
         #expect(Self.message(Self.resolve("remind_me", ["text": .string("x"), "when": .string("2026-02-30 09:00")]))?
             .contains("`when`") == true)
-        #expect(Self.message(Self.resolve("remind_me", [
-            "text": .string("x"), "when": .string("2026-10-07 09:00"), "repeat": .string("mensual")]))
-            == "`repeat` debe ser none, daily, weekdays o weekly.")
+        // Una repetición que la app no hace nunca es un error: una vez.
+        #expect(Self.real(Self.resolve("remind_me", [
+            "text": .string("x"), "when": .string("2026-10-07 09:00"), "repeat": .string("monthly")]))?.1["repeat"]
+            == .string("none"))
         #expect(Self.message(Self.resolve("declare_goal", ["checkin": .string("weekly")]))?.contains("`statement`") == true)
         #expect(Self.message(Self.resolve("add_calendar_event", ["start": .string("2026-10-08 15:00")]))?
             .contains("`title`") == true)

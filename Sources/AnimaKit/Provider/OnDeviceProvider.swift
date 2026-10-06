@@ -492,6 +492,39 @@ public enum OnDevicePromptBuilder {
         return words.contains("tengo") || words.contains("mis")
     }
 
+    /// La redacción no contradice el momento guardado (medido: guardado hoy
+    /// 18:00, texto "te recuerdo mañana a las 6"): día de la semana, hoy/mañana/
+    /// pasado mañana y hora deben coincidir con el resultado de la tool.
+    public static func agreesWithTheResult(_ text: String, fallback: String, now: Date,
+                                           calendar: Calendar = .current) -> Bool {
+        let result = fold(fallback)
+        guard let m = result.firstMatch(of: /(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
+              let day = Int(m.2), let month = LocalWhen.months.firstIndex(of: String(m.3)).map({ $0 + 1 }),
+              let hour = Int(m.4) else { return true }
+        let said = fold(text)
+        let words = LocalWhen.words(said)
+        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(m.1) { return false }
+        let today = calendar.startOfDay(for: now)
+        var parts = calendar.dateComponents([.year], from: today)
+        parts.month = month; parts.day = day
+        if let target = calendar.date(from: parts) {
+            var diff = calendar.dateComponents([.day], from: today, to: target).day ?? 0
+            if diff < 0, let next = calendar.date(byAdding: .year, value: 1, to: target) {
+                diff = calendar.dateComponents([.day], from: today, to: next).day ?? diff
+            }
+            let relative = said.replacingOccurrences(of: "de la manana", with: " ")
+            let relWords = LocalWhen.words(relative)
+            if relative.contains("pasado manana") { if diff != 2 { return false } }
+            else if relWords.contains("manana") { if diff != 1 { return false } }
+            if relWords.contains("hoy"), diff != 0 { return false }
+        }
+        let when = LocalWhen(now: now, calendar: calendar)
+        for mention in when.times(said) where mention.explicit || mention.afterLas {
+            if mention.clock.hour % 12 != hour % 12 { return false }
+        }
+        return true
+    }
+
     /// Lo que cada tool local hizo, como raíz: la confirmación debe nombrarlo.
     static let actionStems: [String: [String]] = [
         "remind_me": ["recuerd", "record", "avis", "program"],
@@ -561,7 +594,7 @@ public enum OnDevicePromptBuilder {
                 .replacing(/\s*Id [A-Za-z0-9-]+\.?/, with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let body = cleaned.joined(separator: " ")
+        let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")
         let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
         return "Listo: " + trimmed
     }
@@ -730,6 +763,7 @@ public struct OnDeviceProvider: Provider {
                     let text = tracker.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     tracker = SnapshotDeltaTracker()
                     let accepted = OnDevicePromptBuilder.acceptsConfirmation(text, salient: request.salientWords)
+                        && OnDevicePromptBuilder.agreesWithTheResult(text, fallback: request.fallbackText ?? "", now: Date())
                     _ = tracker.delta(for: accepted ? text : (request.fallbackText ?? ""))
                     toolCall = nil
                     continuation.yield(.textDelta(tracker.text))

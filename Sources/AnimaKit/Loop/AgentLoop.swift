@@ -378,6 +378,15 @@ public actor AgentLoop {
                     content = ToolFailureNotice.prepend(notice, to: content)
                     emit(.toolFailure(notice))
                 }
+                // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
+                // el turno cerró sin tools ⇒ dónde se hace, determinista.
+                if toolProfile == .onDevice, toolCallCount == 0, response.stopReason != .toolUse,
+                   response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText),
+                   !Self.plainText(content).contains(hint) {
+                    let addition = Self.plainText(content).isEmpty ? hint : "\n\n" + hint
+                    emit(.textDelta(addition))
+                    content.append(.text(addition))
+                }
                 let assistantMessage = Message.assistant(content)
                 try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage, surface: surface)
                 messages.append(assistantMessage)

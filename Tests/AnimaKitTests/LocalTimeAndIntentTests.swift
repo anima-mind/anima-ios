@@ -106,7 +106,7 @@ import Testing
     }
 
     @Test func spokenFallbackDropsExclamations() {
-        #expect(LocalToolAdapter.spokenFallback("¡Mañana es el examen!") == "Oye, acuérdate de Mañana es el examen.")
+        #expect(LocalToolAdapter.spokenFallback("¡Mañana es el examen!") == "Oye, acuérdate de mañana es el examen.")
     }
 
     @Test func nounsInEAreNotPreterites() {
@@ -224,5 +224,92 @@ import Testing
         #expect(response.content == [.text(shown.content)])
         #expect(LocalToolAdapter.present(ToolResult(content: "x"), local: "list_reminders", input: .object([:]),
                                          ownerText: "¿qué tengo?").content == "x")
+    }
+}
+
+@Suite struct LocalChangeIntentTests {
+    @Test(arguments: ["recuérdame el viernes cambiar el aceite del carro", "recuérdame el viernes cancelar Netflix",
+                      "recuérdame en 20 minutos quitar la ropa", "anota que hay que borrar los correos viejos"])
+    func aCreationWithAChangeVerbIsStillACreation(owner: String) {
+        #expect(!LocalWhen.asksToChange(owner))
+        #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) != "list_reminders")
+        #expect(LocalToolAdapter.changeNote(owner, tab: "Metas").isEmpty)
+    }
+
+    @Test(arguments: ["elimina mi meta de correr", "ya cumplí mi meta de leer", "borra el recordatorio del banco",
+                      "quiero cambiar mi meta", "cancela la cita del dentista", "ya no quiero esa meta"])
+    func aChangeRequest(owner: String) {
+        #expect(LocalWhen.asksToChange(owner))
+        #expect(LocalWhen.changeHint(owner) != nil)
+    }
+
+    @Test func hintsPointToTheRightPlace() {
+        #expect(LocalWhen.changeHint("ya cumplí mi meta de leer") == "Márcala como lograda en la tab Metas.")
+        #expect(LocalWhen.changeHint("borra el recordatorio del banco") == "Para cambiarlo o borrarlo, hazlo en la tab Recordatorios.")
+        #expect(LocalWhen.changeHint("recuérdame cambiar el aceite") == nil)
+    }
+
+    @Test func aToolLessTurnAboutAChangeSaysWhere() async throws {
+        let r = try await LocalLoopHarness.run([LocalLoopHarness.text("¡Felicidades por cumplir tu meta!")], tools: [],
+                                               router: try OnDeviceTestConfig.router(), text: "ya cumplí mi meta de leer")
+        #expect(r.text == "¡Felicidades por cumplir tu meta!\n\nMárcala como lograda en la tab Metas.")
+        #expect(try r.lastAssistantText().hasSuffix("Márcala como lograda en la tab Metas."))
+    }
+
+    @Test func monthlyFromTheModelIsOnceNotAnError() throws {
+        let input = try #require(LocalOwnerRepairTests.real("remind_me", [
+            "text": .string("pagar el arriendo"), "when": .string("2026-11-01 09:00"), "repeat": .string("monthly")],
+            owner: "recuérdame cada mes pagar el arriendo"))
+        #expect(input["repeat"] == .string("none"))
+        #expect(input["fire_at"] == .string("2026-11-06T09:00:00"))
+        let every = try #require(LocalOwnerRepairTests.real("remind_me", [
+            "text": .string("x"), "when": .string("2026-10-07 09:00"), "repeat": .string("every 2 weeks")], owner: ""))
+        #expect(every["repeat"] == .string("none"))
+    }
+
+    @Test func noonIsNotMidnight() throws {
+        let input = try #require(LocalOwnerRepairTests.real("remind_me", [
+            "text": .string("x"), "when": .string("2026-10-07 00:00"), "repeat": .string("none")],
+            owner: "recuérdame mañana a las 12 almorzar"))
+        #expect(input["fire_at"] == .string("2026-10-07T12:00:00"))
+    }
+
+    @Test(arguments: [
+        ("agéndame almuerzo con Ana el 22 de octubre de 12 a 1", "2026-10-22 13:00", "2026-10-22 12:00",
+         "2026-10-22T12:00:00", "2026-10-22T13:00:00"),
+        ("agéndame reunión el jueves de 2 a 3", "2026-10-08 14:00", "2026-10-08 15:00",
+         "2026-10-08T14:00:00", "2026-10-08T15:00:00"),
+        ("agéndame taller el jueves de 9 a 11", "2026-10-08 09:00", "2026-10-08 11:00",
+         "2026-10-08T09:00:00", "2026-10-08T11:00:00"),
+        ("agéndame algo el jueves", "2026-10-08 16:00", "2026-10-08 15:00",
+         "2026-10-08T15:00:00", "2026-10-08T16:00:00"),
+    ])
+    func eventRanges(owner: String, start: String, end: String, expectedStart: String, expectedEnd: String) throws {
+        let input = try #require(LocalOwnerRepairTests.real("add_calendar_event", [
+            "title": .string("x"), "start": .string(start), "end": .string(end)], owner: owner))
+        #expect(input["start"] == .string(expectedStart))
+        #expect(input["end"] == .string(expectedEnd))
+    }
+
+    @Test func unsupportedPhraseKeepsTheAccents() {
+        let when = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
+                             ownerText: "Recuérdame cada 15 días revisar la tarjeta")
+        #expect(when.unsupportedCadence?.phrase == "cada 15 días")
+    }
+
+    @Test func theConfirmationMustAgreeWithWhatWasSaved() {
+        let saved = "Listo: te recuerdo 'examen' el martes 6 de octubre a las 18:00."
+        let now = LocalToolAdapterTests.now
+        let cal = LocalToolAdapterTests.calendar
+        #expect(OnDevicePromptBuilder.agreesWithTheResult("Listo, hoy a las 6 de la tarde te recuerdo el examen.",
+                                                          fallback: saved, now: now, calendar: cal))
+        #expect(!OnDevicePromptBuilder.agreesWithTheResult("Listo, te recuerdo mañana a las 6 el examen.",
+                                                           fallback: saved, now: now, calendar: cal))
+        #expect(!OnDevicePromptBuilder.agreesWithTheResult("Listo, el jueves te recuerdo el examen.",
+                                                           fallback: saved, now: now, calendar: cal))
+        #expect(!OnDevicePromptBuilder.agreesWithTheResult("Listo, hoy a las 5 te recuerdo el examen.",
+                                                           fallback: saved, now: now, calendar: cal))
+        #expect(OnDevicePromptBuilder.agreesWithTheResult("Listo.", fallback: "Anotado.", now: now, calendar: cal))
+        #expect(OnDevicePromptBuilder.confirmation(results: ["te diré: «Oye, x.»."]) == "Listo: te diré: «Oye, x».")
     }
 }

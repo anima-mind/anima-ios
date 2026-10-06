@@ -453,4 +453,59 @@ import Testing
             #expect(ok, "corrida \(run)")
         }
     }
+
+    // MARK: - Ronda 3 del review
+
+    @Test func changeVerbsInsideACreation() async throws {
+        try await expectReminder("28 cambiar el aceite", "recuérdame el viernes cambiar el aceite del carro",
+                                 at: Self.at(Self.next(6), 9), contains: "aceite")
+        try await expectReminder("29 cancelar Netflix", "recuérdame el viernes cancelar Netflix",
+                                 at: Self.at(Self.next(6), 9), contains: "netflix")
+        try await expectReminder("30 quitar la ropa", "recuérdame en 20 minutos quitar la ropa",
+                                 at: Date().addingTimeInterval(1200), contains: "ropa", tolerance: 180)
+    }
+
+    @Test func everyMonthIsOnceAndSaid() async throws {
+        guard Self.enabled else { return }
+        let expected = Self.at(Self.calendar.date(byAdding: .month, value: 1, to: Self.today)!, 9)
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "recuérdame cada mes pagar el arriendo")
+            let created = await world.reminders.list()
+            let once: Bool = created.count == 1 && created.first?.repeatCadence == ProactiveCadence.none
+            let ok = once && created.first?.fireAt == expected && LocalWhen.fold(t.text).contains("repit") && t.notice == nil
+            Self.row("31 cada mes", run, t, ok)
+            #expect(ok, "corrida \(run): \(created.map { ($0.fireAt, $0.repeatCadence) })")
+        }
+    }
+
+    @Test func lunchFromTwelveToOne() async throws {
+        guard Self.enabled else { return }
+        let day = Self.calendar.date(byAdding: .day, value: 16, to: Self.today)!
+        let p = Self.calendar.dateComponents([.day, .month], from: day)
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "agéndame almuerzo con Ana el \(p.day!) de \(Self.monthNames[p.month! - 1]) de 12 a 1")
+            let events = world.calendar.created.value
+            let ok = events.count == 1 && events.first?.1 == Self.at(day, 12) && events.first?.2 == Self.at(day, 13)
+                && t.notice == nil
+            Self.row("32 almuerzo de 12 a 1", run, t, ok)
+            #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1, $0.2) })")
+        }
+    }
+
+    @Test func achievedGoalSaysWhereToMarkIt() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            _ = await world.other.ingestStated(statement: "leer 12 libros", desiredState: .progressCheckIn(everyDays: 8),
+                                               evidence: "test")
+            let t = await Self.turn(world, "ya cumplí mi meta de leer")
+            let goals = await world.other.allGoals()
+            let ok = goals.count == 1 && LocalWhen.fold(t.text).contains("tab metas")
+                && !t.calls.contains { $0.hasPrefix("declare_goal") }
+            Self.row("33 ya cumplí mi meta", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
 }

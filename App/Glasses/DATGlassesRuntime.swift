@@ -345,6 +345,8 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
         let requested = GlassesFlag()
         let starting = GlassesFlag()
         let firstBytes = GlassesFlag()
+        let graceArmed = GlassesFlag()
+        let grace = GlassesBox<Task<Void, Never>?>(nil)
         let started = Date()
         let ms: @Sendable () -> Int = { Int(Date().timeIntervalSince(started) * 1000) }
         var timers: [Task<Void, Never>] = []
@@ -377,10 +379,16 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
                             photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
                         }
                     case .stopped:
-                        if !once.isResolved,
-                           let failure = GlassesStandaloneStop.failure(starting: starting.isSet,
-                                                                       requested: requested.isSet) {
-                            once.fire(.failure(failure))
+                        guard !once.isResolved else { return }
+                        switch GlassesStandaloneStop.decision(starting: starting.isSet, requested: requested.isSet) {
+                        case .setupFailed:
+                            once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+                        case .graceThenFail:
+                            guard graceArmed.setOnce() else { return }
+                            diag.record(.photo, GlassesStandaloneStop.graceLog)
+                            grace.value = GlassesStandaloneStop.armGrace(once)
+                        case .ignore:
+                            break
                         }
                     default:
                         break
@@ -400,6 +408,7 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
             once.fire(.failure(CancellationError()))
         }
         timers.forEach { $0.cancel() }
+        grace.value?.cancel()
         await bag.cancelAll()
         photo.stop()
         camera.stop()

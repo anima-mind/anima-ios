@@ -103,9 +103,12 @@ public final class GlassesDiagnostics: @unchecked Sendable {
     /// El texto que se copia al portapapeles: cabecera de estado + eventos.
     public func report(header: [String]) -> String {
         let lines = newestFirstLines
-        let title = lines.count == 1 ? "— último evento —"
-                                     : "— últimos \(Self.eventCount(lines.count)), el más reciente primero —"
-        return (["Anima · diagnóstico de gafas"] + header + [title]
-                + (lines.isEmpty ? ["(sin eventos)"] : lines)).joined(separator: "\n")
+        let title: String
+        switch lines.count {
+        case 0: title = "— sin eventos —"
+        case 1: title = "— último evento —"
+        default: title = "— últimos \(Self.eventCount(lines.count)), el más reciente primero —"
+        }
+        return (["Anima · diagnóstico de gafas"] + header + [title] + lines).joined(separator: "\n")
     }
 }

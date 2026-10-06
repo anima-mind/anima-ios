@@ -55,18 +55,42 @@ public enum GlassesPhotoPhase: Sendable, Equatable {
     case capturing
 }
 
-/// Qué hacer cuando la `Camera.photo` standalone vuelve a `.stopped`.
+/// Qué hacer cuando la `Camera.photo` standalone vuelve a `.stopped`. La doc
+/// DAT no garantiza que el photo child siga `.started` hasta entregar
+/// `photoDataPublisher`: tras pedir la captura, `.stopped` abre una ventana de
+/// gracia en vez de fallar en seco.
 public enum GlassesStandaloneStop {
-    /// - starting: ya pasó por `.starting`.
-    /// - requested: ya se llamó `capturePhoto` (solo tras el primer `.started`).
-    /// nil = `.stopped` inicial (nada que resolver).
-    public static func failure(starting: Bool, requested: Bool) -> GlassesPhotoError? {
-        if requested { return .failed(stoppedAfterCapture) }
-        if starting { return .setupFailed("stopped") }
-        return nil
+    public enum Decision: Sendable, Equatable {
+        /// Se detuvo arrancando: setup fallido ya (reintento / fallback).
+        case setupFailed
+        /// Se detuvo tras `capturePhoto`: esperar los datos `stoppedGrace` y luego fallar.
+        case graceThenFail
+        /// `.stopped` inicial: nada que resolver.
+        case ignore
     }
 
-    public static let stoppedAfterCapture = "cámara detenida tras capturePhoto"
+    public static let stoppedGrace: TimeInterval = 3
+    public static let stoppedAfterCapture = "cámara detenida tras capturePhoto sin entregar datos"
+    public static let graceLog = "standalone stopped tras capturePhoto: esperando datos ≤3 s"
+
+    /// - starting: ya pasó por `.starting`.
+    /// - requested: ya se llamó `capturePhoto` (solo tras el primer `.started`).
+    public static func decision(starting: Bool, requested: Bool) -> Decision {
+        if requested { return .graceThenFail }
+        if starting { return .setupFailed }
+        return .ignore
+    }
+
+    /// Arma la gracia: si `once` no se resolvió (datos, error, tope) al vencer,
+    /// falla con `stoppedAfterCapture`. La tarea se cancela en el teardown.
+    public static func armGrace(_ once: GlassesOnce<Result<Data, Error>>,
+                                grace: TimeInterval = stoppedGrace) -> Task<Void, Never> {
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, grace) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            once.fire(.failure(GlassesPhotoError.failed(stoppedAfterCapture)))
+        }
+    }
 }
 
 public enum GlassesPhotoCapture {

@@ -48,6 +48,7 @@ struct HUDIconPolicyTests {
             .home(status: nil), .capturing, .listening(viaPhone: false), .listening(viaPhone: true),
             .heard(transcript: "t"), .thinking(question: "q"), .speaking(card), .answer(card), .declined("d"),
             .attention("a"), .trouble(heading: "h", message: "m"), .cameraConfirm(reason: "r"), .handoff,
+            .cameraPermission,
         ]
         var icons = Set<HUDIcon>()
         for screen in screens {

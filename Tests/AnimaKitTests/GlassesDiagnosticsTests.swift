@@ -23,7 +23,8 @@ struct GlassesDiagnosticsTests {
 
     @Test func reporteConCabeceraYUnaLineaPorEvento() {
         let diag = GlassesDiagnostics(now: { Self.epoch })
-        #expect(diag.report(header: ["Estado: x"]).contains("(sin eventos)"))
+        let empty = diag.report(header: ["Estado: x"]).components(separatedBy: "\n")
+        #expect(empty == ["Anima · diagnóstico de gafas", "Estado: x", "— sin eventos —"])
         diag.record(.audio, "settle hfp 420 ms")
         let report = diag.report(header: ["Estado: x"])
         let lines = report.components(separatedBy: "\n")

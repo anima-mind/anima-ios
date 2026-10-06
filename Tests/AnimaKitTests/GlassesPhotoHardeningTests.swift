@@ -181,7 +181,7 @@ struct HUDPhotoMessageTests {
         #expect(HUDPhoto.message(for: GlassesBodyError.unavailable("x")) == "Las gafas no están conectadas.")
         #expect(HUDPhoto.message(for: MockError("raro")) == HUDPhoto.failure)
         let raw: [GlassesPhotoError] = [.setupFailed("stopped"), .setupFailed("timeout"), .unsupported("notReady"),
-                                        .failed("cámara detenida tras capturePhoto"), .permissionDenied("denegado")]
+                                        .failed(GlassesStandaloneStop.stoppedAfterCapture), .permissionDenied("denegado")]
         for error in raw {
             let message = HUDPhoto.message(for: error) ?? ""
             #expect(!message.contains("("), "token crudo en el HUD: \(message)")
@@ -194,13 +194,41 @@ struct HUDPhotoMessageTests {
     }
 
     @Test func stoppedDeLaStandaloneSegunElMomento() {
-        #expect(GlassesStandaloneStop.failure(starting: false, requested: false) == nil)
-        #expect(GlassesStandaloneStop.failure(starting: true, requested: false) == .setupFailed("stopped"))
-        // Murió DESPUÉS de capturePhoto sin entregar: falla ya, sin esperar el tope.
-        #expect(GlassesStandaloneStop.failure(starting: true, requested: true)
-                == .failed(GlassesStandaloneStop.stoppedAfterCapture))
-        #expect(GlassesStandaloneStop.failure(starting: false, requested: true)
-                == .failed("cámara detenida tras capturePhoto"))
+        #expect(GlassesStandaloneStop.decision(starting: false, requested: false) == .ignore)
+        #expect(GlassesStandaloneStop.decision(starting: true, requested: false) == .setupFailed)
+        #expect(GlassesStandaloneStop.decision(starting: true, requested: true) == .graceThenFail)
+        #expect(GlassesStandaloneStop.decision(starting: false, requested: true) == .graceThenFail)
+        #expect(GlassesStandaloneStop.stoppedGrace == 3)
+        #expect(GlassesStandaloneStop.graceLog == "standalone stopped tras capturePhoto: esperando datos ≤3 s")
+    }
+
+    @Test func datosDentroDeLaGraciaSonFotoNormal() async throws {
+        let once = GlassesOnce<Result<Data, Error>>()
+        let got = Locked<Result<Data, Error>?>(nil)
+        once.set { r in got.mutate { $0 = r } }
+        let grace = GlassesStandaloneStop.armGrace(once, grace: 0.3)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(once.fire(.success(Data([0xFF]))))
+        await grace.value
+        #expect(try got.value?.get() == Data([0xFF]))
+    }
+
+    @Test func sinDatosLaGraciaVenceYFalla() async {
+        let once = GlassesOnce<Result<Data, Error>>()
+        let got = Locked<Result<Data, Error>?>(nil)
+        once.set { r in got.mutate { $0 = r } }
+        await GlassesStandaloneStop.armGrace(once, grace: 0.05).value
+        #expect(throws: GlassesPhotoError.failed("cámara detenida tras capturePhoto sin entregar datos")) {
+            try got.value?.get()
+        }
+    }
+
+    @Test func graciaCanceladaEnElTeardownNoResuelve() async {
+        let once = GlassesOnce<Result<Data, Error>>()
+        let grace = GlassesStandaloneStop.armGrace(once, grace: 0.2)
+        grace.cancel()
+        await grace.value
+        #expect(!once.isResolved)
     }
 
     @Test func pantallaDelPermisoEsValidaYSeCancela() throws {

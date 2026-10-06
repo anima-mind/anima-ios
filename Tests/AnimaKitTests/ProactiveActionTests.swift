@@ -72,4 +72,43 @@ import Testing
         #expect(NotificationsSettingsModel.countLabel(1) == "1 recordatorio programado")
         #expect(NotificationsSettingsModel.countLabel(3) == "3 recordatorios programados")
     }
+
+    /// Campo batch 5 #3: "Avisos de Anima" se prende y apaga desde la app.
+    @MainActor
+    @Test func avisosDeAnimaToggleCancelsAndResyncs() async throws {
+        let suite = "anima.test.proactive.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preference = ProactivePreference(defaults: defaults)
+        #expect(preference.isEnabled)
+        let w = try F.world(status: .granted)
+        let scheduler = ProactiveScheduler(scheduler: w.fake, reminders: w.reminders, otherModel: w.other,
+                                           selfName: { "Lumen" }, calendar: F.calendar, preference: preference)
+        let r = try await w.reminders.create(text: "x", fireAt: F.date(2026, 10, 6, 9))
+        await w.fake.schedule(LocalNotificationRequest(id: "handoff-x", title: "", body: "", trigger: .immediate,
+                                                       categoryId: "", deepLink: nil))
+        #expect(await scheduler.sync() == ["anima-reminder-\(r.id)"])
+
+        let model = NotificationsSettingsModel(scheduler: w.fake, reminders: w.reminders, preference: preference)
+        model.onEnabledChanged = { _ = await scheduler.sync() }
+        await model.refresh()
+        #expect(model.enabled && model.hubSummary == "Permitidas · 1 programadas")
+
+        await model.setEnabled(false)
+        #expect(!preference.isEnabled && !model.enabled)
+        #expect(await w.fake.pendingIds() == ["handoff-x"])            // lo de Anima, cancelado; lo ajeno, no
+        #expect(await w.reminders.scheduledCount() == 1)               // el store queda intacto
+        #expect(model.hubSummary == "Avisos apagados")
+        let intention = Intention(id: "i9", goalId: "g", observablesJSON: "{}", gap: "", proposedText: "x",
+                                  outcome: .pending, createdAt: F.start)
+        await scheduler.notify(intention)
+        #expect(w.fake.scheduled["anima-intention-i9"] == nil)
+
+        await model.setEnabled(true)
+        #expect(await w.fake.pendingIds() == ["anima-reminder-\(r.id)", "handoff-x"])
+        #expect(NotificationsSettingsModel.detail(status: .granted, enabled: true) == "Permiso del iPhone: permitido.")
+        #expect(NotificationsSettingsModel.detail(status: .granted, enabled: false).hasPrefix("Apagados"))
+        #expect(NotificationsSettingsModel.detail(status: .denied, enabled: true).contains("denegado"))
+        #expect(NotificationsSettingsModel.detail(status: .notDetermined, enabled: true).contains("permiso"))
+    }
 }

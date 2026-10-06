@@ -15,6 +15,7 @@ public actor ProactiveScheduler {
     private let maxPending: Int
     /// Ocurrencias que se programan por recordatorio que se repite.
     private let occurrencesPerReminder: Int
+    private let preference: ProactivePreference?
 
     public init(scheduler: LocalNotificationScheduler,
                 reminders: AnimaReminderStore,
@@ -22,7 +23,8 @@ public actor ProactiveScheduler {
                 selfName: @escaping @Sendable () async -> String = { "Anima" },
                 calendar: Calendar = .current,
                 maxPending: Int = ProactiveNotificationIDs.maxPending,
-                occurrencesPerReminder: Int = 7) {
+                occurrencesPerReminder: Int = 7,
+                preference: ProactivePreference? = nil) {
         self.scheduler = scheduler
         self.reminders = reminders
         self.otherModel = otherModel
@@ -30,7 +32,10 @@ public actor ProactiveScheduler {
         self.calendar = calendar
         self.maxPending = maxPending
         self.occurrencesPerReminder = occurrencesPerReminder
+        self.preference = preference
     }
+
+    private var isEnabled: Bool { preference?.isEnabled ?? true }
 
     // MARK: - Conjunto deseado
 
@@ -62,6 +67,11 @@ public actor ProactiveScheduler {
     /// Devuelve los ids programados.
     @discardableResult
     public func sync() async -> [String] {
+        guard isEnabled else {
+            let managed = await scheduler.pendingIds().filter(Self.isManaged)
+            if !managed.isEmpty { await scheduler.cancel(ids: managed) }
+            return []
+        }
         let desired = await desiredRequests()
         if !desired.isEmpty, await scheduler.authorizationStatus() == .notDetermined {
             _ = await scheduler.requestAuthorization()
@@ -77,6 +87,7 @@ public actor ProactiveScheduler {
 
     /// Una Intention del pulso en background → notificación inmediata.
     public func notify(_ intention: Intention) async {
+        guard isEnabled else { return }
         if await scheduler.authorizationStatus() == .notDetermined {
             _ = await scheduler.requestAuthorization()
         }

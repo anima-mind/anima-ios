@@ -222,13 +222,17 @@ final class AppModel: ObservableObject {
             let notifications: any LocalNotificationScheduler = UITestMode.isActive && !UITestMode.usesRealNotifications
                 ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
             self.reminderStore = reminderStore
+            let preference = ProactivePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
                                                          otherModel: otherModel,
-                                                         selfName: { await selfModel.name() })
+                                                         selfName: { await selfModel.name() },
+                                                         preference: preference)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
-            let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore)
+            let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
+                                                                preference: preference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
+            notificationsModel.onEnabledChanged = { await proactive?.sync() }
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
             remindersList.onChange = { [weak notificationsModel] in

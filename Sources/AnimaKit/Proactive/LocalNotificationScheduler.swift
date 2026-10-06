@@ -34,6 +34,23 @@ public enum ProactiveNotificationIDs {
     public static let snoozeMinutes = 60
 }
 
+/// "Avisos de Anima" (Ajustes → Notificaciones): preferencia de la APP, aparte
+/// del permiso del sistema. Apagada ⇒ no se programa nada y se cancela lo
+/// pendiente; el store de recordatorios queda intacto. Default: encendida.
+public final class ProactivePreference: @unchecked Sendable {
+    public static let key = "anima.proactive.enabled"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public var isEnabled: Bool {
+        get { defaults.object(forKey: Self.key) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Self.key) }
+    }
+}
+
 public struct LocalNotificationRequest: Sendable, Equatable {
     public enum Trigger: Sendable, Equatable {
         case immediate

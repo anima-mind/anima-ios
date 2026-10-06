@@ -155,8 +155,8 @@ public final class GlassesViewModel: ObservableObject {
             rows.append(("Conexión", Self.linkLabel(status.link), "link"))
             rows.append(("Compatibilidad", Self.compatibilityLabel(status.compatibility), "compat"))
             rows.append(("Batería", batteryText, "battery"))
-            if let type = status.deviceType { rows.append(("Modelo", type, "model")) }
-            if let thermal = status.thermal { rows.append(("Temperatura", thermal, "thermal")) }
+            if let type = status.deviceType { rows.append(("Modelo", Self.modelLabel(type), "model")) }
+            if let thermal = status.thermal { rows.append(("Temperatura", Self.thermalLabel(thermal), "thermal")) }
         }
         rows.append(("SDK DAT", Self.sdkVersion, "sdk"))
         rows.append(("App DAT / firmware", "el SDK no expone sus versiones", "versions"))
@@ -182,6 +182,31 @@ public final class GlassesViewModel: ObservableObject {
         }
     }
 
+    static func thermalLabel(_ thermal: GlassesThermal) -> String {
+        switch thermal {
+        case .unknown: return "desconocida"
+        case .normal: return "normal"
+        case .light: return "leve"
+        case .moderate: return "moderada"
+        case .severe: return "alta"
+        case .critical: return "crítica"
+        case .emergency: return "emergencia"
+        case .shutdown: return "apagado"
+        }
+    }
+
+    static func modelLabel(_ model: GlassesModel) -> String {
+        switch model {
+        case .unknown: return "desconocido"
+        case .rayBanMeta: return "Ray-Ban Meta"
+        case .oakleyMetaHSTN: return "Oakley Meta HSTN"
+        case .oakleyMetaVanguard: return "Oakley Meta Vanguard"
+        case .metaRayBanDisplay: return "Meta Ray-Ban Display"
+        case .rayBanMetaOptics: return "Ray-Ban Meta Optics"
+        case .metaGlasses: return "Gafas Meta"
+        }
+    }
+
     /// El texto que el dueño copia y pega cuando algo falla en hardware.
     public var diagnosticReport: String {
         let header = statusRows.map { "\($0.key): \($0.value)" } + [
@@ -192,14 +217,15 @@ public final class GlassesViewModel: ObservableObject {
         return diagnostics.report(header: header)
     }
 
-    public var diagnosticLines: [String] { diagnosticEntries.map(GlassesDiagnostics.line) }
+    /// Mismo orden que el texto copiado: el más reciente primero.
+    public var diagnosticLines: [String] { diagnosticEntries.reversed().map(GlassesDiagnostics.line) }
 
     public func copyDiagnostics() {
         let report = diagnosticReport
         #if canImport(UIKit)
         UIPasteboard.general.string = report
         #endif
-        notice = "Diagnóstico copiado (\(diagnosticEntries.count) eventos)."
+        notice = "Diagnóstico copiado (\(GlassesDiagnostics.eventCount(diagnosticEntries.count)))."
     }
 
     public func setDonWake(_ enabled: Bool) {
@@ -314,7 +340,7 @@ struct GlassesSettingsSection: View {
                 .accessibilityIdentifier("settings.glasses.donWake")
             }
         } else {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Theme.Space.unit) {
                 GlassesActionButton(title: "Vincular gafas", systemImage: "eyeglasses", role: .primary,
                                     id: "settings.glasses.pair") { model.pair() }
                 Text("Abre Meta AI para aprobar el vínculo y vuelve aquí.")
@@ -334,7 +360,7 @@ struct GlassesSettingsSection: View {
             GlassesActionButton(title: "Actualizar firmware", systemImage: "arrow.down.circle", role: .secondary,
                                 id: "settings.glasses.firmwareUpdate") { model.openFirmwareUpdate() }
             if model.isRegistered {
-                GlassesActionButton(title: "Desvincular", systemImage: "link", role: .destructive,
+                GlassesActionButton(title: "Desvincular", systemImage: "xmark.circle", role: .destructive,
                                     id: "settings.glasses.unpair") { confirmUnpair = true }
             }
         }
@@ -375,7 +401,7 @@ struct GlassesSettingsSection: View {
                         .font(Theme.Type_.secondary)
                     Spacer()
                     Image(systemName: showDiagnostics ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 13))
+                        .font(Theme.Type_.secondary)
                 }
                 .foregroundStyle(Theme.Colors.textMuted)
                 .frame(minHeight: Theme.minHitTarget)
@@ -391,10 +417,10 @@ struct GlassesSettingsSection: View {
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
                 } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(model.diagnosticLines.reversed().enumerated()), id: \.offset) { _, line in
+                    VStack(alignment: .leading, spacing: Theme.Space.unit) {
+                        ForEach(Array(model.diagnosticLines.enumerated()), id: \.offset) { _, line in
                             Text(line)
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(Theme.Type_.label.monospaced())
                                 .foregroundStyle(Theme.Colors.textMuted)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -424,7 +450,7 @@ struct GlassesSettingsSection: View {
                 .foregroundStyle(Theme.Colors.textMuted)
                 .multilineTextAlignment(.trailing)
         }
-        .frame(minHeight: 40)
+        .frame(minHeight: Theme.minHitTarget)
         .padding(.horizontal, Theme.Space.cardPad)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("settings.glasses.\(id)")
@@ -445,17 +471,18 @@ struct GlassesActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: Theme.Space.unit * 2) {
                 Image(systemName: systemImage)
-                    .font(.system(size: role == .primary ? 18 : 15, weight: .regular))
+                    .font(font)
                 Text(title)
-                    .font(.system(size: role == .primary ? 16 : 15, weight: role == .primary ? .medium : .regular))
+                    .font(font)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(foreground)
             .padding(.horizontal, Theme.Space.cardPad)
-            .frame(maxWidth: .infinity, minHeight: role == .primary ? 52 : Theme.minHitTarget)
+            .frame(maxWidth: .infinity, minHeight: role == .primary ? Theme.minHitTarget + Theme.Space.unit * 2
+                                                                    : Theme.minHitTarget)
             .background(role == .primary ? Theme.Colors.tint : Color.clear,
                         in: RoundedRectangle(cornerRadius: Theme.Radius.control))
             .overlay(
@@ -465,6 +492,10 @@ struct GlassesActionButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(id)
+    }
+
+    private var font: Font {
+        role == .primary ? Theme.Type_.cardTitle : Theme.Type_.body
     }
 
     private var foreground: Color {

@@ -29,10 +29,29 @@ struct GlassesDiagnosticsTests {
         let lines = report.components(separatedBy: "\n")
         #expect(lines.first == "Anima · diagnóstico de gafas")
         #expect(lines.contains("Estado: x"))
-        #expect(lines.contains("— últimos 1 eventos —"))
+        #expect(lines.contains("— último evento —"))
         let last = try? #require(lines.last)
         #expect(last?.hasSuffix("[audio] settle hfp 420 ms") == true)
         #expect(last?.count == "HH:mm:ss.SSS".count + " [audio] settle hfp 420 ms".count)
+        diag.record(.photo, "captura iniciada")
+        let two = diag.report(header: []).components(separatedBy: "\n")
+        #expect(two.contains("— últimos 2 eventos, el más reciente primero —"))
+        #expect(two.suffix(2).map { String($0.dropFirst("HH:mm:ss.SSS ".count)) }
+                == ["[photo] captura iniciada", "[audio] settle hfp 420 ms"])
+    }
+
+    @Test func conteoDeEventosEnSingularYPlural() {
+        #expect(GlassesDiagnostics.eventCount(0) == "0 eventos")
+        #expect(GlassesDiagnostics.eventCount(1) == "1 evento")
+        #expect(GlassesDiagnostics.eventCount(2) == "2 eventos")
+    }
+
+    @Test func laHoraUsaUnSoloFormatoEstable() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000.25)
+        let first = GlassesDiagnostics.timestamp(date)
+        #expect(first.count == "HH:mm:ss.SSS".count)
+        #expect(first.hasSuffix(".250"))
+        #expect(GlassesDiagnostics.timestamp(date) == first)
     }
 
     @Test func elStreamEmiteElActualYCadaCambio() async {
@@ -126,7 +145,7 @@ struct GlassesSettingsModelTests {
         await body.start()
         runtime.setDevices([GlassesDeviceSnapshot(id: "g1", name: "Meta Ray-Ban Display", link: .connected,
                                                   compatibility: .compatible, batteryPercent: 64,
-                                                  deviceType: "metaRayBanDisplay", thermal: "none")])
+                                                  deviceType: .metaRayBanDisplay, thermal: .normal)])
         let model = GlassesViewModel(body: body, activation: nil, defaults: Self.defaults())
         #expect(await eventually { await MainActor.run { model.status.batteryPercent == 64 } })
         let rows = Dictionary(uniqueKeysWithValues: model.statusRows.map { ($0.id, $0.value) })
@@ -134,17 +153,50 @@ struct GlassesSettingsModelTests {
         #expect(rows["link"] == "conectadas")
         #expect(rows["compat"] == "compatible")
         #expect(rows["battery"] == "64%")
-        #expect(rows["model"] == "metaRayBanDisplay")
-        #expect(rows["thermal"] == "none")
+        #expect(rows["model"] == "Meta Ray-Ban Display")
+        #expect(rows["thermal"] == "normal")
         #expect(rows["versions"] == "el SDK no expone sus versiones")
         #expect(await eventually { await MainActor.run { !model.diagnosticEntries.isEmpty } })
         let report = model.diagnosticReport
         #expect(report.contains("SDK DAT: 1.0.0"))
         #expect(report.contains("Iconos: auto"))
         #expect(report.contains("[link]"))
+        #expect(report.contains("Modelo: Meta Ray-Ban Display"))
+        #expect(report.contains("Temperatura: normal"))
         model.copyDiagnostics()
-        #expect(model.notice?.hasPrefix("Diagnóstico copiado") == true)
-        #expect(model.diagnosticLines.count == model.diagnosticEntries.count)
+        let count = model.diagnosticEntries.count
+        #expect(model.notice == "Diagnóstico copiado (\(GlassesDiagnostics.eventCount(count))).")
+        #expect(model.diagnosticLines.count == count)
+        // Pantalla y texto copiado en el MISMO orden: el más reciente primero.
+        #expect(model.diagnosticLines.first == model.diagnosticEntries.last.map(GlassesDiagnostics.line))
+        let reportLines = model.diagnosticReport.components(separatedBy: "\n")
+        #expect(Array(reportLines.suffix(model.diagnosticLines.count)) == model.diagnosticLines)
+    }
+
+    @Test func copiarUnSoloEventoVaEnSingular() {
+        let diag = GlassesDiagnostics()
+        diag.record(.hud, "a")
+        let model = GlassesViewModel(body: nil, activation: nil, defaults: Self.defaults(), diagnostics: diag)
+        #expect(model.diagnosticReport.contains("— último evento —"))
+    }
+
+    @Test func temperaturaYModeloEnEspanolLegible() {
+        let thermal: [GlassesThermal: String] = [
+            .unknown: "desconocida", .normal: "normal", .light: "leve", .moderate: "moderada",
+            .severe: "alta", .critical: "crítica", .emergency: "emergencia", .shutdown: "apagado",
+        ]
+        #expect(thermal.count == GlassesThermal.allCases.count)
+        for (level, label) in thermal { #expect(GlassesViewModel.thermalLabel(level) == label) }
+        #expect(GlassesViewModel.modelLabel(.metaRayBanDisplay) == "Meta Ray-Ban Display")
+        #expect(GlassesViewModel.modelLabel(.rayBanMeta) == "Ray-Ban Meta")
+        #expect(GlassesViewModel.modelLabel(.oakleyMetaHSTN) == "Oakley Meta HSTN")
+        #expect(GlassesViewModel.modelLabel(.oakleyMetaVanguard) == "Oakley Meta Vanguard")
+        #expect(GlassesViewModel.modelLabel(.rayBanMetaOptics) == "Ray-Ban Meta Optics")
+        #expect(GlassesViewModel.modelLabel(.metaGlasses) == "Gafas Meta")
+        #expect(GlassesViewModel.modelLabel(.unknown) == "desconocido")
+        for model in GlassesModel.allCases {
+            #expect(GlassesViewModel.modelLabel(model) != model.rawValue)
+        }
     }
 
     @Test func etiquetasDeEnlaceYCompatibilidad() {

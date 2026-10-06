@@ -80,17 +80,32 @@ public final class GlassesDiagnostics: @unchecked Sendable {
         "\(timestamp(entry.date)) [\(entry.category.rawValue)] \(entry.message)"
     }
 
-    static func timestamp(_ date: Date) -> String {
+    private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    static func timestamp(_ date: Date) -> String {
+        timestampFormatter.string(from: date)
     }
+
+    /// "1 evento" / "3 eventos".
+    public static func eventCount(_ count: Int) -> String {
+        count == 1 ? "1 evento" : "\(count) eventos"
+    }
+
+    /// Las líneas en el orden en que se muestran y se copian: el más reciente
+    /// primero (en pantalla queda visible sin hacer scroll).
+    var newestFirstLines: [String] { entries.reversed().map(Self.line) }
 
     /// El texto que se copia al portapapeles: cabecera de estado + eventos.
     public func report(header: [String]) -> String {
-        let lines = entries.map(Self.line)
-        return (["Anima · diagnóstico de gafas"] + header + ["— últimos \(lines.count) eventos —"]
+        let lines = newestFirstLines
+        let title = lines.count == 1 ? "— último evento —"
+                                     : "— últimos \(Self.eventCount(lines.count)), el más reciente primero —"
+        return (["Anima · diagnóstico de gafas"] + header + [title]
                 + (lines.isEmpty ? ["(sin eventos)"] : lines)).joined(separator: "\n")
     }
 }

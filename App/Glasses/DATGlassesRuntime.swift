@@ -143,6 +143,31 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
         }
     }
 
+    static func map(_ type: DeviceType) -> GlassesModel {
+        switch type {
+        case .rayBanMeta: return .rayBanMeta
+        case .oakleyMetaHSTN: return .oakleyMetaHSTN
+        case .oakleyMetaVanguard: return .oakleyMetaVanguard
+        case .metaRayBanDisplay: return .metaRayBanDisplay
+        case .rayBanMetaOptics: return .rayBanMetaOptics
+        case .metaGlasses: return .metaGlasses
+        default: return .unknown
+        }
+    }
+
+    static func map(_ level: ThermalLevel) -> GlassesThermal {
+        switch level {
+        case .unknown: return .unknown
+        case .none: return .normal
+        case .light: return .light
+        case .moderate: return .moderate
+        case .severe: return .severe
+        case .critical: return .critical
+        case .emergency: return .emergency
+        case .shutdown: return .shutdown
+        }
+    }
+
     static func snapshots(_ wearables: any WearablesInterface, _ ids: [DeviceIdentifier]) -> [GlassesDeviceSnapshot] {
         ids.compactMap { id in
             guard let device = wearables.deviceForIdentifier(id) else { return nil }
@@ -166,8 +191,8 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
                                          supportsDisplay: device.supportsDisplay(),
                                          batteryPercent: device.batteryLevel,
                                          donState: don,
-                                         deviceType: device.deviceType().rawValue,
-                                         thermal: "\(device.thermalLevel)")
+                                         deviceType: map(device.deviceType()),
+                                         thermal: map(device.thermalLevel))
         }
     }
 }

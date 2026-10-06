@@ -26,6 +26,17 @@ public enum GlassesDonState: String, Sendable, Equatable {
     case unknown, doffed, donned
 }
 
+/// DAT 1.0.0 `DeviceType` (calcado del `.swiftinterface`).
+public enum GlassesModel: String, Sendable, Equatable, CaseIterable {
+    case unknown, rayBanMeta, oakleyMetaHSTN, oakleyMetaVanguard, metaRayBanDisplay, rayBanMetaOptics, metaGlasses
+}
+
+/// DAT 1.0.0 `ThermalLevel` (calcado del `.swiftinterface`; su `.none` es
+/// `normal` aquí para no chocar con `Optional.none`).
+public enum GlassesThermal: String, Sendable, Equatable, CaseIterable {
+    case unknown, normal, light, moderate, severe, critical, emergency, shutdown
+}
+
 /// Un device visto por el runtime (link + compatibilidad llegan tarde: el
 /// adapter re-emite el snapshot en cada listener, regla 3).
 public struct GlassesDeviceSnapshot: Sendable, Equatable {
@@ -38,15 +49,15 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
     public var batteryPercent: Int?
     /// DAT 1.0.0: `Device.donState` (puestas / quitadas).
     public var donState: GlassesDonState
-    /// DAT 1.0.0: `Device.deviceType()` (p. ej. `metaRayBanDisplay`). El SDK no
-    /// expone versión de firmware ni de la app DAT de las gafas.
-    public var deviceType: String?
+    /// DAT 1.0.0: `Device.deviceType()`. El SDK no expone versión de firmware
+    /// ni de la app DAT de las gafas.
+    public var deviceType: GlassesModel?
     /// DAT 1.0.0: `Device.thermalLevel` (diagnóstico).
-    public var thermal: String?
+    public var thermal: GlassesThermal?
 
     public init(id: String, name: String, link: GlassesLink, compatibility: GlassesCompatibility,
                 supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown,
-                deviceType: String? = nil, thermal: String? = nil) {
+                deviceType: GlassesModel? = nil, thermal: GlassesThermal? = nil) {
         self.id = id
         self.name = name
         self.link = link

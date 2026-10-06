@@ -53,8 +53,8 @@ public struct GlassesStatus: Sendable, Equatable {
     /// Diagnóstico (Ajustes → Gafas): link, compatibilidad y modelo del device elegido.
     public var link: GlassesLink?
     public var compatibility: GlassesCompatibility?
-    public var deviceType: String?
-    public var thermal: String?
+    public var deviceType: GlassesModel?
+    public var thermal: GlassesThermal?
     /// Último estado de la DeviceSession / Display (diagnóstico).
     public var sessionState: GlassesSessionState?
     public var displayState: GlassesDisplayState?

@@ -284,8 +284,10 @@ public actor AgentLoop {
             var reliefRetried = false
             var hardTrimmed = false
             var failures = TurnFailures()
-            // Modelo local: un solo reintento guiado tras un fallo de tool.
+            // Modelo local: un solo reintento guiado tras un fallo de tool. La
+            // primera redirección (consulta en vez de creación) no lo gasta.
             var localToolErrors = 0
+            var localRedirected = false
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -428,9 +430,13 @@ public actor AgentLoop {
                         }
                         failures.record(verb: verb, result: result)
                         if toolProfile == .onDevice, result.isError, !result.isRejection {
-                            localToolErrors += 1
-                            result.content = LocalToolAdapter.retryHint(
-                                tool: LocalToolAdapter.intended(name: call.name, ownerText: userText), message: result.content)
+                            let intended = LocalToolAdapter.intended(name: call.name, ownerText: userText)
+                            if intended != call.name, !localRedirected {
+                                localRedirected = true
+                            } else {
+                                localToolErrors += 1
+                            }
+                            result.content = LocalToolAdapter.retryHint(tool: intended, message: result.content)
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
                         skillTurn.recordTool(realName, isError: result.isError && !result.isRejection, rejected: result.isRejection)

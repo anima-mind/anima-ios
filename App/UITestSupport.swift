@@ -235,6 +235,8 @@ struct UITestScriptedProvider: Provider {
         -> AsyncThrowingStream<ProviderEvent, Error> {
         let plan = Self.plan(for: ctx)
         let model = opts.route.model
+        // Con el modelo local el set es el del LocalToolAdapter.
+        let local = OnDeviceProvider.isOnDevice(model: model)
         return AsyncThrowingStream { continuation in
             let task = Task {
                 continuation.yield(.messageStart(id: "uitest-\(UUID().uuidString)", model: model))
@@ -254,15 +256,18 @@ struct UITestScriptedProvider: Provider {
                     continuation.yield(.messageDelta(stopReason: .endTurn,
                                                      usage: Usage(inputTokens: 10, outputTokens: 10)))
                 case .calendarCreate:
-                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
-                    continuation.yield(.toolUseInputDelta(
-                        #"{"action":"create","title":"Reunión con Pedro","start":"2026-10-08T15:00:00-05:00","end":"2026-10-08T16:00:00-05:00"}"#))
+                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)",
+                                                     name: local ? "add_calendar_event" : "calendar"))
+                    continuation.yield(.toolUseInputDelta(local
+                        ? #"{"title":"Reunión con Pedro","start":"2026-10-08 15:00","end":"2026-10-08 16:00"}"#
+                        : #"{"action":"create","title":"Reunión con Pedro","start":"2026-10-08T15:00:00-05:00","end":"2026-10-08T16:00:00-05:00"}"#))
                     continuation.yield(.blockStop(index: 0))
                     continuation.yield(.messageDelta(stopReason: .toolUse,
                                                      usage: Usage(inputTokens: 10, outputTokens: 5)))
                 case .calendarTool:
-                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
-                    continuation.yield(.toolUseInputDelta(#"{"action":"list","days_ahead":7}"#))
+                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)",
+                                                     name: local ? "list_events" : "calendar"))
+                    continuation.yield(.toolUseInputDelta(local ? #"{"days":7}"# : #"{"action":"list","days_ahead":7}"#))
                     continuation.yield(.blockStop(index: 0))
                     continuation.yield(.messageDelta(stopReason: .toolUse,
                                                      usage: Usage(inputTokens: 10, outputTokens: 5)))

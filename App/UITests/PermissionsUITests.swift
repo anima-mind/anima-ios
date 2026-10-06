@@ -11,7 +11,7 @@ import XCTest
 
 final class PermissionsUITests: AnimaUITestCase {
 
-    private static let allowLabels = ["Allow Full Access", "Permitir acceso total", "Allow", "Permitir", "OK"]
+    private static let allowLabels = ["Allow Full Access", "Permitir acceso total", "Otorgar acceso completo", "Allow", "Permitir", "OK"]
     private static let denyLabels = ["Don’t Allow", "Don't Allow", "No permitir"]
 
     /// 6a. Conceder → la tool corre y el agente reporta el calendario.

@@ -64,6 +64,7 @@ extension LocalLoopHarness.Run {
         #expect(LocalToolAdapter.verb(local: "read_note") == "leer la nota")
         #expect(LocalToolAdapter.verb(local: "list_reminders") == "consultar tus recordatorios")
         #expect(LocalToolAdapter.verb(local: "list_goals") == "consultar tus metas")
+        #expect(LocalToolAdapter.verb(local: "list_events") == "consultar tu agenda")
         #expect(LocalToolAdapter.verb(local: "x") == "usar x")
     }
 
@@ -104,4 +105,22 @@ extension LocalLoopHarness.Run {
         if tool == "camera" { #expect(actual.hasPrefix("completar la acción (")) } else { #expect(actual == verb) }
     }
 
+}
+
+@Suite struct LocalRedirectBudgetTests {
+    /// La redirección no gasta el reintento: tras ella, un error de
+    /// parámetros aún tiene su reintento guiado.
+    @Test func aRedirectDoesNotSpendTheGuidedRetry() async throws {
+        let w = try ProactiveFixtures.world()
+        let model = OnDeviceProvider.modelName
+        let r = try await LocalLoopHarness.run([
+            LocalLoopHarness.toolUse("a", "list_reminders", "{}", model: model),
+            LocalLoopHarness.toolUse("b", "remind_me", #"{"text":"x","when":"pronto","repeat":"none"}"#, model: model),
+            LocalLoopHarness.toolUse("c", "remind_me", #"{"text":"x","when":"2030-01-02 09:00","repeat":"none"}"#, model: model),
+            LocalLoopHarness.text("Listo, te recuerdo x."),
+        ], tools: [AnimaRemindersTool(store: w.reminders)], router: try OnDeviceTestConfig.router(),
+           policy: .app(ownerAllowlist: { [] }), text: "recuérdame el 2 de enero a las 9 x")
+        #expect(r.notice == nil)
+        #expect(await w.reminders.list().count == 1)
+    }
 }

@@ -62,6 +62,11 @@ public enum LocalToolAdapter {
                        [("title", .text), ("start", .date), ("end", .date)]),
             example: "{title:'almuerzo con Ana', start:'2026-10-08 13:00', end:'2026-10-08 14:00'}"),
         LocalTool(
+            name: "list_events", realTool: "calendar", realAction: "list",
+            spec: spec("list_events", "Lee las citas del calendario de los próximos días. Ej: {days:7}",
+                       [("days", .days)]),
+            example: "{days:7}"),
+        LocalTool(
             name: "write_note", realTool: "notes", realAction: "append",
             spec: spec("write_note", "Guarda una nota. Ej: {name:'libros', content:'leer Rayuela'}",
                        [("name", .text), ("content", .text)]),
@@ -79,7 +84,7 @@ public enum LocalToolAdapter {
     }
 
     /// Las que solo leen: tras ellas el modelo responde con lo leído.
-    public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "read_note"]
+    public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "list_events", "read_note"]
 
     static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
 
@@ -168,6 +173,10 @@ public enum LocalToolAdapter {
                 object["checkin"] = .object(["cadence": .string(cadence.rawValue), "hour": .int(hour)])
             }
             return .real(name: tool.realTool, input: .object(object))
+
+        case "list_events":
+            let days = args.raw("days").flatMap { Int($0.prefix { $0.isNumber }) }.map { min(max($0, 1), 30) } ?? 7
+            return .real(name: tool.realTool, input: .object(["action": .string("list"), "days_ahead": .int(days)]))
 
         case "add_calendar_event":
             guard let title = args.text("title") else { return invalid(missing("title", "el título de la cita")) }
@@ -303,6 +312,7 @@ public enum LocalToolAdapter {
         case text
         case date
         case hour
+        case days
         case choice([String])
 
         var schema: JSONValue {
@@ -310,6 +320,7 @@ public enum LocalToolAdapter {
             case .text: return .object(["type": .string("string")])
             case .date: return .object(["type": .string("string"), "pattern": .string(LocalToolAdapter.datePattern)])
             case .hour: return .object(["type": .string("integer"), "minimum": .int(0), "maximum": .int(23)])
+            case .days: return .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(30)])
             case .choice(let values): return .object(["type": .string("string"), "enum": .array(values.map { .string($0) })])
             }
         }

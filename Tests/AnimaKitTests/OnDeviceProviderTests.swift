@@ -147,7 +147,7 @@ enum OnDeviceTestConfig {
         let request = OnDevicePromptBuilder.request(
             ctx: AssembledContext(messages: [.user("busca")]),
             tools: [WebSearchTool.spec, CalendarTool().spec], opts: try OnDeviceTestConfig.opts())
-        #expect(request.tools.map(\.name) == ["add_calendar_event"])
+        #expect(request.tools.map(\.name) == ["add_calendar_event", "list_events"])
     }
 
     /// Toda tool real del Sensorimotor traduce su schema (objeto raíz con action).

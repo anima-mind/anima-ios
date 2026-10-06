@@ -331,6 +331,14 @@ import Testing
         #expect(goal["checkin"]?["cadence"] == .string("weekly"))
     }
 
+    @Test func listEventsReadsTheCalendar() throws {
+        #expect(try #require(Self.resolve("list_events", ["days": .int(2)], owner: "¿qué tengo mañana?"))
+                == .object(["action": .string("list"), "days_ahead": .int(2)]))
+        #expect(try #require(Self.resolve("list_events", ["days": .string("90 días")], owner: ""))["days_ahead"] == .int(30))
+        #expect(try #require(Self.resolve("list_events", [:], owner: ""))["days_ahead"] == .int(7))
+        #expect(LocalToolAdapter.intended(name: "list_events", ownerText: "agéndame cita mañana") == "add_calendar_event")
+    }
+
     @Test func listGoalsReadsGoals() throws {
         let input = try #require(Self.resolve("list_goals", [:], owner: "¿qué metas tengo?"))
         #expect(input == .object(["action": .string("list")]))

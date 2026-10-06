@@ -31,7 +31,7 @@ import Testing
 
         let local = ToolProfile.onDevice.apply(tools + [server])
         #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals",
-                                      "add_calendar_event", "write_note", "read_note"])
+                                      "add_calendar_event", "list_events", "write_note", "read_note"])
         #expect(ToolProfile.onDevice.apply(local) == local)
         for name in ToolProfile.excludedOnDevice { #expect(!local.contains { $0.name == name }) }
     }
@@ -44,7 +44,7 @@ import Testing
         let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("hola")]),
                                                     tools: [custom, CalendarTool().spec],
                                                     opts: try OnDeviceTestConfig.opts())
-        #expect(request.tools.map(\.name) == ["add_calendar_event"])
+        #expect(request.tools.map(\.name) == ["add_calendar_event", "list_events"])
     }
 
     @Test func compactGuideSaysWhatTheLocalModelCannotDo() {

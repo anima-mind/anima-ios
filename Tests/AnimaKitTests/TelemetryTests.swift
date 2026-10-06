@@ -75,3 +75,69 @@ import Testing
         #expect((try? ProviderConfigParser.parse(data))?.count == 1)
     }
 }
+
+/// Campo batch 5 #2: "se repite mucho system_language_model". Causa: la vista
+/// iteraba las filas (modelo, clase) con `id: \.model` — ids duplicados → SwiftUI
+/// repetía la primera fila. Ahora: una fila por modelo, normalizado al escribir
+/// y al leer, con nombre para humanos y el desglose por clase.
+@Suite struct ModelCostsTests {
+    @Test func oneRowPerModelEvenWithDirtyIdsAndSeveralClasses() throws {
+        let queue = try AnimaDatabase.temporary()
+        let telemetry = Telemetry(queue: queue)
+        let usage = Usage(inputTokens: 10, outputTokens: 10)
+        for (model, turnClass) in [("system_language_model", TurnClass.interactive),
+                                   ("system_language_model", .consolidation),
+                                   (" System_Language_Model\n", .distill),
+                                   ("system_language_model", .desirePulse)] {
+            try telemetry.record(sessionId: "s", turnClass: turnClass, model: model, usage: usage,
+                                 toolCalls: 0, retries: 0)
+        }
+        // Una fila vieja sin normalizar (escrita antes del fix) también se agrupa.
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO turn_telemetry (session_id, turn_class, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, tool_calls, retries, ts)
+                VALUES ('s', 'interactive', 'SYSTEM_LANGUAGE_MODEL ', 1, 1, 0, 0, 0, 0, 0)
+                """)
+        }
+        let summary = try telemetry.summary()
+        #expect(Set(summary.map(\.model)) == ["system_language_model"])
+        #expect(summary.count == 4)                          // (modelo, clase): por eso se repetía
+        let rows = Telemetry.byModel(summary)
+        #expect(rows.count == 1)
+        #expect(Set(rows.map(\.id)).count == rows.count)     // ids únicos para el ForEach
+        #expect(rows[0].displayName == "Modelo local (Apple)")
+        #expect(rows[0].breakdown == "Conversación 2 · Sueño 2 · Pulso 1")
+        #expect(rows[0].turns == 5)
+    }
+
+    @Test func friendlyNames() {
+        #expect(ModelNames.friendly("claude-opus-4-8") == "Claude Opus 4.8")
+        #expect(ModelNames.friendly("claude-haiku-4-5") == "Claude Haiku 4.5")
+        #expect(ModelNames.friendly("claude-sonnet-4-5-20250929") == "Claude Sonnet 4.5")
+        #expect(ModelNames.friendly("claude-opus") == "claude-opus")
+        #expect(ModelNames.friendly("claude-x-latest") == "Claude X")
+        #expect(ModelNames.friendly("gpt-5.2") == "GPT-5.2")
+        #expect(ModelNames.friendly("gpt-5-mini") == "GPT-5 mini")
+        #expect(ModelNames.friendly("gpt") == "gpt")
+        #expect(ModelNames.friendly("gemini-3.1-pro-preview") == "Gemini 3.1 Pro (preview)")
+        #expect(ModelNames.friendly("gemini") == "gemini")
+        #expect(ModelNames.friendly("mistral-large") == "mistral-large")
+        #expect(ModelNames.friendly("") == "")
+        #expect(ModelNames.turnClassLabel("restructure") == "Replanteo")
+        #expect(ModelNames.turnClassLabel("interactiveHard") == "Conversación")
+        #expect(ModelNames.turnClassLabel("otra") == "otra")
+    }
+
+    @Test func rowsSortByCostThenName() throws {
+        let rows = Telemetry.byModel([
+            .init(model: "claude-haiku-4-5", turnClass: "consolidation", turns: 1, inputTokens: 0, outputTokens: 0,
+                  cacheReadTokens: 0, costUSD: 0.5),
+            .init(model: "claude-opus-4-8", turnClass: "interactive", turns: 3, inputTokens: 0, outputTokens: 0,
+                  cacheReadTokens: 0, costUSD: 2),
+            .init(model: "a-model", turnClass: "interactive", turns: 1, inputTokens: 0, outputTokens: 0,
+                  cacheReadTokens: 0, costUSD: 0.5),
+        ])
+        #expect(rows.map(\.model) == ["claude-opus-4-8", "a-model", "claude-haiku-4-5"])
+    }
+}

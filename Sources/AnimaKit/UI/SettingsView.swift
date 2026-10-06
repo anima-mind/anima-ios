@@ -11,6 +11,8 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var detectedMode: AuthMode?
     @Published public var statusText: String = ""
     @Published public var costs: [Telemetry.CostRow] = []
+    /// Una fila por modelo, con nombre para humanos (la vista de costos).
+    public var modelCosts: [Telemetry.ModelCostRow] { Telemetry.byModel(costs) }
     @Published public var totalCost: Double = 0
     @Published public var monthlyBudgetUSD: Int?
     // Modo de operación (§4.9): cambia entre los 3 sin re-onboarding.
@@ -628,17 +630,20 @@ struct ModelSettingsContent: View {
                 .accessibilityIdentifier("settings.mode.hybrid")
             }
 
-            ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
-                HStack {
-                    Text(row.what)
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                    Spacer()
-                    Text(row.backend.label(remote: model.remoteProvider))
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.accentText)
+            VStack(spacing: 8) {
+                ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
+                    HStack {
+                        Text(row.what)
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.textMuted)
+                        Spacer()
+                        Text(row.backend.label(remote: model.remoteProvider))
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.accentText)
+                    }
                 }
             }
+            .padding(.top, Theme.Space.stack)
             if let notice = model.modeNotice {
                 Text(notice)
                     .font(Theme.Type_.meta)
@@ -727,11 +732,11 @@ struct ModelSettingsContent: View {
                     .font(Theme.Type_.meta)
                     .foregroundStyle(Theme.Colors.textFaint)
             } else {
-                ForEach(model.costs, id: \.model) { row in
+                ForEach(model.modelCosts) { row in
                     HStack {
-                        VStack(alignment: .leading) {
-                            Text(row.model).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
-                            Text("\(row.turnClass) · \(row.turns) turnos")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.displayName).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
+                            Text(row.breakdown)
                                 .font(Theme.Type_.meta).foregroundStyle(Theme.Colors.textFaint)
                         }
                         Spacer()
@@ -740,9 +745,12 @@ struct ModelSettingsContent: View {
                             .foregroundStyle(Theme.Colors.textMuted)
                     }
                     .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("settings.costs.row")
                 }
             }
         }
+        .padding(.top, Theme.Space.stack)
     }
 
     private func label(_ text: String) -> some View {

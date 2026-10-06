@@ -18,9 +18,49 @@ enum UITestMode {
     static let seedGoalFlag = "--uitest-seed-goal"
     static let seededGoalStatement = "Ahorrar 10 millones para invertir"
 
-    static let isActive = ProcessInfo.processInfo.arguments.contains(flag)
-    static let seedsGoal = isActive && ProcessInfo.processInfo.arguments.contains(seedGoalFlag)
-    static let shouldReset = isActive && ProcessInfo.processInfo.arguments.contains(resetFlag)
+    /// Recordatorio sembrado a +N s con notificaciones REALES (XCUITest del tap al push).
+    static let seedReminderPrefix = "--uitest-seed-reminder="
+    static let seededReminderText = "Cita médica de prueba"
+    static let seededReminderMessage = "Oye, ya casi es tu cita médica de prueba."
+    /// Persiste el modo UI-test (solo DEBUG + simulador) para que un lanzamiento
+    /// del sistema —tap a la notificación con la app terminada— siga aislado.
+    static let stickyFlag = "--uitest-sticky"
+
+    static let arguments: [String] = resolveArguments()
+    static let isActive = arguments.contains(flag)
+    static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
+    static let shouldReset = isActive && arguments.contains(resetFlag)
+    static let seedReminderSeconds: Int? = isActive
+        ? arguments.lazy.compactMap { arg -> Int? in
+            guard arg.hasPrefix(seedReminderPrefix) else { return nil }
+            return Int(arg.dropFirst(seedReminderPrefix.count))
+        }.first
+        : nil
+    /// UNUserNotificationCenter real (y no el doble denegado) en modo UI-test.
+    static let usesRealNotifications = isActive && arguments.contains(stickyFlag)
+
+    private static var stickyURL: URL {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("uitest-sticky.plist")
+    }
+
+    private static func resolveArguments() -> [String] {
+        let launched = ProcessInfo.processInfo.arguments
+        #if DEBUG && targetEnvironment(simulator)
+        if launched.contains(flag) {
+            if launched.contains(stickyFlag) {
+                let kept = launched.filter { $0 != resetFlag && !$0.hasPrefix(seedReminderPrefix) }
+                (kept as NSArray).write(to: stickyURL, atomically: true)
+            } else {
+                try? FileManager.default.removeItem(at: stickyURL)
+            }
+            return launched
+        }
+        if let stored = NSArray(contentsOf: stickyURL) as? [String] { return stored }
+        #endif
+        return launched
+    }
 
     static let suiteName = "com.joshuamoreno1.anima.uitest"
     static let keychainService = "dev.joshua.anima.provider-token.uitest"
@@ -49,6 +89,11 @@ enum UITestMode {
     static func seedGoal(_ otherModel: OtherModel) async {
         await otherModel.ingestStated(statement: seededGoalStatement,
                                       desiredState: .progressCheckIn(everyDays: 2), evidence: "uitest")
+    }
+
+    /// Recordatorio de prueba a +`seconds` (el XCUITest de notificación lo toca).
+    static func seedReminder(_ store: AnimaReminderStore, seconds: Int) async {
+        _ = try? await store.create(text: seededReminderText, fireAt: Date().addingTimeInterval(TimeInterval(seconds)))
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.

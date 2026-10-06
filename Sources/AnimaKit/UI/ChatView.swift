@@ -831,6 +831,8 @@ public struct ChatView: View {
             RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
         .shadow(color: Theme.Colors.accent.opacity(0.35), radius: 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.proactive.\(message.reminderId != nil ? "reminder" : message.goalId != nil ? "checkin" : "intention")")
     }
 
     private func errorBanner(_ text: String) -> some View {

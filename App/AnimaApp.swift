@@ -206,7 +206,7 @@ final class AppModel: ObservableObject {
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
             self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
             let reminderStore = AnimaReminderStore(queue: queue)
-            let notifications: any LocalNotificationScheduler = UITestMode.isActive
+            let notifications: any LocalNotificationScheduler = UITestMode.isActive && !UITestMode.usesRealNotifications
                 ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
             self.reminderStore = reminderStore
             self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
@@ -218,6 +218,9 @@ final class AppModel: ObservableObject {
             let proactive = self.proactiveScheduler
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
+            if let seconds = UITestMode.seedReminderSeconds {
+                await UITestMode.seedReminder(reminderStore, seconds: seconds)
+            }
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
             // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
@@ -697,6 +700,7 @@ final class AppModel: ObservableObject {
     private func open(_ link: AnimaDeepLink) {
         switch link {
         case .chat(let turn):
+            guard deferUntilReady(link) else { return }
             selectedTab = .chat
             chatModel?.focus(turn: turn)
         case .glasses:
@@ -728,10 +732,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// false (y lo guarda) si el chat aún no está cableado.
+    /// false (y lo guarda) si el chat aún no está cableado: el cableado lo abre
+    /// al terminar. Arranca el cableado si nadie lo hizo (el tap al push puede
+    /// llegar antes que la escena).
     private func deferUntilReady(_ link: AnimaDeepLink) -> Bool {
         guard phase == .ready, chatModel != nil else {
             pendingLink = link
+            Task { await ensureBootstrapped() }
             return false
         }
         return true

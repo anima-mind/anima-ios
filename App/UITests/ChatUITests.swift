@@ -56,6 +56,10 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(element(app, "mind.sheet"))
         waitFor(element(app, "mind.mark"))
         waitFor(text(app, "0 noches de consolidación"))
+        // Campo batch 5 #4: la frase del régimen completa, sin "…".
+        let sentence = element(app, "mind.regimeSentence")
+        waitUntil(sentence, "label == 'Se está formando: todo lo que viven juntos la moldea directo.'")
+        XCTAssertGreaterThan(sentence.frame.height, 20, "la frase debe caber en varias líneas")
 
         let body = element(app, "mind.row.body")
         let regime = element(app, "mind.row.regime")

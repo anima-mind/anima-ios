@@ -37,9 +37,9 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 frase cálida y concreta (p.ej. "Oye, en media hora tienes la cita médica"); \
                 jamás un título impersonal como "Avisar de la cita". fire_at en ISO 8601 CON offset, resuelto \
                 contra la línea "Ahora:" del contexto (p.ej. 2026-10-06T09:00:00-05:00). \
-                goal_id liga el recordatorio a una meta (ver tool goals). Todo menos list \
-                requiere confirmación, que la pide el harness: llama la tool directo, sin \
-                preguntar antes en el chat.
+                goal_id liga el recordatorio a una meta (ver tool goals). Son tuyos y \
+                reversibles desde la tab Recordatorios: llama la tool directo, sin pedir \
+                permiso en el chat, y cuéntale al dueño qué quedó.
                 """,
             inputSchema: .object([
                 "type": .string("object"),

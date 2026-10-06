@@ -74,6 +74,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var pendingApprovals = 0
     private var approvalsWatch: AnyCancellable?
     let confirmation = ConfirmationCenter()
+    /// "Autorizar siempre" (sheet de confirmación), revocable en Ajustes → Skills.
+    private let authorized = AuthorizedActionsStore(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
     /// Identidad (Sign in with Apple vía Firebase Auth). Se crea en bootstrap,
     /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
     private(set) var account: AccountViewModel?
@@ -125,6 +127,10 @@ final class AppModel: ObservableObject {
     init() {
         voiceInvocations = VoiceInvocationOrchestrator(port: Self.makeVoiceInvocationsPort())
         voiceInvocations.start()
+        let authorized = self.authorized
+        confirmation.onAlwaysAllow = { request in
+            authorized.allow(AllowlistEntry(tool: request.tool, operation: request.operation))
+        }
     }
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
@@ -274,6 +280,7 @@ final class AppModel: ObservableObject {
             skills.exampleMarkdown = Bundle.main.url(forResource: "Skills", withExtension: nil)
                 .flatMap { try? String(contentsOf: $0.appendingPathComponent("nota-diaria.md"), encoding: .utf8) }
             skills.makeVoice = { Self.makePhoneVoice() }
+            skills.permissions = AuthorizedActionsModel(store: authorized)
             settings.skills = skills
             settings.selfModel = selfModel
             settings.glasses = glassesModel
@@ -408,6 +415,8 @@ final class AppModel: ObservableObject {
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
             serverTools: [],
+            // 5b #1: lo interno y reversible no pide ok; lo autorizado "siempre" tampoco.
+            permissionPolicy: .app(ownerAllowlist: { [authorized] in authorized.entries }),
             // §8: la cámara de las gafas se confirma con pinch EN las gafas; el resto, sheet.
             confirmation: SurfaceConfirmationRouter(phone: confirmation, glasses: { [glassesHost] request in
                 await glassesHost.confirm(request)
@@ -975,6 +984,8 @@ extension View {
 
 struct ConfirmationOverlay: ViewModifier {
     @ObservedObject var center: ConfirmationCenter
+    /// Alto medido del contenido: el sheet abraza lo que muestra (sin área vacía).
+    @State private var height: CGFloat = 320
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: Binding(
@@ -983,7 +994,11 @@ struct ConfirmationOverlay: ViewModifier {
         )) {
             if let request = center.pending {
                 ConfirmationSheet(request: request) { center.resolve($0) }
-                    .presentationDetents([.medium])
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                    .presentationDetents([.height(height)])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(Theme.Colors.surface)
             }
         }
     }

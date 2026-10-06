@@ -153,6 +153,8 @@ struct UITestScriptedProvider: Provider {
     enum Plan: Equatable {
         case text(String)
         case calendarTool
+        /// Eferente que toca el mundo: dispara el sheet de confirmación.
+        case calendarCreate
     }
 
     /// Taller de skills (FIX A): borrador fijo + la siguiente pregunta.
@@ -214,6 +216,7 @@ struct UITestScriptedProvider: Provider {
             return nil
         }.joined(separator: " ")
         if text.lowercased().contains("markdown") { return .text(markdownReply) }
+        if text.lowercased().contains("agéndame") { return .calendarCreate }
         return text.lowercased().contains("calendario") ? .calendarTool : .text(fixedReply)
     }
 
@@ -239,6 +242,13 @@ struct UITestScriptedProvider: Provider {
                     continuation.yield(.blockStop(index: 0))
                     continuation.yield(.messageDelta(stopReason: .endTurn,
                                                      usage: Usage(inputTokens: 10, outputTokens: 10)))
+                case .calendarCreate:
+                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
+                    continuation.yield(.toolUseInputDelta(
+                        #"{"action":"create","title":"Reunión con Pedro","start":"2026-10-08T15:00:00-05:00","end":"2026-10-08T16:00:00-05:00"}"#))
+                    continuation.yield(.blockStop(index: 0))
+                    continuation.yield(.messageDelta(stopReason: .toolUse,
+                                                     usage: Usage(inputTokens: 10, outputTokens: 5)))
                 case .calendarTool:
                     continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
                     continuation.yield(.toolUseInputDelta(#"{"action":"list","days_ahead":7}"#))

@@ -42,8 +42,8 @@ public struct GoalsTool: SensorimotorTool {
                 workouts_per_week{value}, reminders_overdue_at_most{value}, \
                 sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, \
                 days_since_last_mention_at_most{topic,days}, progress_check_in{every_days}; sin \
-                predicate se usa progress_check_in. list y record_checkin no piden confirmación; \
-                el resto la pide el harness: llama la tool directo, sin preguntar antes en el chat.
+                predicate se usa progress_check_in. Las metas son reversibles desde la tab Metas: \
+                llama la tool directo, sin pedir permiso en el chat, y cuéntale al dueño qué quedó.
                 """,
             inputSchema: .object([
                 "type": .string("object"),

@@ -18,6 +18,8 @@ public final class GlassesViewModel: ObservableObject {
     @Published public private(set) var iconProbeIndex = 0
     /// "Despertar al ponértelas" (don-wake, DAT 1.0). Persistido; default sí.
     @Published public private(set) var donWake: Bool
+    /// Cómo se pintan los iconos en las gafas (campo batch 6). Persistido; default auto.
+    @Published public private(set) var iconMode: HUDIconMode
 
     public static let donWakeKey = "glasses.donWake"
     private let defaults: UserDefaults
@@ -36,6 +38,9 @@ public final class GlassesViewModel: ObservableObject {
         self.defaults = defaults
         let donWake = defaults.object(forKey: Self.donWakeKey) as? Bool ?? true
         self.donWake = donWake
+        let iconMode = defaults.string(forKey: HUDIconPolicy.modeKey).flatMap(HUDIconMode.init(rawValue:)) ?? .auto
+        self.iconMode = iconMode
+        HUDIconPolicy.mode = iconMode
         if let activation { Task { await activation.setDonWakeEnabled(donWake) } }
         guard let body else { return }
         observeTask = Task { [weak self] in
@@ -128,6 +133,24 @@ public final class GlassesViewModel: ObservableObject {
         Task { await activation.userRequested() }
     }
 
+    public func setIconMode(_ mode: HUDIconMode) {
+        iconMode = mode
+        HUDIconPolicy.mode = mode
+        defaults.set(mode.rawValue, forKey: HUDIconPolicy.modeKey)
+    }
+
+    /// Proyecta la card que pinta 4 iconos por los 3 caminos (M / I / T).
+    public func probeIconPaths() {
+        guard let host else { return }
+        Task {
+            if await host.project(HUDIconProbe.pathsCard()) {
+                notice = "Caminos en las gafas: anota por icono cuál se ve (M=Meta, I=Imagen, T=Texto)."
+            } else {
+                notice = "No se pudo proyectar: termina la conversación en las gafas y reintenta."
+            }
+        }
+    }
+
     /// "Probar iconos" solo con las gafas activas y la superficie HUD cableada.
     public var canProbeIcons: Bool { status.isActive && host != nil }
 
@@ -207,7 +230,17 @@ struct GlassesSettingsSection: View {
                     .foregroundStyle(Theme.Colors.accentText)
                     .frame(minHeight: Theme.minHitTarget)
                     .accessibilityIdentifier("settings.glasses.probeIcons")
+                Button("Probar caminos de iconos") { model.probeIconPaths() }
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(minHeight: Theme.minHitTarget)
+                    .accessibilityIdentifier("settings.glasses.probeIconPaths")
             }
+            Picker("Iconos en las gafas", selection: Binding(get: { model.iconMode }, set: { model.setIconMode($0) })) {
+                ForEach(HUDIconMode.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("settings.glasses.iconMode")
             if model.needsDATUpdate {
                 Button("Actualizar la app DAT de las gafas") { model.openDATUpdate() }
                     .font(Theme.Type_.secondary)

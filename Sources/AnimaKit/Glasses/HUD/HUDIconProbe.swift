@@ -51,6 +51,37 @@ public enum HUDIconProbe {
         return HUDFlexBox(direction: .column, spacing: 8, padding: 12, background: .card, children: nodes)
     }
 
+    /// Iconos de muestra de la card "Probar caminos" (los que más usa el HUD).
+    public static let pathSamples: [HUDIcon] = [.arrowLeft, .x, .checkmarkCircle, .smartGlasses]
+
+    /// Etiqueta corta de cada camino en la card (M = catálogo Meta).
+    public static func pathLabel(_ path: HUDIconPath) -> String {
+        switch path {
+        case .native: return "M"
+        case .image: return "I"
+        case .text: return "T"
+        }
+    }
+
+    /// Card "Probar caminos": por icono, el MISMO glifo por los 3 caminos
+    /// (catálogo Meta / imagen propia / texto) para reportar cuál se ve.
+    public static func pathsCard() -> HUDFlexBox {
+        var nodes: [HUDNode] = [
+            .text(HUDText("Caminos · M=Meta I=Imagen T=Texto · ¿cuál se ve?", style: .meta, color: .secondary)),
+        ]
+        for icon in pathSamples {
+            var row: [HUDNode] = [.text(HUDText(icon.rawValue, style: .meta))]
+            for path in HUDIconPath.allCases {
+                row.append(.flexBox(HUDFlexBox(direction: .row, spacing: 4, crossAlignment: .center, children: [
+                    .icon(HUDIconNode(icon, style: .outline, path: path)),
+                    .text(HUDText(pathLabel(path), style: .meta, color: .secondary)),
+                ])))
+            }
+            nodes.append(.flexBox(HUDFlexBox(direction: .row, spacing: 12, crossAlignment: .center, children: row)))
+        }
+        return HUDFlexBox(direction: .column, spacing: 8, padding: 12, background: .card, children: nodes)
+    }
+
     /// Los iconos (en orden) y el nombre mostrado al lado de cada uno.
     public static func labeledIcons(in box: HUDFlexBox) -> [(icon: HUDIcon, label: String)] {
         var out: [(HUDIcon, String)] = []

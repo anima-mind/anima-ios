@@ -460,7 +460,7 @@ enum HUDDATMapper {
         case .text(let text):
             return Text(text.content, style: textStyle(text.style), color: text.color == .primary ? .primary : .secondary)
         case .icon(let icon):
-            return Icon(name: iconName(icon.name), style: icon.style == .filled ? .filled : .outline)
+            return self.icon(icon, mode: HUDIconPolicy.mode)
         case .image(let image):
             return Image(uri: image.uri, sizePreset: image.size == .icon ? .icon : .fill,
                          cornerRadius: cornerRadius(image.cornerRadius))
@@ -475,13 +475,155 @@ enum HUDDATMapper {
 
     static func button(_ b: HUDButton, _ onAction: @escaping @Sendable (HUDActionID) -> Void) -> Button {
         let action = b.action
-        let button = Button(label: b.label, style: buttonStyle(b.style), iconName: b.icon.map(iconName)) { onAction(action) }
+        let mode = HUDIconPolicy.mode
+        let button = Button(label: HUDIconPolicy.buttonLabel(b.label, icon: b.icon, mode: mode), style: buttonStyle(b.style),
+                            iconName: HUDIconPolicy.buttonIcon(b.icon, mode: mode).map(iconName)) { onAction(action) }
         // DAT 1.0: el primer botón con rol primary recibe el foco al renderizar.
         return b.isPrimaryAction ? button.actionRole(.primary) : button
     }
 
-    /// El catálogo HUDIcon es 1:1 con IconName (test de catálogo en AnimaKit).
-    static func iconName(_ icon: HUDIcon) -> IconName { IconName(rawValue: icon.rawValue) ?? .circle8RaysLarge }
+    /// Un icono suelto por el camino de `HUDIconPolicy` (nativo / glifo propio /
+    /// texto). Sin glifo renderizable cae a texto; nunca al sol.
+    static func icon(_ node: HUDIconNode, mode: HUDIconMode) -> any ViewComponent {
+        switch node.path ?? HUDIconPolicy.path(for: node.name, mode: mode) {
+        case .native:
+            return Icon(name: iconName(node.name), style: node.style == .filled ? .filled : .outline)
+        case .image:
+            if let symbol = HUDIconPolicy.symbol(for: node.name), let image = HUDGlyphImages.image(symbol: symbol) {
+                return Image(image: image, sizePreset: .icon, cornerRadius: .none)
+            }
+            return textGlyph(node.name)
+        case .text:
+            return textGlyph(node.name)
+        }
+    }
+
+    static func textGlyph(_ icon: HUDIcon) -> Text {
+        Text(HUDIconPolicy.text(for: icon) ?? "•", style: .meta, color: .primary)
+    }
+
+    /// HUDIcon → IconName EXHAUSTIVO (116/116, sin rawValue ni fallback): si el SDK
+    /// renombra o quita un glifo, esto deja de compilar en vez de pintar el sol.
+    static func iconName(_ icon: HUDIcon) -> IconName {
+        switch icon {
+        case .airplane: return .airplane
+        case .arrowDownShallowU: return .arrowDownShallowU
+        case .arrowLeft: return .arrowLeft
+        case .arrowRight: return .arrowRight
+        case .arrowULeft: return .arrowULeft
+        case .arrowUpShallowU: return .arrowUpShallowU
+        case .avatar: return .avatar
+        case .avatarOff: return .avatarOff
+        case .bedSide: return .bedSide
+        case .bell: return .bell
+        case .bellDiagonalRightDot: return .bellDiagonalRightDot
+        case .bellOff: return .bellOff
+        case .bikeShare: return .bikeShare
+        case .bug: return .bug
+        case .bullhorn: return .bullhorn
+        case .bus: return .bus
+        case .calendar: return .calendar
+        case .campfire: return .campfire
+        case .caretDown: return .caretDown
+        case .caretLeft: return .caretLeft
+        case .caretRight: return .caretRight
+        case .caretUp: return .caretUp
+        case .carFrontView: return .carFrontView
+        case .cart: return .cart
+        case .checkmark: return .checkmark
+        case .checkmarkCircle: return .checkmarkCircle
+        case .circle8RaysLarge: return .circle8RaysLarge
+        case .circleHandle: return .circleHandle
+        case .clock: return .clock
+        case .cloud: return .cloud
+        case .cloudCrescentMoon: return .cloudCrescentMoon
+        case .cloudDotFourRays: return .cloudDotFourRays
+        case .cloudFiveDashes: return .cloudFiveDashes
+        case .cloudHookSwirl: return .cloudHookSwirl
+        case .cloudLightning: return .cloudLightning
+        case .cocktailGlass: return .cocktailGlass
+        case .code: return .code
+        case .coffeeCup: return .coffeeCup
+        case .compassNorthUpRed: return .compassNorthUpRed
+        case .containerWithLid: return .containerWithLid
+        case .crossBriefcase: return .crossBriefcase
+        case .dropper: return .dropper
+        case .envelopeOpen: return .envelopeOpen
+        case .exclamationCircle: return .exclamationCircle
+        case .exclamationTriangle: return .exclamationTriangle
+        case .eye: return .eye
+        case .forkKnife: return .forkKnife
+        case .fourArcsUpFilled: return .fourArcsUpFilled
+        case .fourArcsUpGrayscale: return .fourArcsUpGrayscale
+        case .fourCornerFrame: return .fourCornerFrame
+        case .gear: return .gear
+        case .globeWesternHemisphere: return .globeWesternHemisphere
+        case .graduationCap: return .graduationCap
+        case .hashtag: return .hashtag
+        case .headphones: return .headphones
+        case .heart: return .heart
+        case .house: return .house
+        case .iCircle: return .iCircle
+        case .lightBulb: return .lightBulb
+        case .magicWand: return .magicWand
+        case .metaAi: return .metaAi
+        case .mountainSquare: return .mountainSquare
+        case .mountainSquareStacked: return .mountainSquareStacked
+        case .museumBuilding: return .museumBuilding
+        case .musicNote: return .musicNote
+        case .nineSquaresGrid: return .nineSquaresGrid
+        case .padlockClosed: return .padlockClosed
+        case .padlockOpen: return .padlockOpen
+        case .palette: return .palette
+        case .paperAirplane: return .paperAirplane
+        case .pencil: return .pencil
+        case .pencilSquare: return .pencilSquare
+        case .person: return .person
+        case .personCircle: return .personCircle
+        case .phone: return .phone
+        case .phoneHandsetArrowDownLeft: return .phoneHandsetArrowDownLeft
+        case .phoneHandsetArrowUpRight: return .phoneHandsetArrowUpRight
+        case .phoneSlash: return .phoneSlash
+        case .pizzaSlice: return .pizzaSlice
+        case .plus: return .plus
+        case .plusCircle: return .plusCircle
+        case .shoppingBag: return .shoppingBag
+        case .slidersHorizontal: return .slidersHorizontal
+        case .smartGlasses: return .smartGlasses
+        case .smileyCircle: return .smileyCircle
+        case .speakerOff: return .speakerOff
+        case .speakerWithOneArc: return .speakerWithOneArc
+        case .speakerWithThreeArcs: return .speakerWithThreeArcs
+        case .speakerWithTwoArcs: return .speakerWithTwoArcs
+        case .speechBubble: return .speechBubble
+        case .speechBubbleOff: return .speechBubbleOff
+        case .stadium: return .stadium
+        case .star: return .star
+        case .starCircleTriangleAi: return .starCircleTriangleAi
+        case .taxi: return .taxi
+        case .threeDotsHorizontal: return .threeDotsHorizontal
+        case .threeDotSpeechBubble: return .threeDotSpeechBubble
+        case .threeHorizontalLines: return .threeHorizontalLines
+        case .threeHorizontalLinesStackedDescending: return .threeHorizontalLinesStackedDescending
+        case .threePeopleOverlapping: return .threePeopleOverlapping
+        case .train: return .train
+        case .tree: return .tree
+        case .triangleLeftVerticalLine: return .triangleLeftVerticalLine
+        case .triangleRight: return .triangleRight
+        case .triangleRightCircle: return .triangleRightCircle
+        case .triangleRightVerticalLine: return .triangleRightVerticalLine
+        case .twoArrowsClockwise: return .twoArrowsClockwise
+        case .twoLinesParallel: return .twoLinesParallel
+        case .twoSquaresStackedRightDown: return .twoSquaresStackedRightDown
+        case .twoTrianglesLeft: return .twoTrianglesLeft
+        case .twoTrianglesRight: return .twoTrianglesRight
+        case .videoCamera: return .videoCamera
+        case .videoCameraOff: return .videoCameraOff
+        case .wristband: return .wristband
+        case .wristbandSlash: return .wristbandSlash
+        case .x: return .x
+        }
+    }
 
     static func textStyle(_ s: HUDTextStyle) -> TextStyle {
         switch s { case .heading: return .heading; case .body: return .body; case .meta: return .meta }

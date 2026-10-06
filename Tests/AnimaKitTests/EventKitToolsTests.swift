@@ -224,6 +224,32 @@ private func input(_ pairs: [String: JSONValue]) -> JSONValue { .object(pairs) }
         #expect(t.kind(for: input(["action": .string("search")])) == .afferent)
         #expect(t.kind(for: input([:])) == .efferent)  // sin acción: fail-closed a eferente
     }
+
+    @Test func createSummaryShowsReadableDate() {
+        let t = CalendarTool(makeStore: { nil }, dates: AnimaDateText(calendar: ProactiveFixtures.calendar))
+        func summary(_ start: String) -> String {
+            t.confirmationSummary(for: input(["action": .string("create"), "title": .string("Reunión con Pedro"),
+                                              "start": .string(start)]))
+        }
+        #expect(summary("2026-10-08T15:00:00-05:00") == "Crear evento 'Reunión con Pedro' el jue 8 oct, 3:00 p. m.")
+        #expect(summary("2026-10-08T20:00:00Z") == "Crear evento 'Reunión con Pedro' el jue 8 oct, 3:00 p. m.")
+        #expect(summary("2026-10-08T15:00:00.250-05:00") == "Crear evento 'Reunión con Pedro' el jue 8 oct, 3:00 p. m.")
+        #expect(summary("2026-10-08T15:00:00") == "Crear evento 'Reunión con Pedro' el jue 8 oct, 3:00 p. m.")
+        #expect(summary("2026-10-08T09:05") == "Crear evento 'Reunión con Pedro' el jue 8 oct, 9:05 a. m.")
+        #expect(summary("mañana a las 3") == "Crear evento 'Reunión con Pedro' el mañana a las 3")
+        #expect(summary("2026-13-40T99:00:00Z") == "Crear evento 'Reunión con Pedro' el 2026-13-40T99:00:00Z")
+        #expect(summary("") == "Crear evento 'Reunión con Pedro' el ")
+    }
+
+    @Test func createAcceptsLocalTimeWithoutOffset() async {
+        let store = MockCalendarStore()
+        let dates = AnimaDateText(calendar: ProactiveFixtures.calendar)
+        let result = CalendarActions.create(store: store, input: input(["title": .string("Demo"),
+                                                                        "start": .string("2026-10-08T15:00:00")]),
+                                            dates: dates)
+        #expect(!result.isError)
+        #expect(store.created.value.first?.1 == ProactiveFixtures.date(2026, 10, 8, 15))
+    }
 }
 
 // MARK: - RemindersTool
@@ -332,6 +358,18 @@ private func input(_ pairs: [String: JSONValue]) -> JSONValue { .object(pairs) }
         #expect(t.operation(for: input([:])) == "default")
         #expect(t.kind(for: input(["action": .string("list")])) == .afferent)
         #expect(t.kind(for: input(["action": .string("complete")])) == .efferent)
+    }
+
+    @Test func createSummaryShowsReadableDue() {
+        let t = RemindersTool(makeStore: { nil }, dates: AnimaDateText(calendar: ProactiveFixtures.calendar))
+        func summary(_ due: String) -> String {
+            t.confirmationSummary(for: input(["action": .string("create"), "title": .string("Pagar arriendo"),
+                                              "due": .string(due)]))
+        }
+        #expect(summary("2026-10-08T15:00:00-05:00") == "Crear recordatorio 'Pagar arriendo' (vence jue 8 oct, 3:00 p. m.)")
+        #expect(summary("2026-10-12T09:30:00") == "Crear recordatorio 'Pagar arriendo' (vence lun 12 oct, 9:30 a. m.)")
+        #expect(summary("el viernes") == "Crear recordatorio 'Pagar arriendo' (vence el viernes)")
+        #expect(summary("2026-10-02") == "Crear recordatorio 'Pagar arriendo' (vence 2026-10-02)")
     }
 }
 

@@ -58,10 +58,43 @@ public struct AnimaDateText: Sendable {
         case 0: return "hoy \(clock)"
         case 1: return "ayer \(clock)"
         case -1: return "mañana \(clock)"
-        default:
-            let parts = calendar.dateComponents([.month, .day, .weekday], from: date)
-            return "\(Self.weekdaysShort[(parts.weekday ?? 1) - 1]) \(parts.day ?? 1) "
-                + "\(Self.monthsShort[(parts.month ?? 1) - 1]), \(clock)"
+        default: return shortMoment(date)
         }
+    }
+
+    /// "jue 8 oct, 3:00 p. m." — sin relativos (no depende de `now`).
+    public func shortMoment(_ date: Date) -> String {
+        let parts = calendar.dateComponents([.month, .day, .weekday], from: date)
+        return "\(Self.weekdaysShort[(parts.weekday ?? 1) - 1]) \(parts.day ?? 1) "
+            + "\(Self.monthsShort[(parts.month ?? 1) - 1]), \(time(date))"
+    }
+
+    /// ISO 8601 con fecha y hora, con o sin offset y con o sin fracción de
+    /// segundo. Sin offset ⇒ hora local del calendario. Solo fecha o basura ⇒ nil.
+    public func parseISODateTime(_ raw: String) -> Date? {
+        let text = raw.trimmingCharacters(in: .whitespaces)
+        let withOffset: [ISO8601DateFormatter.Options] = [
+            [.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds],
+        ]
+        for options in withOffset {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = options
+            if let date = formatter.date(from: text) { return date }
+        }
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.calendar = Calendar(identifier: .gregorian)
+        local.timeZone = calendar.timeZone
+        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm"] {
+            local.dateFormat = format
+            if let date = local.date(from: text) { return date }
+        }
+        return nil
+    }
+
+    /// Fecha ISO que propone el modelo, legible para el dueño ("jue 8 oct,
+    /// 3:00 p. m."); si no parsea, el texto tal cual.
+    public func readableISO(_ raw: String) -> String {
+        parseISODateTime(raw).map(shortMoment) ?? raw
     }
 }

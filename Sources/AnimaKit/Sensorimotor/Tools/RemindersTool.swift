@@ -7,14 +7,16 @@ import Foundation
 
 public struct RemindersTool: SensorimotorTool {
     private let makeStore: @Sendable () -> (any RemindersStore)?
+    private let dates: AnimaDateText
 
-    public init() {
-        self.init(makeStore: RemindersTool.systemStore)
+    public init(dates: AnimaDateText = AnimaDateText()) {
+        self.init(makeStore: RemindersTool.systemStore, dates: dates)
     }
 
     /// Inyección para tests: el store se crea por ejecución (como EKEventStore).
-    init(makeStore: @escaping @Sendable () -> (any RemindersStore)?) {
+    init(makeStore: @escaping @Sendable () -> (any RemindersStore)?, dates: AnimaDateText = AnimaDateText()) {
         self.makeStore = makeStore
+        self.dates = dates
     }
 
     static let systemStore: @Sendable () -> (any RemindersStore)? = {
@@ -76,7 +78,7 @@ public struct RemindersTool: SensorimotorTool {
         switch input["action"]?.stringValue {
         case "create":
             let title = input["title"]?.stringValue ?? "(sin título)"
-            let due = input["due"]?.stringValue.map { " (vence \($0))" } ?? ""
+            let due = input["due"]?.stringValue.map { " (vence \(dates.readableISO($0)))" } ?? ""
             return "Crear recordatorio '\(title)'\(due)"
         case "complete":
             return "Marcar como completado el recordatorio \(input["reminder_id"]?.stringValue ?? "?")"
@@ -92,7 +94,7 @@ public struct RemindersTool: SensorimotorTool {
         guard let store = makeStore() else {
             return ToolResult(content: "Los recordatorios no están disponibles en esta plataforma.", isError: true)
         }
-        return await RemindersActions.run(action: action, input: input, store: store)
+        return await RemindersActions.run(action: action, input: input, store: store, calendar: dates.calendar)
     }
 }
 
@@ -119,7 +121,8 @@ protocol RemindersStore: Sendable {
 enum RemindersActions {
     static let maxListed = 50
 
-    static func run(action: String, input: JSONValue, store: any RemindersStore) async -> ToolResult {
+    static func run(action: String, input: JSONValue, store: any RemindersStore,
+                    calendar: Calendar = .current) async -> ToolResult {
         let granted: Bool
         do {
             granted = try await store.requestAccess()
@@ -134,7 +137,7 @@ enum RemindersActions {
         case "list":
             return await list(store: store)
         case "create":
-            return create(store: store, input: input)
+            return create(store: store, input: input, calendar: calendar)
         case "complete":
             return complete(store: store, reminderId: input["reminder_id"]?.stringValue)
         default:
@@ -154,11 +157,11 @@ enum RemindersActions {
         return ToolResult(content: lines.joined(separator: "\n"))
     }
 
-    static func create(store: any RemindersStore, input: JSONValue) -> ToolResult {
+    static func create(store: any RemindersStore, input: JSONValue, calendar: Calendar = .current) -> ToolResult {
         guard let title = input["title"]?.stringValue, !title.isEmpty else {
             return ToolResult(content: "Error: falta 'title'.", isError: true)
         }
-        let due = dueComponents(input["due"]?.stringValue)
+        let due = dueComponents(input["due"]?.stringValue, calendar: calendar)
         do {
             let id = try store.createReminder(title: title, due: due)
             return ToolResult(content: "Recordatorio '\(title)' creado (id \(id)).")
@@ -170,7 +173,7 @@ enum RemindersActions {
     /// ISO 8601 → componentes a minuto (EventKit guarda el due como componentes).
     /// Fecha ausente o inválida → sin vencimiento.
     static func dueComponents(_ iso: String?, calendar: Calendar = .current) -> DateComponents? {
-        guard let iso, let due = ISO8601DateFormatter().date(from: iso) else { return nil }
+        guard let iso, let due = AnimaDateText(calendar: calendar).parseISODateTime(iso) else { return nil }
         return calendar.dateComponents([.year, .month, .day, .hour, .minute], from: due)
     }
 

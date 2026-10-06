@@ -131,7 +131,8 @@ public enum LocalToolAdapter {
 
         switch name {
         case "remind_me":
-            guard let text = args.text("text") else { return invalid(missing("text", "qué recordar")) }
+            guard let modelText = args.text("text") else { return invalid(missing("text", "qué recordar")) }
+            let text = reminderText(model: modelText, ownerText: ownerText)
             guard let parsedWhen = args.raw("when").flatMap({ when.parse($0) }) else {
                 return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
@@ -139,8 +140,15 @@ public enum LocalToolAdapter {
             // La repetición que dijo el dueño gana; si fijó un único momento
             // ("mañana a las 9") no se repite (medido: el 3B ponía daily); si no
             // dijo nada, la del modelo.
+            // Una repetición que la app no sabe hacer ("cada 15 días", "cada mes")
+            // nunca se degrada a diario/semanal: una vez, en la próxima fecha.
+            if let unsupported = when.unsupportedCadence {
+                return reminder(text: text, at: when.firstOccurrence(of: unsupported, modelDate: parsedWhen),
+                                cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
+            }
             let cadence = when.ownerCadence ?? (when.ownerSaysOnce ? .none : modelCadence)
-            return reminder(text: text, at: parsedWhen, cadence: cadence, now: now, when: when, calendar: calendar)
+            return reminder(text: text, at: when.withPlausibleHour(parsedWhen), cadence: cadence, now: now, when: when,
+                            calendar: calendar)
 
         case "list_reminders", "list_goals":
             return .real(name: tool.realTool, input: .object(["action": .string("list")]))
@@ -150,20 +158,25 @@ public enum LocalToolAdapter {
                 return invalid(missing("statement", "la meta en palabras del dueño"))
             }
             guard let modelCadence = args.cadence("checkin") else { return invalid(cadenceHelp("checkin")) }
-            let cadence = when.ownerCadence ?? modelCadence
+            let cadence = when.ownerCadence ?? (when.unsupportedCadence != nil ? .none : modelCadence)
             // "recuérdame todos los días a las 8 tomar agua" es un recordatorio,
             // no una meta (regla de la app: "recuérdame…" ⇒ recordatorio).
             if when.ownerAsksForAReminder {
-                let clock = when.ownerExplicitTime ?? (args.hour("hour").map { ($0, 0) } ?? (CheckInCadence.defaultHour, 0))
-                let day = when.ownerDay ?? calendar.startOfDay(for: now)
-                guard let at = calendar.date(bySettingHour: clock.0, minute: clock.1, second: 0, of: day) else {
+                let statement = reminderText(model: statement, ownerText: ownerText)
+                let cadence = when.ownerCadence ?? (when.ownerSaysOnce ? .none : modelCadence)
+                // La fecha sale de lo que dijo el dueño (en N minutos > día > hora),
+                // con la hora del modelo solo como base.
+                let hour = args.hour("hour") ?? LocalWhen.defaultReminderHour
+                guard let base = calendar.date(bySettingHour: hour, minute: 0, second: 0,
+                                               of: calendar.startOfDay(for: now)) else {
                     return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
                 }
-                guard let reminders = byName["remind_me"] else { return invalid("Sin recordatorios.") }
-                let rerouted = reminder(text: statement, at: at, cadence: cadence, now: now, when: when,
-                                        calendar: calendar, rollPastOnce: true)
-                if case .real(_, let input) = rerouted { return .real(name: reminders.realTool, input: input) }
-                return rerouted
+                if let unsupported = when.unsupportedCadence {
+                    return reminder(text: statement, at: when.firstOccurrence(of: unsupported, modelDate: base),
+                                    cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
+                }
+                return reminder(text: statement, at: when.withPlausibleHour(when.repaired(base)), cadence: cadence,
+                                now: now, when: when, calendar: calendar, rollPastOnce: true)
             }
             var object: [String: JSONValue] = ["action": .string("declare"), "statement": .string(statement)]
             if cadence != .none {
@@ -186,6 +199,20 @@ public enum LocalToolAdapter {
             guard let title = args.text("title") else { return invalid(missing("title", "el título de la cita")) }
             guard let start = args.raw("start").flatMap({ when.parse($0) }) else {
                 return invalid(missing("start", "formato 'YYYY-MM-DD HH:MM', hora local"))
+            }
+            // "recuérdame … la cita" es un recordatorio, no un evento (medido: el
+            // 3B agendaba "Cita"); con "agéndame/calendario/evento" sí es agenda.
+            let owner = LocalWhen.fold(ownerText)
+            if when.ownerAsksForAReminder,
+               !["agend", "calendario", "evento"].contains(where: owner.contains) {
+                let text = reminderText(model: title, ownerText: ownerText)
+                if let unsupported = when.unsupportedCadence {
+                    return reminder(text: text, at: when.firstOccurrence(of: unsupported, modelDate: start),
+                                    cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
+                }
+                let cadence = when.ownerCadence ?? .none
+                return reminder(text: text, at: when.withPlausibleHour(start), cadence: cadence, now: now, when: when,
+                                calendar: calendar)
             }
             let end = when.eventEnd(start: start, modelEnd: args.raw("end").flatMap { when.parse($0, repair: false) })
             return .real(name: tool.realTool, input: .object([
@@ -240,11 +267,17 @@ public enum LocalToolAdapter {
 
     /// El resultado que lee el modelo local: si el de la tool real es parco
     /// ("Anexado a 'compras'."), lo dice completo para que lo cuente bien.
-    public static func present(_ result: ToolResult, local name: String, input: JSONValue,
+    public static func present(_ result: ToolResult, local name: String, input: JSONValue, ownerText: String = "",
                                dates: AnimaDateText = AnimaDateText()) -> ToolResult {
         guard !result.isError else { return result }
         var presented = result
         switch name {
+        case "remind_me", "declare_goal":
+            guard let unsupported = LocalWhen(now: Date(), calendar: dates.calendar, ownerText: ownerText).unsupportedCadence,
+                  input["action"]?.stringValue == "create" else { return result }
+            presented.content = result.content + " " + unsupportedNote(unsupported.phrase)
+        case "list_events":
+            presented.content = readableEvents(result.content, dates: dates)
         case "write_note":
             guard let note = input["name"]?.stringValue, let content = input["content"]?.stringValue else { return result }
             presented.content = "Anotado en tu nota '\(note)': \(content)."
@@ -253,11 +286,42 @@ public enum LocalToolAdapter {
             let line = "Evento '\(title)' agendado el \(dates.readableISO(start))"
             presented.content = line.hasSuffix(".") ? line : line + "."
         case "list_goals":
-            presented.content = readableGoals(result.content)
+            presented.content = changeNote(ownerText, tab: "Metas") + readableGoals(result.content)
+        case "list_reminders":
+            presented.content = changeNote(ownerText, tab: "Recordatorios") + result.content
         default:
             return result
         }
         return presented
+    }
+
+    /// Borrar, cambiar o dar por logrado no tiene tool local: se dice dónde se
+    /// hace (medido: "La meta de correr 10 km ya no está en el registro").
+    static func changeNote(_ ownerText: String, tab: String) -> String {
+        guard LocalWhen.asksToChange(ownerText) else { return "" }
+        return "Eso no lo puedo cambiar desde aquí: hazlo en la tab \(tab). Lo que hay:\n"
+    }
+
+    /// Lo que se le dice al dueño cuando pidió una repetición que la app no hace.
+    public static func unsupportedNote(_ phrase: String) -> String {
+        "Ojo: «\(phrase)» aún no lo repito sola; te lo recuerdo esta vez."
+    }
+
+    /// "- [ABC:123] Dentista @ 2026-10-07T20:52:00Z" ⇒ "- Dentista — miércoles 7 de
+    /// octubre a las 15:52" (hora local, sin ids: el 3B leía la Z como hora).
+    static func readableEvents(_ text: String, dates: AnimaDateText) -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "es_CO")
+        df.timeZone = dates.calendar.timeZone
+        df.dateFormat = "EEEE d 'de' MMMM 'a las' HH:mm"
+        let iso = ISO8601DateFormatter()
+        return text.split(separator: "\n").map { line -> String in
+            guard line.hasPrefix("- ") else { return String(line) }
+            let body = String(line.dropFirst(2)).replacing(/^\[[^\]]*\]\s*/, with: "")
+            guard let at = body.range(of: " @ ", options: .backwards),
+                  let date = iso.date(from: String(body[at.upperBound...])) else { return "- " + body }
+            return "- \(body[..<at.lowerBound]) — \(df.string(from: date))"
+        }.joined(separator: "\n")
     }
 
     /// "- [G1] leer (stated, reportar avance cada 8 días); check-in cada domingo a
@@ -286,12 +350,16 @@ public enum LocalToolAdapter {
         // "dime qué tengo", "cuáles son mis recordatorios").
         let asks = ["qué ", "cuál", "cómo", "cuándo", "?", "¿"].contains(where: raw.contains)
             || ["que ", "cuales ", "cual ", "muestrame", "dime", "lista", "lee ", "leeme"].contains(where: owner.hasPrefix)
-        guard !owner.isEmpty, !asks else { return name }
+        // Borrar, cambiar o dar por logrado no es crear: sin tool local para eso,
+        // la consulta se queda y el modelo responde (medido: "elimina mi meta" →
+        // declaraba una meta inventada).
+        let changes = LocalWhen.asksToChange(ownerText)
+        guard !owner.isEmpty, !asks, !changes else { return name }
         let targets: [(String, [String])] = [
             ("remind_me", ["recuerdame", "recordarme", "recuerdeme"]),
             ("add_calendar_event", ["agendame", "agenda una", "agenda la", "agenda el"]),
             ("write_note", ["anota", "apunta", "toma nota"]),
-            ("declare_goal", ["mi meta", "mi objetivo", "me propongo"]),
+            ("declare_goal", ["mi meta es", "mi objetivo es", "me propongo", "nueva meta"]),
         ]
         if let target = targets.first(where: { $0.1.contains(where: owner.contains) }) { return target.0 }
         // "quiero" solo es meta con un verbo de meta detrás ("quiero bajar 5 kilos").
@@ -307,6 +375,18 @@ public enum LocalToolAdapter {
         "hacer", "ir", "dormir", "comer", "tomar", "estudiar", "escribir", "meditar", "caminar", "nadar",
         "entrenar", "practicar", "llegar", "lograr", "mejorar", "reducir", "aumentar", "ganar", "perder",
     ]
+
+    /// El fallo de una llamada inválida, dicho al dueño (nunca el texto interno
+    /// del adapter): "no entendí la fecha y la hora".
+    public static func ownerFacing(_ message: String) -> String {
+        if message.contains("`when`") || message.contains("`start`") { return "no entendí la fecha y la hora" }
+        if message.contains("`hour`") { return "no entendí la hora" }
+        if message.contains("`repeat`") || message.contains("`checkin`") { return "no entendí cada cuánto" }
+        if ["`text`", "`title`", "`content`", "`statement`"].contains(where: message.contains) {
+            return "no entendí qué querías guardar"
+        }
+        return "no entendí bien el pedido"
+    }
 
     /// ¿El error de la tool real es de datos (reintentar con otros sirve) y no
     /// del mundo (permiso, store)? "la fecha ya pasó", "falta 'x'", "debe ser…".
@@ -332,7 +412,39 @@ public enum LocalToolAdapter {
 
     /// Lo que ella dice al entregarlo cuando el modelo local no lo redactó.
     public static func spokenFallback(_ text: String) -> String {
-        "Oye, acuérdate de \(text)."
+        let clean = text.trimmingCharacters(in: CharacterSet(charactersIn: "¡!¿?.,;: ").union(.whitespacesAndNewlines))
+        return "Oye, acuérdate de \(clean)."
+    }
+
+    /// El texto del recordatorio: el del modelo si nombra algo de lo que dijo el
+    /// dueño; si no (medido: "tomar la pastilla", el del ejemplo, para "…que
+    /// mañana es el examen"), lo que el dueño dictó.
+    static func reminderText(model: String, ownerText: String) -> String {
+        guard !ownerText.isEmpty else { return model }
+        let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
+        let named = OnDevicePromptBuilder.salientStems(model).contains { owner.contains($0) }
+        return named ? model : (dictatedReminder(ownerText) ?? model)
+    }
+
+    /// "recuérdame hoy a las 6 de la tarde que mañana es el examen" → "mañana es el examen".
+    static func dictatedReminder(_ ownerText: String) -> String? {
+        let lower = ownerText.lowercased()
+        guard let key = lower.firstMatch(of: /recu[eé]rd(?:a|e)me|recordarme/) else { return nil }
+        var rest = String(lower[key.range.upperBound...])
+        let weekday = "(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?)"
+        let leading = try? Regex("^[\\s,:]*(?:hoy|pasado mañana|mañana|esta (?:tarde|noche)"
+            + "|todos los días(?: laborales| laborables)?|cada \\S+ (?:días|semanas|meses)|cada (?:día|semana|mes)"
+            + "|todos los \(weekday)|cada \(weekday)|los \(weekday)|el \(weekday)|el \\d{1,2} de \\w+(?: de \\d{4})?"
+            + "|(?:en|dentro de) \\S+ (?:horas?|minutos?|min)(?: y media)?"
+            + "|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: de la (?:mañana|tarde|noche))?"
+            + "|de \\d{1,2} a \\d{1,2}(?: de la (?:mañana|tarde|noche))?|que|para)(?=[\\s,.:]|$)")
+        while let leading, let match = rest.firstMatch(of: leading), !match.range.isEmpty {
+            let token = rest[match.range].trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            rest = String(rest[match.range.upperBound...])
+            if token == "que" { break }   // lo que sigue a "que" es lo dictado
+        }
+        let text = rest.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return text.isEmpty ? nil : text
     }
 
     /// "anota: comprar leche y pan" → "comprar leche y pan" (nil si el dueño no dictó).
@@ -468,6 +580,12 @@ struct LocalWhen {
         }
         if let clock = explicitTimes(owner).first {
             parts.hour = clock.hour; parts.minute = clock.minute
+        } else if let said = times(owner).first(where: \.afterLas), let hour = parts.hour,
+                  hour % 12 != said.clock.hour % 12 {
+            // "a las 10" y el modelo mandó otra hora (medido: 00:00): la del dueño;
+            // 1-6 sin am/pm se lee de la tarde.
+            parts.hour = (1...6).contains(said.clock.hour) ? said.clock.hour + 12 : said.clock.hour
+            parts.minute = said.clock.minute
         }
         return calendar.date(from: parts) ?? date
     }
@@ -497,10 +615,11 @@ struct LocalWhen {
         return says ? head : owner
     }
 
-    /// La repetición que dijo el dueño, o nil si no dijo ninguna.
+    /// La repetición que dijo el dueño, o nil si no dijo ninguna (o pidió una
+    /// que la app no hace: ver `unsupportedCadence`).
     var ownerCadence: ProactiveCadence? {
         let owner = Self.fold(ownerText)
-        guard !owner.isEmpty else { return nil }
+        guard !owner.isEmpty, unsupportedCadence == nil else { return nil }
         if ["entre semana", "de lunes a viernes", "dias habiles", "dias laborales", "dias laborables"]
             .contains(where: owner.contains) { return .weekdays }
         if ["todos los dias", "cada dia", "diario", "diariamente", "a diario", "cada manana", "cada noche",
@@ -509,6 +628,61 @@ struct LocalWhen {
             return .weekly
         }
         return nil
+    }
+
+    /// Una repetición que `ProactiveCadence` no tiene: "cada 15 días", "cada 2
+    /// semanas", "quincenal", "mensual", "cada mes".
+    struct UnsupportedCadence: Equatable {
+        var phrase: String
+        var days: Int
+        var months: Int
+    }
+
+    var unsupportedCadence: UnsupportedCadence? {
+        let owner = Self.fold(ownerText)
+        let numbers: [String: Int] = ["dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "diez": 10, "quince": 15,
+                                      "veinte": 20, "treinta": 30]
+        if let m = owner.firstMatch(of: /cada (\d{1,3}|dos|tres|cuatro|cinco|diez|quince|veinte|treinta) (dias|semanas|meses)/) {
+            let n = Int(m.1) ?? numbers[String(m.1)] ?? 0
+            guard n > 0 else { return nil }
+            let phrase = String(m.0)
+            switch m.2 {
+            case "dias": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: n, months: 0)
+            case "semanas": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: 7 * n, months: 0)
+            default: return UnsupportedCadence(phrase: phrase, days: 0, months: n)
+            }
+        }
+        if owner.contains("quincenal") { return UnsupportedCadence(phrase: "quincenal", days: 15, months: 0) }
+        for phrase in ["mensualmente", "mensual", "cada mes", "todos los meses"] where owner.contains(phrase) {
+            return UnsupportedCadence(phrase: phrase, days: 0, months: 1)
+        }
+        return nil
+    }
+
+    /// Primera (y única) vez de una repetición no soportada: lo que dijo el
+    /// dueño (día, "en N minutos") o, si no dijo cuándo empezar, dentro de un
+    /// periodo; la hora del dueño, o la del modelo si es plausible, o la default.
+    func firstOccurrence(of cadence: UnsupportedCadence, modelDate: Date) -> Date {
+        let owner = scheduleText
+        if offset(owner) != nil || day(owner) != nil { return withPlausibleHour(repaired(modelDate)) }
+        let today = calendar.startOfDay(for: now)
+        let later = cadence.months > 0
+            ? calendar.date(byAdding: .month, value: cadence.months, to: today)
+            : calendar.date(byAdding: .day, value: cadence.days, to: today)
+        let hour = calendar.component(.hour, from: withPlausibleHour(modelDate))
+        let clock = explicitTimes(owner).first ?? (ownerMentionsTime ? (hour, calendar.component(.minute, from: modelDate))
+                                                                      : (Self.defaultReminderHour, 0))
+        return calendar.date(bySettingHour: clock.0, minute: clock.1, second: 0, of: later ?? today) ?? modelDate
+    }
+
+    /// La hora de un recordatorio cuando el dueño no dijo ninguna.
+    static let defaultReminderHour = 9
+
+    /// Sin hora dicha por el dueño, la del modelo es invento (medido: medianoche
+    /// u 8:00 para "recuérdame mañana que…"): 9:00, como el check-in de las metas.
+    func withPlausibleHour(_ date: Date) -> Date {
+        guard !ownerText.isEmpty, !ownerMentionsTime, offset(scheduleText) == nil else { return date }
+        return calendar.date(bySettingHour: Self.defaultReminderHour, minute: 0, second: 0, of: date) ?? date
     }
 
     /// "cada domingo", "todos los lunes", "los sábados" ⇒ 1=domingo … 7=sábado.
@@ -528,6 +702,13 @@ struct LocalWhen {
     var ownerSaysOnce: Bool {
         let owner = scheduleText
         return ownerCadence == nil && (day(owner) != nil || offset(owner) != nil)
+    }
+
+    /// Borrar, cambiar o dar por logrado ("elimina mi meta", "ya cumplí…").
+    static func asksToChange(_ ownerText: String) -> Bool {
+        let owner = fold(ownerText)
+        return ["elimin", "borr", "cancel", "quit", "cambi", "modific", "cumpli", "logre", "termine",
+                "complete", "ya no"].contains(where: owner.contains)
     }
 
     /// "recuérdame…" sin hablar de una meta.
@@ -567,18 +748,21 @@ struct LocalWhen {
         return make(year: parts.year, month: parts.month, day: parts.day, hour: clock.hour, minute: clock.minute)
     }
 
-    /// "en 2 horas", "en 30 minutos", "en una hora", "en media hora" ⇒ segundos.
+    /// "en 2 horas", "dentro de 30 minutos", "en una hora y media", "en media
+    /// hora" ⇒ segundos.
     func offset(_ folded: String) -> TimeInterval? {
-        let regex = /\ben (\d{1,3}|un|una|media) (hora|horas|minuto|minutos|min)\b/
+        let regex = /\b(?:en|dentro de) (\d{1,3}|un|una|media) (hora|horas|minuto|minutos|min)\b( y media)?/
         guard let match = folded.firstMatch(of: regex) else { return nil }
-        let amount: Double
+        var amount: Double
         switch match.1 {
         case "un", "una": amount = 1
         case "media": amount = 0.5
         default: amount = Double(match.1) ?? 0
         }
         guard amount > 0 else { return nil }
-        return match.2.hasPrefix("hora") ? amount * 3600 : amount * 60
+        let hours = match.2.hasPrefix("hora")
+        if match.3 != nil, hours { amount += 0.5 }
+        return hours ? amount * 3600 : amount * 60
     }
 
     static let months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -639,11 +823,12 @@ struct LocalWhen {
     /// Las horas que nombra el texto, en orden. Explícita = am/pm, "de la
     /// tarde/noche/mañana", o 13-23 con minutos o tras "a las" (no "el 20 de octubre").
     func times(_ text: String) -> [TimeMention] {
-        let regex = /(\d{1,2})(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?!\s*\/)(?!\s*(?:hora|horas|minuto|minutos|min)\b)/
+        // \b: "15 de octubre" no puede partirse en un "1" con hora.
+        let regex = /\b(\d{1,2})(?!\d)(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?!\s*\/)(?!\s*(?:hora|horas|minuto|minutos|min)\b)/
         var out: [TimeMention] = []
         for match in text.matches(of: regex) {
             let before = text[..<match.range.lowerBound]
-            if before.hasSuffix("/") || before.hasSuffix("en ") { continue }
+            if before.hasSuffix("/") || before.hasSuffix("en ") || before.hasSuffix("dentro de ") { continue }
             guard var hour = Int(match.1) else { continue }
             let minute = match.2.flatMap { Int($0) } ?? 0
             let raw = hour

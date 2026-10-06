@@ -23,7 +23,8 @@ extension LocalLoopHarness.Run {
             LocalLoopHarness.text("Listo, quedó programado."),
         ], tools: [AnimaRemindersTool(store: w.reminders)], router: try OnDeviceTestConfig.router(),
            text: "recuérdame llamar al banco")
-        let notice = "⚠️ No pude crear el recordatorio: Falta `when` o no se entiende: formato 'YYYY-MM-DD HH:MM', hora local."
+        // El aviso nunca muestra el texto interno del adapter.
+        let notice = "⚠️ No pude crear el recordatorio: no entendí la fecha y la hora."
         #expect(r.notice == notice)
         #expect(r.text == notice)
         #expect(try r.lastAssistantText() == notice)

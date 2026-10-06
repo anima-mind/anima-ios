@@ -164,7 +164,7 @@ import Testing
         ("pasado mañana 15:30", "2026-10-07 15:30", "2026-10-08T15:30:00"),
         ("el martes a las 7 am", "2026-10-06 07:00", "2026-10-13T07:00:00"),
         ("a las 3", "2026-10-07 15:00", "2026-10-07T15:00:00"),
-        ("el 20 de octubre", "2026-10-20 10:00", "2026-10-20T10:00:00"),
+        ("el 20 de octubre", "2026-10-20 10:00", "2026-10-20T09:00:00"),   // sin hora dicha: 9:00
     ])
     func ownerTextRepairsDayAndHour(owner: String, model: String, expected: String) throws {
         let (_, input) = try #require(Self.real(Self.resolve("remind_me", [

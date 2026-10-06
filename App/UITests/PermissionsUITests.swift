@@ -47,7 +47,7 @@ final class PermissionsUITests: AnimaUITestCase {
         // otra llamada al modelo), en la card de alerta.
         let reply = assistantMessage(app, value: "done", labelContains: "No pude consultar tu agenda")
         waitFor(reply, timeout: 20)
-        XCTAssertTrue(reply.label.contains("no ha concedido acceso"), reply.label)
+        XCTAssertTrue(reply.label.contains("no me has dado acceso"), reply.label)
         XCTAssertEqual(app.state, .runningForeground)
     }
 

@@ -55,6 +55,10 @@ public enum ToolFailureNotice {
         for prefix in ["Error: ", "Error:"] where text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
         // Detalle técnico fuera (SQL, rutas): la primera línea, sin el "while executing".
         if result(isRejection: text) { return "no lo confirmaste" }
+        // Errores de permiso de las tools, en 2.ª persona.
+        text = text.replacingOccurrences(of: "El dueño no ha concedido acceso", with: "no me has dado acceso")
+            .replacingOccurrences(of: "el dueño no ha concedido acceso", with: "no me has dado acceso")
+            .replacingOccurrences(of: "El dueño", with: "Tú")
         for cut in ["\n", " - while executing"] {
             if let range = text.range(of: cut) { text = String(text[..<range.lowerBound]) }
         }

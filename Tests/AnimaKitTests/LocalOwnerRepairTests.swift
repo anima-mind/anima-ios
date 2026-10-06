@@ -45,7 +45,8 @@ import Testing
         ("recuérdame los sábados a las 10 regar", "2026-10-07 10:00", "none", "weekly", "2026-10-10T10:00:00"),
         ("recuérdame todos los días laborales a las 8 tomar la pastilla", "2026-10-06 08:00", "none", "weekdays",
          "2026-10-07T08:00:00"),
-        ("recuérdame cada quince días a las 9 cortar el pelo", "2026-10-07 09:00", "weekly", "weekly", "2026-10-07T09:00:00"),
+        // Repetición que la app no hace: una vez, dentro de un periodo (nunca semanal inventado).
+        ("recuérdame cada quince días a las 9 cortar el pelo", "2026-10-07 09:00", "weekly", "none", "2026-10-21T09:00:00"),
         ("recuérdame mañana a las 9 llamar al banco", "2026-10-07 09:00", "daily", "none", "2026-10-07T09:00:00"),
     ])
     func repetitionFromTheOwnerOrTheModel(owner: String, when: String, model: String, expected: String,

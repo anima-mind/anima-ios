@@ -411,6 +411,10 @@ public actor AgentLoop {
                         var result: ToolResult
                         let verb: String
                         var parameterError = false
+                        // Una llamada que el adapter rechaza (redirect, parámetros) es un
+                        // artefacto del 3B, no un fallo del mundo: no va al RealRegister
+                        // ni al skill (3 redirects armaban un RESTRUCTURE falso).
+                        var adapterArtifact = false
                         switch resolution {
                         case .real(let name, let input):
                             realName = name
@@ -420,7 +424,8 @@ public actor AgentLoop {
                             toolCallCount += 1
                             let executed = await sensorimotor.execute(name: name, input: input)
                             result = toolProfile == .onDevice
-                                ? LocalToolAdapter.present(executed, local: call.name, input: input) : executed
+                                ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
+                                : executed
                             parameterError = LocalToolAdapter.isParameterError(executed.content)
                         case .invalid(let tool, let message):
                             realName = tool
@@ -430,8 +435,20 @@ public actor AgentLoop {
                             toolCallCount += 1
                             result = ToolResult(content: message, isError: true)
                             parameterError = true
+                            adapterArtifact = true
                         }
-                        failures.record(verb: verb, result: result)
+                        let redirected = adapterArtifact
+                            && LocalToolAdapter.intended(name: call.name, ownerText: userText) != call.name
+                        if adapterArtifact {
+                            // El aviso nunca muestra el texto interno del adapter; un
+                            // redirect no es un fallo de la intención.
+                            if !redirected {
+                                failures.record(verb: verb, result: ToolResult(
+                                    content: LocalToolAdapter.ownerFacing(result.content), isError: true))
+                            }
+                        } else {
+                            failures.record(verb: verb, result: result)
+                        }
                         if toolProfile == .onDevice, result.isError, !result.isRejection {
                             // Solo los parámetros se corrigen reintentando; un fallo del
                             // mundo (sin permiso, store roto) cierra el turno con el aviso.
@@ -448,9 +465,12 @@ public actor AgentLoop {
                             }
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
-                        skillTurn.recordTool(realName, isError: result.isError && !result.isRejection, rejected: result.isRejection)
+                        if !adapterArtifact {
+                            skillTurn.recordTool(realName, isError: result.isError && !result.isRejection,
+                                                 rejected: result.isRejection)
+                        }
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
-                        if result.isError {
+                        if result.isError, !adapterArtifact {
                             await realRegister?.record(.tool(name: realName, input: realInput,
                                                              result: result, sessionId: sessionId, now: Date()))
                         }

@@ -418,7 +418,18 @@ public enum OnDevicePromptBuilder {
                 results = results.map(withoutListIds)
                 salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems)
                     .filter { !$0.isEmpty }.map { SalientGroup($0) }
+                // Lectura vacía: la respuesta debe decir que no hay (medido: "¿Qué
+                // te gustaría que las metas fueran?").
+                if listedItems(results.joined(separator: "\n")).isEmpty {
+                    salient = [SalientGroup(["no tienes", "ningun", "sin ", "no hay"])]
+                }
             }
+            // Lo que no se puede cambiar desde aquí se dice siempre (la tab).
+            if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
+                salient = [SalientGroup(["tab"])]
+            }
+            // Una repetición no soportada se dice siempre ("aún no lo repito").
+            if results.contains(where: { $0.contains("aún no lo repito") }) { salient.append(SalientGroup(["repit"])) }
             let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)
             fallbackText = onlyReads ? results.joined(separator: "\n") : confirmation(results: results)
             if case .prompt(let owner)? = entries.last {
@@ -451,7 +462,7 @@ public enum OnDevicePromptBuilder {
 
     /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
     static func withoutListIds(_ text: String) -> String {
-        text.replacing(/\[[0-9A-Fa-f-]{8,}\]\s*/, with: "")
+        text.replacing(/\[[^\]\n]{6,}\]\s*/, with: "")
     }
 
     /// La confirmación tras tools es una frase: tope corto (y más rápido).
@@ -503,7 +514,7 @@ public enum OnDevicePromptBuilder {
             }
             if ["hice", "fui", "puse", "traje"].contains(word) { return true }
             guard word.count > 3 else { continue }
-            if word.hasSuffix("é") && !ownActions.contains(word) { return true }
+            if word.hasSuffix("é") && !ownActions.contains(word) && !nounsInE.contains(word) { return true }
             if word.hasSuffix("aste") || word.hasSuffix("iste") { return true }
         }
         return false
@@ -512,6 +523,9 @@ public enum OnDevicePromptBuilder {
     static let ownActions: Set<String> = ["anoté", "agendé", "registré", "guardé", "programé", "apunté", "dejé",
                                           "creé", "quedé", "recordaré", "avisaré", "preguntaré", "diré", "escribiré",
                                           "enviaré", "mandaré", "haré"]
+    /// Sustantivos y nombres en -é que no son pretéritos.
+    static let nounsInE: Set<String> = ["café", "josé", "bebé", "puré", "canapé", "consomé", "chalé", "comité",
+                                        "paté", "bidé", "suflé", "frappé", "andré", "renée", "rené"]
     static let ownParticiples: Set<String> = ["anotado", "agendado", "registrado", "guardado", "programado",
                                               "apuntado", "creado", "dejado"]
 

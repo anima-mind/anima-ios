@@ -409,7 +409,7 @@ import Testing
             """)
         #expect(LocalToolAdapter.pendingSummary(reminders: "No tienes recordatorios de Anima.",
                                                 goals: "El dueño no tiene metas activas.", events: nil,
-                                                now: Self.now, dates: Self.dates) == "No tienes nada pendiente.")
+                                                now: Self.now, dates: Self.dates) == "No tienes nada pendiente hoy.")
         #expect(LocalToolAdapter.pendingSummary(reminders: nil, goals: "- [G] correr (s, x)", events: "No hay eventos.",
                                                 now: Self.now, dates: Self.dates) == "Metas:\n- correr")
     }
@@ -473,7 +473,7 @@ import Testing
         let friday = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
                                ownerText: "qué tengo el viernes")
         #expect(friday.listDaysAhead == 4)
-        #expect(friday.eventsInRequestedRange(raw) == "No tienes nada en tu agenda ese día.")
+        #expect(friday.eventsInRequestedRange(raw) == "No tienes nada en tu agenda el viernes 9 de octubre.")
         let input = LocalOwnerRepairTests.real("list_events", ["days": .int(1)], owner: "qué hay esta semana")
         #expect(input?["days_ahead"] == .int(6))
     }
@@ -513,5 +513,82 @@ import Testing
         let response = try await provider.completeCollecting(ctx, tools: [], opts: try OnDeviceTestConfig.opts())
         #expect(response.content == [.text("Listo, agendé «Cena con Laura» el viernes 16 de octubre de 20:00 a 21:00.")])
         #expect(session.requests.value.isEmpty)
+    }
+}
+
+
+@Suite struct LocalPendingRangeTests {
+    static let now = LocalToolAdapterTests.now
+    static var dates: AnimaDateText { AnimaDateText(calendar: LocalToolAdapterTests.calendar) }
+    static func range(_ owner: String) -> LocalWhen.Range? {
+        LocalWhen(now: now, calendar: LocalToolAdapterTests.calendar, ownerText: owner).requestedRange
+    }
+    static let reminders = "Programados:\n- [R1] pagar la luz — miércoles 7 de octubre a las 09:00\n- [R2] cita — viernes 9 de octubre a las 10:00"
+    static let events = "- [E:1] Dentista @ 2026-10-07T20:00:00Z\n- [E:2] Fútbol @ 2026-10-09T20:00:00Z\n- [E:3] Lunes @ 2026-10-12T14:00:00Z"
+
+    @Test func pendingForTomorrow() {
+        let summary = LocalToolAdapter.pendingSummary(reminders: Self.reminders, goals: nil, events: Self.events, now: Self.now,
+                                                      range: Self.range("¿qué tengo pendiente para mañana?"), dates: Self.dates)
+        #expect(summary == "Recordatorios:\n- pagar la luz — miércoles 7 de octubre a las 09:00\nMañana en tu agenda:\n- Dentista — miércoles 7 de octubre a las 15:00")
+    }
+
+    @Test func pendingOnFriday() {
+        let summary = LocalToolAdapter.pendingSummary(reminders: Self.reminders, goals: nil, events: Self.events, now: Self.now,
+                                                      range: Self.range("pendientes el viernes"), dates: Self.dates)
+        #expect(summary.contains("- cita — viernes 9") && summary.contains("- Fútbol") && !summary.contains("Dentista"))
+        #expect(summary.contains("El viernes 9 de octubre en tu agenda:"))
+    }
+
+    @Test func pendingThisWeekStopsOnSunday() {
+        let summary = LocalToolAdapter.pendingSummary(reminders: Self.reminders, goals: nil, events: Self.events, now: Self.now,
+                                                      range: Self.range("¿qué tengo pendiente esta semana?"), dates: Self.dates)
+        #expect(summary.contains("Dentista") && summary.contains("Fútbol") && !summary.contains("Lunes"))
+        #expect(LocalWhen(now: Self.now, calendar: LocalToolAdapterTests.calendar, ownerText: "qué hay esta semana")
+                    .eventsInRequestedRange(Self.events).contains("Lunes") == false)
+    }
+
+    @Test func emptyRangeSaysSo() {
+        #expect(LocalToolAdapter.pendingSummary(reminders: nil, goals: nil, events: nil, now: Self.now,
+                                                range: Self.range("pendiente para mañana"), dates: Self.dates)
+                == "No tienes nada pendiente mañana.")
+    }
+
+    @Test(arguments: [("Pagar el viernes a las 9", "Pagar"), ("llamar a mamá mañana", "llamar a mamá"),
+                      ("Mañana es el examen", "Mañana es el examen"), ("revisar el horno en 2 horas", "revisar el horno")])
+    func reminderTitlesWithoutSchedule(text: String, expected: String) {
+        #expect(LocalToolAdapter.withoutSchedule(text) == expected)
+    }
+}
+
+@Suite struct LocalQueryToolTests {
+    @Test(arguments: [("qué hay esta semana", "list_reminders"), ("¿qué metas tengo?", "list_goals"),
+                      ("¿qué recordatorios tengo?", "list_reminders"), ("¿qué citas tengo el viernes?", "list_events"),
+                      ("hola", nil), ("recuérdame qué tengo que comprar", nil), ("elimina mi meta", nil)])
+    func queryTools(owner: String, expected: String?) {
+        #expect(LocalToolAdapter.queryTool(owner) == expected)
+    }
+
+    @Test func summaryOnlyWithoutACategory() {
+        #expect(LocalToolAdapter.asksForSummary("qué hay esta semana"))
+        #expect(LocalToolAdapter.asksForSummary("¿qué tengo mañana?"))
+        #expect(!LocalToolAdapter.asksForSummary("¿qué metas tengo?"))
+        #expect(!LocalToolAdapter.asksForSummary("¿qué citas tengo el viernes?"))
+    }
+
+    @Test func anAnswerWithoutToolBecomesTheQuery() async throws {
+        let session = MockOnDeviceSession([[.snapshot("Esta semana tienes Almuerzo con Ana.")]])
+        let provider = OnDeviceProvider(session: session, availability: { .available })
+        let response = try await provider.completeCollecting(AssembledContext(messages: [.user("qué hay esta semana")]),
+                                                             tools: try RealToolSet.specs(), opts: try OnDeviceTestConfig.opts())
+        #expect(response.stopReason == .toolUse)
+        #expect(response.toolCalls.first?.name == "list_reminders")
+        #expect(response.content.allSatisfy { if case .text = $0 { false } else { true } })
+    }
+
+    @Test func aReminderAskedAsANoteIsAReminder() throws {
+        let input = try #require(LocalOwnerRepairTests.real("write_note", [
+            "name": .string("horno"), "content": .string("apagar el horno")], owner: "recuérdame en 45 minutos apagar el horno"))
+        #expect(input["action"] == .string("create"))
+        #expect(input["fire_at"] == .string("2026-10-06T11:15:00"))
     }
 }

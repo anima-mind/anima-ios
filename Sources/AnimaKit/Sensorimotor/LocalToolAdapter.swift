@@ -233,6 +233,23 @@ public enum LocalToolAdapter {
                 "start": .string(when.isoLocal(start)), "end": .string(when.isoLocal(end)),
             ]))
 
+        case "write_note" where when.ownerAsksForAReminder
+            && !["anota", "apunta", "nota"].contains(where: LocalWhen.fold(ownerText).contains):
+            // "recuérdame en 45 minutos apagar el horno" es un recordatorio (medido:
+            // el 3B lo anotaba).
+            let text = reminderText(model: args.text("content") ?? args.text("name") ?? "", ownerText: ownerText)
+            guard !text.isEmpty,
+                  let base = calendar.date(bySettingHour: LocalWhen.defaultReminderHour, minute: 0, second: 0,
+                                           of: calendar.startOfDay(for: now)) else {
+                return invalid(missing("content", "el texto de la nota"))
+            }
+            if let unsupported = when.unsupportedCadence {
+                return reminder(text: text, at: when.firstOccurrence(of: unsupported, modelDate: base),
+                                cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
+            }
+            return reminder(text: text, at: when.withPlausibleHour(when.repaired(base)), cadence: when.ownerCadence ?? .none,
+                            now: now, when: when, calendar: calendar, rollPastOnce: true)
+
         case "write_note":
             // Medido: a veces copia el nombre como contenido ({name:'compras',
             // content:'compras'}): lo dictado por el dueño gana.
@@ -272,6 +289,7 @@ public enum LocalToolAdapter {
               let next = calendar.date(byAdding: .day, value: cadence == .weekly ? 7 : 1, to: fireAt) {
             fireAt = next
         }
+        let text = withoutSchedule(text)
         return .real(name: "anima_reminders", input: .object([
             "action": .string("create"), "text": .string(text), "message": .string(spokenFallback(text)),
             "fire_at": .string(when.isoLocal(fireAt)), "repeat": .string(cadence.rawValue),
@@ -346,25 +364,79 @@ public enum LocalToolAdapter {
         return owner.firstMatch(of: /\b(?:que tengo|que hay)(?: (?:para )?hoy)?$/) != nil
     }
 
-    /// Secciones "Recordatorios:", "Metas:", "Hoy en tu agenda:" (las vacías se
-    /// omiten); todo vacío ⇒ "No tienes nada pendiente.".
-    public static func pendingSummary(reminders: String?, goals: String?, events: String?, now: Date,
+    /// La tool de consulta que responde una pregunta sobre lo suyo ("¿qué hay
+    /// esta semana?", "¿qué metas tengo?"), o nil si no es una consulta así.
+    /// Con ella, el 3B no puede responder de memoria (medido: inventó "Almuerzo
+    /// con Ana", el del ejemplo, para "qué hay esta semana").
+    public static func queryTool(_ ownerText: String) -> String? {
+        let raw = ownerText.lowercased()
+        let owner = LocalWhen.fold(raw)
+        guard !owner.isEmpty, !LocalWhen.opensWithCreation(ownerText), !LocalWhen.asksToChange(ownerText) else { return nil }
+        let asks = ["qué ", "cuál", "cuánt", "?", "¿"].contains(where: raw.contains)
+            || ["que ", "cuales ", "muestrame", "dime", "lista", "tengo algo"].contains(where: owner.hasPrefix)
+        let about = ["tengo", "hay", "pendiente", "agenda", "evento", "cita", "recordatorio", "meta", "calendario", "reunion"]
+            .contains(where: owner.contains)
+        guard asks, about else { return nil }
+        if owner.contains("meta") { return "list_goals" }
+        if owner.contains("recordatorio") { return "list_reminders" }
+        if ["evento", "cita", "agenda", "calendario", "reunion"].contains(where: owner.contains) { return "list_events" }
+        return "list_reminders"
+    }
+
+    /// Una consulta general ("¿qué hay esta semana?", "¿qué tengo pendiente?"):
+    /// se responde con el resumen combinado del rango.
+    public static func asksForSummary(_ ownerText: String) -> Bool {
+        if asksForPending(ownerText) { return true }
+        guard queryTool(ownerText) != nil else { return false }
+        let owner = LocalWhen.fold(ownerText)
+        // Sin categoría ("¿qué tengo mañana?", "¿qué hay esta semana?"): todo lo
+        // de ese rango; con categoría ("¿qué metas tengo?"), su listado.
+        return !["meta", "recordatorio", "evento", "cita", "agenda", "calendario", "reunion"].contains(where: owner.contains)
+    }
+
+    /// Secciones "Recordatorios:", "Metas:" y "<rango> en tu agenda:" (las
+    /// vacías se omiten); todo vacío ⇒ "No tienes nada pendiente <rango>.".
+    /// Sin rango nombrado: todos los recordatorios y la agenda de hoy; con rango
+    /// ("pendiente para mañana", "esta semana"): recordatorios y agenda de ese rango.
+    static func pendingSummary(reminders: String?, goals: String?, events: String?, now: Date,
+                                      range: LocalWhen.Range? = nil,
                                       dates: AnimaDateText = AnimaDateText()) -> String {
+        let window = range ?? LocalWhen.Range.today(now, calendar: dates.calendar)
         func items(_ text: String?) -> [String] {
             (text ?? "").split(separator: "\n").filter { $0.hasPrefix("- ") }
                 .map { String($0).replacing(/^- \[[^\]]*\]\s*/, with: "- ") }
         }
-        let todayEvents = (events ?? "").split(separator: "\n").filter { line in
+        let inRange = (events ?? "").split(separator: "\n").filter { line in
             guard let at = line.range(of: " @ ", options: .backwards),
                   let date = ISO8601DateFormatter().date(from: String(line[at.upperBound...])) else { return false }
-            return dates.calendar.isDate(date, inSameDayAs: now)
+            return window.contains(date)
         }.joined(separator: "\n")
+        var r = items(reminders)
+        if range != nil {
+            r = r.filter { line in readableReminderDate(line, now: now, dates: dates).map(window.contains) ?? false }
+        }
+        let g = items(goals.map(readableGoals)), e = items(readableEvents(inRange, dates: dates))
         var sections: [String] = []
-        let r = items(reminders), g = items(goals.map(readableGoals)), e = items(readableEvents(todayEvents, dates: dates))
         if !r.isEmpty { sections.append((["Recordatorios:"] + r).joined(separator: "\n")) }
         if !g.isEmpty { sections.append((["Metas:"] + g).joined(separator: "\n")) }
-        if !e.isEmpty { sections.append((["Hoy en tu agenda:"] + e).joined(separator: "\n")) }
-        return sections.isEmpty ? "No tienes nada pendiente." : sections.joined(separator: "\n")
+        if !e.isEmpty { sections.append((["\(window.label.prefix(1).uppercased() + window.label.dropFirst()) en tu agenda:"] + e)
+            .joined(separator: "\n")) }
+        return sections.isEmpty ? "No tienes nada pendiente \(window.label)." : sections.joined(separator: "\n")
+    }
+
+    /// "- llamar al banco — miércoles 7 de octubre a las 09:00" ⇒ esa fecha.
+    static func readableReminderDate(_ line: String, now: Date, dates: AnimaDateText) -> Date? {
+        guard let m = LocalWhen.fold(line).firstMatch(of: /(\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
+              let day = Int(m.1), let month = LocalWhen.months.firstIndex(of: String(m.2)).map({ $0 + 1 }),
+              let hour = Int(m.3), let minute = Int(m.4) else { return nil }
+        let year = dates.calendar.component(.year, from: now)
+        var parts = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+        guard var date = dates.calendar.date(from: parts) else { return nil }
+        if date < dates.calendar.startOfDay(for: now) {
+            parts.year = year + 1
+            date = dates.calendar.date(from: parts) ?? date
+        }
+        return date
     }
 
     /// "hoy a las 12" cuando ya pasaron.
@@ -496,6 +568,17 @@ public enum LocalToolAdapter {
         let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
         let named = OnDevicePromptBuilder.salientStems(model).contains { owner.contains($0) }
         return named ? model : (dictatedReminder(ownerText) ?? model)
+    }
+
+    /// "Pagar el viernes a las 9" ⇒ "Pagar": la fecha y la hora ya van en el
+    /// recordatorio. Lo que va al inicio ("Mañana es el examen") se conserva.
+    static func withoutSchedule(_ text: String) -> String {
+        let cut = try? Regex("(?i)\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
+            + "|el \\d{1,2} de|a las? \\d|en \\d+ (?:horas?|minutos?)|dentro de \\d|todos los|cada (?:d[ií]a|semana|mes|\\d)"
+            + "|la (?:próxima|proxima) semana)\\b.*$")
+        guard let cut, let match = text.firstMatch(of: cut) else { return text }
+        let kept = String(text[..<match.range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return kept.isEmpty ? text : kept
     }
 
     /// El título del evento: el del modelo si solo usa palabras del dueño; si
@@ -818,29 +901,71 @@ struct LocalWhen {
 
     var offsetMinutes: Double? { offset(scheduleText).map { $0 / 60 } }
 
+    /// Un rango de días con su nombre ("hoy", "mañana", "el viernes", "esta semana").
+    struct Range: Sendable {
+        var start: Date
+        var end: Date
+        var label: String
+
+        func contains(_ date: Date) -> Bool { date >= start && date < end }
+
+        static func today(_ now: Date, calendar: Calendar) -> Range {
+            let start = calendar.startOfDay(for: now)
+            return Range(start: start, end: calendar.date(byAdding: .day, value: 1, to: start) ?? start, label: "hoy")
+        }
+    }
+
+    /// El rango que nombró el dueño, o nil si no nombró ninguno.
+    var requestedRange: Range? {
+        let owner = scheduleText
+        let today = calendar.startOfDay(for: now)
+        let weekday = calendar.component(.weekday, from: today)
+        let toNextMonday = (9 - weekday) % 7 == 0 ? 7 : (9 - weekday) % 7
+        let nextMonday = calendar.date(byAdding: .day, value: toNextMonday, to: today) ?? today
+        if owner.contains("esta semana") {
+            return Range(start: today, end: nextMonday, label: "esta semana")
+        }
+        let nextWeek = ["proxima semana", "otra semana", "semana que viene", "semana entrante"].contains(where: owner.contains)
+        if nextWeek, Self.words(owner).allSatisfy({ Self.weekday($0) == nil }) {
+            return Range(start: nextMonday, end: calendar.date(byAdding: .day, value: 7, to: nextMonday) ?? nextMonday,
+                         label: "la próxima semana")
+        }
+        guard let day = day(owner) else { return nil }
+        let end = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+        let offset = calendar.dateComponents([.day], from: today, to: day).day ?? 0
+        let label: String
+        switch offset {
+        case 0: label = "hoy"
+        case 1: label = "mañana"
+        case 2 where owner.contains("pasado manana"): label = "pasado mañana"
+        default:
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "es_CO")
+            df.timeZone = calendar.timeZone
+            df.dateFormat = "EEEE d 'de' MMMM"
+            label = "el " + df.string(from: day)
+        }
+        return Range(start: day, end: end, label: label)
+    }
+
     /// Días a listar para lo que nombró el dueño ("mañana" ⇒ 2, "el viernes",
     /// "esta semana" ⇒ hasta el domingo), o nil.
     var listDaysAhead: Int? {
-        let owner = scheduleText
-        let today = calendar.startOfDay(for: now)
-        if owner.contains("esta semana") {
-            let weekday = calendar.component(.weekday, from: today)
-            return (8 - weekday) % 7 + 1
-        }
-        guard let day = day(owner) else { return nil }
-        return (calendar.dateComponents([.day], from: today, to: day).day ?? 0) + 1
+        guard let range = requestedRange else { return nil }
+        return max(1, Int(ceil(range.end.timeIntervalSince(now) / 86_400)))
     }
 
     /// Las líneas del listado de la agenda dentro de lo que pidió el dueño: el
     /// día que nombró (mañana, el viernes) o todo si no nombró ninguno.
     func eventsInRequestedRange(_ text: String) -> String {
-        guard let day = day(scheduleText), !scheduleText.contains("esta semana") else { return text }
+        // "esta semana" se corta en el domingo; un día nombrado, solo ese día.
+        guard let range = requestedRange else { return text }
         let kept = text.split(separator: "\n").filter { line in
             guard let at = line.range(of: " @ ", options: .backwards),
                   let date = ISO8601DateFormatter().date(from: String(line[at.upperBound...])) else { return false }
-            return calendar.isDate(date, inSameDayAs: day)
+            return range.contains(date)
         }
-        return kept.isEmpty ? "No tienes nada en tu agenda ese día." : kept.joined(separator: "\n")
+        return kept.isEmpty ? "No tienes nada en tu agenda \(range.label)." : kept.joined(separator: "\n")
     }
 
     /// La hora de un recordatorio cuando el dueño no dijo ninguna.

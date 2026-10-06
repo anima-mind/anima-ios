@@ -440,8 +440,8 @@ public actor AgentLoop {
                                 ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
                                 : executed
                             if toolProfile == .onDevice, LocalToolAdapter.listTools.contains(call.name), !executed.isError,
-                               LocalToolAdapter.asksForPending(userText) {
-                                result = await pendingSummary(now: clock?() ?? Date())
+                               LocalToolAdapter.asksForSummary(userText) {
+                                result = await pendingSummary(now: clock?() ?? Date(), ownerText: userText)
                             }
                             parameterError = LocalToolAdapter.isParameterError(executed.content)
                         case .invalid(let tool, let message):
@@ -619,7 +619,8 @@ public actor AgentLoop {
 
     /// "¿Qué tengo pendiente?" con el modelo local: recordatorios + metas activas
     /// + agenda de hoy en un solo listado (las tools que no estén, se omiten).
-    private func pendingSummary(now: Date) async -> ToolResult {
+    private func pendingSummary(now: Date, ownerText: String) async -> ToolResult {
+        let range = LocalWhen(now: now, calendar: .current, ownerText: ownerText).requestedRange
         func read(_ tool: String, _ input: JSONValue) async -> String? {
             guard await sensorimotor.has(tool) else { return nil }
             let result = await sensorimotor.execute(name: tool, input: input)
@@ -627,9 +628,10 @@ public actor AgentLoop {
         }
         let reminders = await read("anima_reminders", .object(["action": .string("list")]))
         let goals = await read("goals", .object(["action": .string("list")]))
-        let events = await read("calendar", .object(["action": .string("list"), "days_ahead": .int(1)]))
+        let days = range.map { max(1, Int(ceil($0.end.timeIntervalSince(now) / 86_400))) } ?? 1
+        let events = await read("calendar", .object(["action": .string("list"), "days_ahead": .int(days)]))
         return ToolResult(content: LocalToolAdapter.pendingSummary(reminders: reminders, goals: goals, events: events,
-                                                                   now: now))
+                                                                   now: now, range: range))
     }
 
     /// Evict al Brain (§4.9, relieve local): el texto desalojado del contexto se

@@ -659,4 +659,19 @@ import Testing
             #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1) })")
         }
     }
+
+    // MARK: - Ronda 7 del review
+
+    @Test func pendingForTomorrow() async throws {
+        guard Self.enabled else { return }
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        for run in 1...Self.runs {
+            let world = try await World()
+            world.calendar.records = [CalendarEventRecord(id: "EK:1", title: "Dentista", notes: nil, start: Self.at(tomorrow, 15))]
+            let t = await Self.turn(world, "¿qué tengo pendiente para mañana?")
+            let ok = t.text.contains("Dentista") && !t.text.contains("nada pendiente") && t.notice == nil
+            Self.row("48 pendiente para mañana", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
 }

@@ -129,6 +129,9 @@ public struct OnDeviceRequest: Sendable, Equatable {
     public var fallbackText: String?
     /// Lo que la redacción debe nombrar para no perder el dato. Ver `acceptsConfirmation`.
     public var salientWords: [SalientGroup]
+    /// El turno es una consulta sobre lo suyo: si el 3B responde sin tool, la
+    /// llamada de consulta se hace igual (no se responde de memoria).
+    public var requiredQueryTool: String?
     /// La ronda fue solo de listados: se entrega `fallbackText` tal cual.
     public var listIsDeterministic: Bool = false
 
@@ -380,6 +383,7 @@ public enum OnDevicePromptBuilder {
         var fallbackText: String?
         var salient: [SalientGroup] = []
         var listIsDeterministic = false
+        var requiredQueryTool: String?
         let toolsSucceeded = endsInSuccessfulToolResults(ctx.messages)
         if toolsSucceeded {
             // Éxito: la ronda de tools se pliega a texto ("Ya quedó hecho: …")
@@ -456,6 +460,9 @@ public enum OnDevicePromptBuilder {
         } else if case .prompt(let last)? = entries.last {
             prompt = last
             entries.removeLast()
+            let ownerTurn = last.components(separatedBy: "\n\n").last ?? last
+            requiredQueryTool = LocalToolAdapter.queryTool(ownerTurn)
+                .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
         } else {
             prompt = endsInToolError(ctx.messages) ? errorCue : continuationCue
         }
@@ -474,6 +481,7 @@ public enum OnDevicePromptBuilder {
                                    : min(opts.route.maxTokens, confirmationMaxTokens),
                                fallbackText: fallbackText, salientWords: salient)
         built.listIsDeterministic = listIsDeterministic
+        built.requiredQueryTool = requiredQueryTool
         return built
     }
 
@@ -735,7 +743,7 @@ public struct OnDeviceProvider: Provider {
 
                 var tracker = SnapshotDeltaTracker()
                 var toolCall: (name: String, json: String)?
-                let buffered = request.fallbackText != nil
+                let buffered = request.fallbackText != nil || request.requiredQueryTool != nil
                 func usage() -> Usage {
                     Usage(inputTokens: inputTokens, outputTokens: Int(Double(tracker.text.count) / 3.6))
                 }
@@ -780,7 +788,11 @@ public struct OnDeviceProvider: Provider {
                     return
                 }
 
-                if buffered {
+                if let query = request.requiredQueryTool {
+                    // Consulta sin tool: la consulta se hace igual; con tool, la del modelo.
+                    if toolCall == nil { toolCall = (query, "{}") }
+                    tracker = SnapshotDeltaTracker()
+                } else if buffered {
                     let text = tracker.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     tracker = SnapshotDeltaTracker()
                     let accepted = OnDevicePromptBuilder.acceptsConfirmation(text, salient: request.salientWords)

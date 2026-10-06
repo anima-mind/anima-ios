@@ -50,6 +50,14 @@ public struct GlassesStatus: Sendable, Equatable {
     /// Puestas/quitadas (DAT 1.0 DeviceState). Quitárselas NO cierra la sesión
     /// aquí: el teardown lo decide el SDK (hingesClosed / `.stopped`).
     public var donState: GlassesDonState = .unknown
+    /// Diagnóstico (Ajustes → Gafas): link, compatibilidad y modelo del device elegido.
+    public var link: GlassesLink?
+    public var compatibility: GlassesCompatibility?
+    public var deviceType: String?
+    public var thermal: String?
+    /// Último estado de la DeviceSession / Display (diagnóstico).
+    public var sessionState: GlassesSessionState?
+    public var displayState: GlassesDisplayState?
 
     public init(body: GlassesBodyState = .absent, configured: Bool = false,
                 registration: GlassesRegistration = .unavailable, deviceName: String? = nil,
@@ -116,6 +124,7 @@ public actor GlassesBody {
     private let runtime: any GlassesRuntime
     private let realRegister: RealRegister?
     private let now: @Sendable () -> Date
+    public nonisolated let diagnostics: GlassesDiagnostics
 
     private(set) var status = GlassesStatus()
     private var device: GlassesDeviceSnapshot?
@@ -139,10 +148,12 @@ public actor GlassesBody {
     public private(set) var sessionsCreated = 0
 
     public init(runtime: any GlassesRuntime, realRegister: RealRegister? = nil,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                diagnostics: GlassesDiagnostics = GlassesDiagnostics()) {
         self.runtime = runtime
         self.realRegister = realRegister
         self.now = now
+        self.diagnostics = diagnostics
     }
 
     // MARK: - Arranque y observación
@@ -157,6 +168,7 @@ public actor GlassesBody {
         } catch {
             status.configured = false
             status.lastError = "configuración: \(error)"
+            diagnostics.record(.error, "configure: \(error)")
             publish()
             return
         }
@@ -195,6 +207,7 @@ public actor GlassesBody {
     }
 
     func onRegistration(_ state: GlassesRegistration) {
+        if state != status.registration { diagnostics.record(.registration, state.rawValue) }
         status.registration = state
         if state != .registered { teardown() }
         recompute()
@@ -204,9 +217,19 @@ public actor GlassesBody {
         let previous = device
         device = list.first { $0.link == .connected && $0.supportsDisplay }
             ?? list.first { $0.supportsDisplay }
+        if previous?.link != device?.link {
+            diagnostics.record(.link, device.map { "\($0.name): \($0.link.rawValue)" } ?? "sin device con display (\(list.count) vistos)")
+        }
+        if previous?.compatibility != device?.compatibility, let device {
+            diagnostics.record(.compat, device.compatibility.rawValue)
+        }
         status.deviceName = device?.name
         status.batteryPercent = device?.batteryPercent
         status.donState = device?.donState ?? .unknown
+        status.link = device?.link
+        status.compatibility = device?.compatibility
+        status.deviceType = device?.deviceType
+        status.thermal = device?.thermal
         if let device, device.link == .connected,
            device.compatibility == .deviceUpdateRequired || device.compatibility == .sdkUpdateRequired,
            previous?.compatibility != device.compatibility {
@@ -267,7 +290,13 @@ public actor GlassesBody {
     }
 
     public func openDATGlassesAppUpdate() async throws {
+        diagnostics.record(.hud, "abrir actualización de la app DAT")
         try await runtime.openDATGlassesAppUpdate()
+    }
+
+    public func openFirmwareUpdate() async throws {
+        diagnostics.record(.hud, "abrir actualización de firmware")
+        try await runtime.openFirmwareUpdate()
     }
 
     // MARK: - Sesión única
@@ -293,6 +322,7 @@ public actor GlassesBody {
             throw GlassesBodyError.unavailable("no se pudo abrir la sesión de las gafas")
         }
         sessionsCreated += 1
+        diagnostics.record(.session, "sesión #\(sessionsCreated) creada (gen \(gen))")
         self.session = session
         let states = session.stateUpdates()
         let faults = session.faultUpdates()
@@ -305,6 +335,7 @@ public actor GlassesBody {
         do {
             try session.start()
         } catch {
+            diagnostics.record(.error, "session.start: \(error)")
             teardown()
             status.lastError = "sesión: \(error)"
             recompute()
@@ -333,6 +364,8 @@ public actor GlassesBody {
 
     func onSessionState(_ state: GlassesSessionState, generation gen: Int) async {
         guard gen == generation else { return }   // suscripción de una sesión vieja
+        diagnostics.record(.session, state.rawValue)
+        status.sessionState = state
         switch state {
         case .started:
             await attachDisplay(generation: gen)
@@ -359,6 +392,7 @@ public actor GlassesBody {
             display.start()
         } catch {
             status.lastError = "display: \(error)"
+            diagnostics.record(.error, "addDisplay: \(error)")
             await record(errorClass: "glasses_unavailable", raw: "addDisplay: \(error)")
             recompute()
         }
@@ -366,6 +400,8 @@ public actor GlassesBody {
 
     func onDisplayState(_ state: GlassesDisplayState, generation gen: Int) async {
         guard gen == generation else { return }
+        diagnostics.record(.display, state.rawValue)
+        status.displayState = state
         switch state {
         case .started:
             displayStarted = true
@@ -383,6 +419,7 @@ public actor GlassesBody {
 
     func onFault(_ fault: GlassesFault, generation gen: Int) async {
         guard gen == generation else { return }
+        diagnostics.record(.fault, "\(fault)")
         switch fault {
         case .thermalCritical, .thermalEmergency:
             await fail(.thermal, raw: "\(fault)")
@@ -422,12 +459,15 @@ public actor GlassesBody {
 
     /// Teardown limpio SIEMPRE: display.stop() + session.stop() (regla 2).
     public func teardown() {
+        if session != nil { diagnostics.record(.session, "teardown (stop)") }
         generation += 1
         sessionTasks.forEach { $0.cancel() }
         sessionTasks = []
         display?.stop()
         display = nil
         displayStarted = false
+        status.sessionState = nil
+        status.displayState = nil
         let live = session
         session = nil
         live?.stop()
@@ -458,6 +498,7 @@ public actor GlassesBody {
             // "Superseded by new display request": coalescing normal del SDK.
             if !text.localizedCaseInsensitiveContains("superseded") {
                 status.lastError = "HUD send: \(text)"
+                diagnostics.record(.error, "display.send(\(view.name)): \(text)")
                 publish()
             }
         }

@@ -26,7 +26,7 @@ public enum HUDIconMode: String, Sendable, Equatable, CaseIterable {
     public var label: String {
         switch self {
         case .auto: return "Automático"
-        case .native: return "Catálogo Meta"
+        case .native: return "Meta"
         case .image: return "Imagen"
         case .text: return "Texto"
         }

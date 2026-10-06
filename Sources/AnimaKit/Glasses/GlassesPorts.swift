@@ -38,9 +38,15 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
     public var batteryPercent: Int?
     /// DAT 1.0.0: `Device.donState` (puestas / quitadas).
     public var donState: GlassesDonState
+    /// DAT 1.0.0: `Device.deviceType()` (p. ej. `metaRayBanDisplay`). El SDK no
+    /// expone versión de firmware ni de la app DAT de las gafas.
+    public var deviceType: String?
+    /// DAT 1.0.0: `Device.thermalLevel` (diagnóstico).
+    public var thermal: String?
 
     public init(id: String, name: String, link: GlassesLink, compatibility: GlassesCompatibility,
-                supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown) {
+                supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown,
+                deviceType: String? = nil, thermal: String? = nil) {
         self.id = id
         self.name = name
         self.link = link
@@ -48,6 +54,8 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
         self.supportsDisplay = supportsDisplay
         self.batteryPercent = batteryPercent
         self.donState = donState
+        self.deviceType = deviceType
+        self.thermal = thermal
     }
 }
 
@@ -110,6 +118,8 @@ public protocol GlassesRuntime: Sendable {
     func startUnregistration() async throws
     func handleURL(_ url: URL) async throws -> Bool
     func openDATGlassesAppUpdate() async throws
+    /// DAT 1.0 `openFirmwareUpdate()`: abre Meta AI en la actualización de firmware.
+    func openFirmwareUpdate() async throws
     /// Crea UNA sesión con el selector ÚNICO del runtime (regla 2).
     func makeSession() throws -> any GlassesSessionPort
 }
@@ -130,5 +140,6 @@ public struct AbsentGlassesRuntime: GlassesRuntime {
     public func startUnregistration() async throws { throw Unavailable() }
     public func handleURL(_ url: URL) async throws -> Bool { false }
     public func openDATGlassesAppUpdate() async throws { throw Unavailable() }
+    public func openFirmwareUpdate() async throws { throw Unavailable() }
     public func makeSession() throws -> any GlassesSessionPort { throw Unavailable() }
 }

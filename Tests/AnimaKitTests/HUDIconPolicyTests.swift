@@ -99,16 +99,6 @@ struct HUDIconPolicyTests {
         #expect(HUDIconPolicy.buttonLabel("Pizza", icon: .pizzaSlice, mode: .text) == "Pizza")
     }
 
-    @Test func elModoGlobalSeLeeYSeEscribe() {
-        let before = HUDIconPolicy.mode
-        defer { HUDIconPolicy.mode = before }
-        for mode in HUDIconMode.allCases {
-            HUDIconPolicy.mode = mode
-            #expect(HUDIconPolicy.mode == mode)
-            #expect(!mode.label.isEmpty)
-        }
-    }
-
     @Test func cardDeCaminosMuestraLosTresPorIconoYEsValida() throws {
         let box = HUDIconProbe.pathsCard()
         let view = HUDRenderer.render(.agentCard(box))

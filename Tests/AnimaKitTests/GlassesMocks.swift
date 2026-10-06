@@ -109,6 +109,7 @@ final class MockRuntime: GlassesRuntime, @unchecked Sendable {
     let registerCalls = Locked(0)
     let unregisterCalls = Locked(0)
     let updateCalls = Locked(0)
+    let firmwareCalls = Locked(0)
     let urls = Locked<[URL]>([])
 
     init(registration: GlassesRegistration = .registered, configureError: Error? = nil) {
@@ -124,6 +125,7 @@ final class MockRuntime: GlassesRuntime, @unchecked Sendable {
     func startUnregistration() async throws { unregisterCalls.mutate { $0 += 1 } }
     func handleURL(_ url: URL) async throws -> Bool { urls.mutate { $0.append(url) }; return true }
     func openDATGlassesAppUpdate() async throws { updateCalls.mutate { $0 += 1 } }
+    func openFirmwareUpdate() async throws { firmwareCalls.mutate { $0 += 1 } }
     func makeSession() throws -> any GlassesSessionPort {
         if let error = makeError.value { throw error }
         let session = nextSession.value?() ?? MockSession()

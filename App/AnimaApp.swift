@@ -204,7 +204,8 @@ final class AppModel: ObservableObject {
             let realRegister = RealRegister(queue: queue)
             self.realRegister = realRegister
             // Track G: el cuerpo-gafas (DAT) — selector y sesión únicos en GlassesBody.
-            let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister)
+            let glassesBody = GlassesBody(runtime: Self.makeGlassesRuntime(), realRegister: realRegister,
+                                          diagnostics: .shared)
             let activation = GlassesActivation(body: glassesBody, reentry: {
                 await MainActor.run { HandoffNotifications.post(.glasses, body: HandoffNotifications.reentryText) }
             }, events: { [telemetry] row in

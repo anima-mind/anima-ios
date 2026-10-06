@@ -110,6 +110,11 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
         try await wearables.openDATGlassesAppUpdate()
     }
 
+    func openFirmwareUpdate() async throws {
+        guard let wearables else { throw AbsentGlassesRuntime.Unavailable() }
+        try await wearables.openFirmwareUpdate()
+    }
+
     func makeSession() throws -> any GlassesSessionPort {
         guard let wearables, let selector else { throw AbsentGlassesRuntime.Unavailable() }
         let session = try wearables.createSession(deviceSelector: selector)
@@ -160,7 +165,9 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
                                          compatibility: compatibility,
                                          supportsDisplay: device.supportsDisplay(),
                                          batteryPercent: device.batteryLevel,
-                                         donState: don)
+                                         donState: don,
+                                         deviceType: device.deviceType().rawValue,
+                                         thermal: "\(device.thermalLevel)")
         }
     }
 }

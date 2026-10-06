@@ -1401,10 +1401,13 @@ struct ListeningBar: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Inset del texto = el del glyph de la X (unit + ~cardPad): simétrico.
             Button("Listo", action: onDone)
                 .font(Theme.Type_.secondary)
                 .foregroundStyle(Theme.Colors.accentText)
+                .padding(.trailing, Theme.Space.cardPad)
                 .frame(minHeight: Theme.minHitTarget)
+                .contentShape(Rectangle())
                 .accessibilityIdentifier("chat.voice.done")
         }
         .padding(.horizontal, Theme.Space.unit)

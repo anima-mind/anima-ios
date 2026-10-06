@@ -55,9 +55,10 @@ public final class GlassesVoiceCapture: VoiceCapturePort, @unchecked Sendable {
     private let locale: Locale
     private let loop: VoiceCaptureLoop
 
-    public init(audio: any AudioSessionPort = SystemAudioSession(), locale: Locale = Locale(identifier: "es-CO")) {
+    public init(audio: any AudioSessionPort = SystemAudioSession(), locale: Locale = Locale(identifier: "es-CO"),
+                detector: TurnEndDetector = TurnEndDetector()) {
         self.locale = locale
-        self.loop = VoiceCaptureLoop(audio: audio)
+        self.loop = VoiceCaptureLoop(audio: audio, detector: detector)
     }
 
     public func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {

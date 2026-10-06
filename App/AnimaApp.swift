@@ -694,7 +694,7 @@ final class AppModel: ObservableObject {
     static func makePhoneVoice() -> (any VoiceCapturePort)? {
         if UITestMode.isActive { return UITestScriptedVoice() }
         #if os(iOS)
-        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()))
+        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()), detector: .phoneDictation)
         #else
         return nil
         #endif

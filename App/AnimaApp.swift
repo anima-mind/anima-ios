@@ -295,7 +295,10 @@ final class AppModel: ObservableObject {
             settings.notifications = notificationsModel
             settings.approvals = approvals
             self.settingsModel = settings
-            if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
+            if let brain = self.brain {
+                if UITestMode.seedsMemory { await UITestMode.seedMemory(brain) }
+                self.memoryModel = MemoryBrowserViewModel(brain: brain)
+            }
         } catch {
             phase = .misconfigured("No se pudo abrir la base de datos: \(error.localizedDescription)")
             return

@@ -284,13 +284,26 @@ public actor Brain {
             let rows: [Row]
             if let filter, !filter.trimmingCharacters(in: .whitespaces).isEmpty {
                 rows = try Row.fetchAll(db, sql: """
-                    SELECT * FROM memory WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?
+                    SELECT * FROM memory WHERE content LIKE ? AND purged_at IS NULL ORDER BY created_at DESC LIMIT ?
                     """, arguments: ["%\(filter)%", limit])
             } else {
-                rows = try Row.fetchAll(db, sql: "SELECT * FROM memory ORDER BY created_at DESC LIMIT ?",
-                                        arguments: [limit])
+                rows = try Row.fetchAll(db, sql: """
+                    SELECT * FROM memory WHERE purged_at IS NULL ORDER BY created_at DESC LIMIT ?
+                    """, arguments: [limit])
             }
             return rows.map(MemoryRecord.init(row:))
+        }
+    }
+
+    /// "Vaciar invalidadas": marca `purged_at` en las YA invalidadas (las vivas
+    /// jamás se tocan). Siguen en la base; desaparecen de la UI. Devuelve cuántas.
+    @discardableResult
+    public func purgeInvalidated(at date: Date = Date()) throws -> Int {
+        try queue.write { db in
+            try db.execute(sql: """
+                UPDATE memory SET purged_at=? WHERE invalidated_at IS NOT NULL AND purged_at IS NULL
+                """, arguments: [date.timeIntervalSince1970])
+            return db.changesCount
         }
     }
 

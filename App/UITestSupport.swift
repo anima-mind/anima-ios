@@ -33,6 +33,15 @@ enum UITestMode {
     static let isActive = arguments.contains(flag)
     static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
     static let seedsInferredGoal = isActive && arguments.contains(seedInferredGoalFlag)
+    /// Una memoria activa de la "noche 1" para el XCUITest de Memoria.
+    static let seedsMemory = isActive && arguments.contains("--uitest-seed-memory")
+    static let seededMemory = "Le gusta correr temprano"
+
+    static func seedMemory(_ brain: Brain) async {
+        guard ((try? await brain.browse()) ?? []).isEmpty else { return }
+        _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
+    }
+
     /// Sin red forzado (pill "Sin conexión" + turno encolado).
     static let forcesOffline = isActive && arguments.contains("--uitest-offline")
     static let shouldReset = isActive && arguments.contains(resetFlag)

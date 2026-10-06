@@ -31,11 +31,20 @@ import Testing
         #expect(Set(local.map(\.name)) == ["anima_reminders", "goals", "calendar", "reminders", "notes"])
         #expect(ToolProfile.onDevice.apply(local) == local)
         for name in ToolProfile.excludedOnDevice { #expect(!local.contains { $0.name == name }) }
-        let custom: ToolSpec = .client(name: "custom", description: "x", inputSchema: .object([:]))
-        #expect(ToolProfile.onDevice.apply([custom]) == [custom])
     }
 
-    /// Cada tool del registro tiene decisión explícita en local (compacta o fuera).
+    @Test func unknownToolNeverReachesTheLocalModel() throws {
+        let custom: ToolSpec = .client(name: "nueva_tool", description: String(repeating: "x", count: 4000),
+                                       inputSchema: .object(["type": .string("object")]))
+        #expect(ToolProfile.onDevice.apply([custom]).isEmpty)
+        #expect(ToolProfile.full.apply([custom]) == [custom])
+        let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("hola")]),
+                                                    tools: [custom, CalendarTool().spec],
+                                                    opts: try OnDeviceTestConfig.opts())
+        #expect(request.tools.map(\.name) == ["calendar"])
+    }
+
+    /// Documentación: cada tool del registro tiene decisión explícita en local.
     @Test func everyRegisteredToolHasALocalDecision() throws {
         for spec in try RealToolSet.specs() {
             #expect(ToolProfile.compact[spec.name] != nil || ToolProfile.excludedOnDevice.contains(spec.name),
@@ -43,7 +52,7 @@ import Testing
         }
     }
 
-    /// Una línea ≤ 120, sin descripciones por campo ni enums, y los mismos nombres
+    /// Una línea ≤ 120, sin enums (pistas de campo ≤ 30), y los mismos nombres
     /// de parámetro que el schema completo (la ejecución no cambia).
     @Test func compactSpecsAreMinimalAndCompatible() throws {
         let full = Dictionary(uniqueKeysWithValues: try RealToolSet.specs().map { ($0.name, $0) })
@@ -59,10 +68,32 @@ import Testing
             for (key, value) in props {
                 #expect(fullProps[key] != nil, "\(name).\(key) no existe en el schema completo")
                 #expect(value["type"] == fullProps[key]?["type"], "\(name).\(key) cambió de tipo")
-                #expect(value["enum"] == nil && value["description"] == nil)
+                #expect(value["enum"] == nil)
+                #expect((value["description"]?.stringValue?.count ?? 0) <= 30, "\(name).\(key): pista larga")
             }
         }
     }
+
+    /// Los vocabularios cerrados que el perfil quitó como enum siguen visibles.
+    @Test func closedVocabulariesSurviveWithoutEnums() throws {
+        func text(_ name: String) throws -> String {
+            guard case .client(_, let description, let schema)? = ToolProfile.compact[name],
+                  let data = try? JSONEncoder().encode(schema) else { throw ProfileError.missing(name) }
+            return description + " " + String(decoding: data, as: UTF8.self)
+        }
+        let reminders = try text("anima_reminders")
+        for value in ProactiveCadence.allCases.map(\.rawValue) + ["list", "create", "complete", "cancel", "snooze"] {
+            #expect(reminders.contains(value), "anima_reminders sin \(value)")
+        }
+        #expect(reminders.contains("fire_at ISO 8601"))
+        let goals = try text("goals")
+        for value in ProactiveCadence.allCases.map(\.rawValue) + CheckInAnswer.allCases.map(\.rawValue)
+            + ["0-23", "1-7", "list", "declare", "set_checkin", "clear_checkin", "record_checkin", "mark_achieved"] {
+            #expect(goals.contains(value), "goals sin \(value)")
+        }
+    }
+
+    enum ProfileError: Error { case missing(String) }
 
     @Test func onDeviceProfileFitsTheMeasuredBudget() async throws {
         let tools = try RealToolSet.specs()

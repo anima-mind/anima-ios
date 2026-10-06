@@ -398,12 +398,19 @@ public struct GoalsView: View {
                 }
                 if goal.checkIn.isActive {
                     Button { editingTimeFor = goal.id } label: {
-                        Text(GoalsViewModel.timeLabel(goal.checkIn))
-                            .font(Theme.Type_.tabular(Theme.Type_.secondary))
-                            .foregroundStyle(Theme.Colors.text)
-                            .padding(.horizontal, Theme.Space.stack)
-                            .frame(minHeight: Theme.minHitTarget)
-                            .background(Capsule().fill(Theme.Colors.surface))
+                        HStack(spacing: Theme.Space.unit) {
+                            Image(systemName: "clock")
+                                .font(Theme.Type_.meta.weight(.light))
+                            Text(GoalsViewModel.timeLabel(goal.checkIn))
+                                .font(Theme.Type_.tabular(Theme.Type_.secondary))
+                        }
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .padding(.horizontal, Theme.Space.unit * 2.5)
+                        .padding(.vertical, Theme.Space.unit * 1.5)
+                        .background(Capsule().fill(Theme.Colors.bg))
+                        .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                        .frame(minHeight: Theme.minHitTarget)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .fixedSize()

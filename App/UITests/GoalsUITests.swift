@@ -35,6 +35,10 @@ final class GoalsUITests: AnimaUITestCase {
         waitUntil(status, "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
         // El control de hora y el resumen dicen la hora igual ("p. m.", no "p.m.").
         waitUntil(byPrefix(app, "goal.checkin.time."), "label ENDSWITH '8:00 p. m.'")
+        let card = XCTAttachment(screenshot: app.screenshot())
+        card.name = "metas-control-de-hora"
+        card.lifetime = .keepAlways
+        add(card)
 
         // Reabrir la vista: se relee de la base.
         openTab(app, "Chat")

@@ -288,6 +288,8 @@ public actor AgentLoop {
             // primera redirección (consulta en vez de creación) no lo gasta.
             var localToolErrors = 0
             var localRedirected = false
+            // Modelo local: ¿alguna tool del turno escribió (no solo leyó)?
+            var localWrote = false
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -380,9 +382,9 @@ public actor AgentLoop {
                 }
                 // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
                 // el turno cerró sin tools ⇒ dónde se hace, determinista.
-                if toolProfile == .onDevice, toolCallCount == 0, response.stopReason != .toolUse,
+                if toolProfile == .onDevice, !localWrote, response.stopReason != .toolUse,
                    response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText),
-                   !Self.plainText(content).contains(hint) {
+                   !Self.plainText(content).contains(hint), !Self.plainText(content).lowercased().contains("tab ") {
                     let addition = Self.plainText(content).isEmpty ? hint : "\n\n" + hint
                     emit(.textDelta(addition))
                     content.append(.text(addition))
@@ -429,6 +431,7 @@ public actor AgentLoop {
                             realName = name
                             realInput = input
                             verb = ToolFailureNotice.verb(tool: name, input: input)
+                            if !LocalToolAdapter.readOnlyTools.contains(call.name) { localWrote = true }
                             emit(.toolStarted(name: name))
                             toolCallCount += 1
                             let executed = await sensorimotor.execute(name: name, input: input)

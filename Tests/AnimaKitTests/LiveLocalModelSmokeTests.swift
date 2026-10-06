@@ -329,8 +329,9 @@ import Testing
                                                      desiredState: .progressCheckIn(everyDays: 8), evidence: "test")
             _ = await seeded.other.setCheckIn(id: id, CheckInCadence(cadence: .weekly, hour: 20, weekday: 1))
             let some = await Self.turn(seeded, "¿qué metas tengo?")
+            let listed = some.text.split(separator: "\n").filter { $0.hasPrefix("- ") }.count
             let someOK = await seeded.other.allGoals().count == 1 && some.notice == nil
-                && LocalWhen.fold(some.text).contains("marat") && !some.text.contains("stated")
+                && LocalWhen.fold(some.text).contains("marat") && !some.text.contains("stated") && listed == 1
             Self.row("10b qué metas (una)", run, some, someOK)
             #expect(someOK, "corrida \(run)")
         }
@@ -506,6 +507,59 @@ import Testing
                 && !t.calls.contains { $0.hasPrefix("declare_goal") }
             Self.row("33 ya cumplí mi meta", run, t, ok)
             #expect(ok, "corrida \(run)")
+        }
+    }
+
+    // MARK: - Ronda 4 del review
+
+    @Test func stopRemindingSaysWhere() async throws {
+        guard Self.enabled else { return }
+        let cases: [(String, String)] = [
+            ("ya no quiero que me recuerdes lo del banco", "tab recordatorios"),
+            ("deja de recordarme llamar al banco", "tab recordatorios"),
+            ("no me recuerdes más lo del banco", "tab recordatorios"),
+            ("elimina la cita de la agenda", "calendario"),
+        ]
+        for (index, (prompt, place)) in cases.enumerated() {
+            for run in 1...Self.runs {
+                let world = try await World()
+                _ = try await world.reminders.create(text: "llamar al banco", fireAt: Date().addingTimeInterval(86_400))
+                let t = await Self.turn(world, prompt)
+                let ok = await world.reminders.list().count == 1 && LocalWhen.fold(t.text).contains(place)
+                    && !t.calls.contains { $0.hasPrefix("remind_me") } && t.notice == nil
+                Self.row("\(34 + index) \(prompt.prefix(28))", run, t, ok)
+                #expect(ok, "\(prompt) corrida \(run)")
+            }
+        }
+    }
+
+    @Test func meetingTitleIsTheDictatedOne() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "agéndame reunión el lunes de 3 a 4")
+            let events = world.calendar.created.value
+            let title = events.first.map { LocalWhen.fold($0.0) } ?? ""
+            let ok = events.count == 1 && title.contains("reunion") && !title.contains("equipo")
+                && events.first?.1 == Self.at(Self.next(2), 15) && events.first?.2 == Self.at(Self.next(2), 16)
+            Self.row("38 reunión de 3 a 4", run, t, ok)
+            #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1, $0.2) })")
+        }
+    }
+
+    @Test func aPassedHourTodayGoesToTomorrow() async throws {
+        guard Self.enabled else { return }
+        let hour = max(1, Self.calendar.component(.hour, from: Date()) - 1)
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        let spoken = hour > 12 ? "\(hour - 12) de la tarde" : "\(hour) de la mañana"
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "recuérdame hoy a las \(spoken) almorzar")
+            let created = await world.reminders.list()
+            let ok = created.count == 1 && created.first?.fireAt == Self.at(tomorrow, hour)
+                && LocalWhen.fold(t.text).contains("pas") && t.notice == nil
+            Self.row("39 hoy ya pasó", run, t, ok)
+            #expect(ok, "corrida \(run): \(created.map(\.fireAt))")
         }
     }
 }

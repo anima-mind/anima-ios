@@ -245,7 +245,7 @@ import Testing
 
     @Test func hintsPointToTheRightPlace() {
         #expect(LocalWhen.changeHint("ya cumplí mi meta de leer") == "Márcala como lograda en la tab Metas.")
-        #expect(LocalWhen.changeHint("borra el recordatorio del banco") == "Para cambiarlo o borrarlo, hazlo en la tab Recordatorios.")
+        #expect(LocalWhen.changeHint("borra el recordatorio del banco") == "Eso lo borras en la tab Recordatorios.")
         #expect(LocalWhen.changeHint("recuérdame cambiar el aceite") == nil)
     }
 
@@ -311,5 +311,73 @@ import Testing
                                                            fallback: saved, now: now, calendar: cal))
         #expect(OnDevicePromptBuilder.agreesWithTheResult("Listo.", fallback: "Anotado.", now: now, calendar: cal))
         #expect(OnDevicePromptBuilder.confirmation(results: ["te diré: «Oye, x.»."]) == "Listo: te diré: «Oye, x».")
+    }
+}
+
+@Suite struct LocalStopRemindingTests {
+    @Test(arguments: [
+        ("ya no quiero que me recuerdes lo del banco", "Eso lo borras en la tab Recordatorios."),
+        ("deja de recordarme tomar agua", "Eso lo borras en la tab Recordatorios."),
+        ("no me recuerdes más lo del gimnasio", "Eso lo borras en la tab Recordatorios."),
+        ("elimina la cita de la agenda", "Eso lo borras en tu app Calendario."),
+    ])
+    func stoppingIsAChange(owner: String, hint: String) {
+        #expect(LocalWhen.asksToChange(owner))
+        #expect(LocalWhen.changeHint(owner) == hint)
+        #expect(!LocalWhen(now: Date(), calendar: .current, ownerText: owner).ownerAsksForAReminder)
+        #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) == "list_reminders")
+    }
+
+    @Test func aCreationThatCancelsSomethingStillCreates() {
+        #expect(!LocalWhen.asksToChange("recuérdame cancelar Netflix el viernes"))
+        #expect(!LocalWhen.asksToChange("Oye, agéndame cancelar la tarjeta"))
+    }
+
+    @Test func aReadOnlyTurnAboutAChangeSaysWhere() async throws {
+        let w = try ProactiveFixtures.world()
+        let model = OnDeviceProvider.modelName
+        let r = try await LocalLoopHarness.run([
+            LocalLoopHarness.toolUse("a", "list_reminders", "{}", model: model),
+            LocalLoopHarness.text("Tienes estos recordatorios."),
+        ], tools: [AnimaRemindersTool(store: w.reminders)], router: try OnDeviceTestConfig.router(),
+           policy: .app(ownerAllowlist: { [] }), text: "deja de recordarme tomar agua")
+        #expect(r.text.hasSuffix("Eso lo borras en la tab Recordatorios."))
+    }
+
+    @Test func aDayRangeIsNotAnHourRange() throws {
+        let when = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
+                             ownerText: "agéndame vacaciones de 5 a 10 de octubre")
+        #expect(when.ownerRange == nil)
+    }
+
+    @Test func invertedEventTitlesUseTheDictatedOne() throws {
+        let input = try #require(LocalOwnerRepairTests.real("add_calendar_event", [
+            "title": .string("Reunión de equipo"), "start": .string("2026-10-12 15:00"), "end": .string("2026-10-12 16:00")],
+            owner: "agéndame reunión el lunes de 3 a 4"))
+        #expect(input["title"] == .string("Reunión"))
+        #expect(input["start"] == .string("2026-10-12T15:00:00"))
+        #expect(LocalToolAdapter.eventTitle(model: "Almuerzo con Ana", ownerText: "agéndame almuerzo con Ana el jueves")
+                == "Almuerzo con Ana")
+    }
+
+    @Test func aPassedTimeTodayMovesToTomorrowAndSaysSo() throws {
+        let input = try #require(LocalOwnerRepairTests.real("remind_me", [
+            "text": .string("almorzar"), "when": .string("2026-10-06 09:00"), "repeat": .string("none")],
+            owner: "recuérdame hoy a las 9 almorzar"))
+        #expect(input["fire_at"] == .string("2026-10-07T09:00:00"))
+    }
+
+    @Test func listsAreDeliveredAsIs() async throws {
+        let ctx = AssembledContext(messages: [
+            .user("¿qué metas tengo?"),
+            .assistant([.toolUse(id: "t1", name: "list_goals", input: .object([:]))]),
+            .user([.toolResult(toolUseId: "t1", content: "- correr una maratón — te pregunto cada domingo a las 20:00",
+                               isError: false)]),
+        ])
+        let session = MockOnDeviceSession([[.snapshot("Tienes dos metas: correr y nadar.")]])
+        let provider = OnDeviceProvider(session: session, availability: { .available })
+        let response = try await provider.completeCollecting(ctx, tools: [], opts: try OnDeviceTestConfig.opts())
+        #expect(response.content == [.text("- correr una maratón — te pregunto cada domingo a las 20:00")])
+        #expect(session.requests.value.isEmpty)
     }
 }

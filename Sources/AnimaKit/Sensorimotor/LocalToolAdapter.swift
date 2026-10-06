@@ -84,6 +84,9 @@ public enum LocalToolAdapter {
     }
 
     /// Las que solo leen: tras ellas el modelo responde con lo leído.
+    /// Listados que se entregan tal cual (sin que el 3B los resuma).
+    public static let listTools: Set<String> = ["list_reminders", "list_goals", "list_events"]
+
     public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "list_events", "read_note"]
 
     static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
@@ -149,8 +152,10 @@ public enum LocalToolAdapter {
                                 cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
             }
             let cadence = when.ownerCadence ?? (when.ownerSaysOnce ? .none : modelCadence)
+            // "hoy a las 12" cuando ya pasó: mañana a la misma hora (y se dice), no un error.
+            let today = when.ownerDay.map { calendar.isDate($0, inSameDayAs: now) } ?? true
             return reminder(text: text, at: when.withPlausibleHour(parsedWhen), cadence: cadence, now: now, when: when,
-                            calendar: calendar)
+                            calendar: calendar, rollPastOnce: cadence == .none && today && when.offsetMinutes == nil)
 
         case "list_reminders", "list_goals":
             return .real(name: tool.realTool, input: .object(["action": .string("list")]))
@@ -198,7 +203,7 @@ public enum LocalToolAdapter {
             return .real(name: tool.realTool, input: .object(["action": .string("list"), "days_ahead": .int(days)]))
 
         case "add_calendar_event":
-            guard let title = args.text("title") else { return invalid(missing("title", "el título de la cita")) }
+            guard let modelTitle = args.text("title") else { return invalid(missing("title", "el título de la cita")) }
             guard let modelStart = args.raw("start").flatMap({ when.parse($0, repair: false) }) else {
                 return invalid(missing("start", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
@@ -209,7 +214,7 @@ public enum LocalToolAdapter {
             let owner = LocalWhen.fold(ownerText)
             if when.ownerAsksForAReminder,
                !["agend", "calendario", "evento"].contains(where: owner.contains) {
-                let text = reminderText(model: title, ownerText: ownerText)
+                let text = reminderText(model: modelTitle, ownerText: ownerText)
                 if let unsupported = when.unsupportedCadence {
                     return reminder(text: text, at: when.firstOccurrence(of: unsupported, modelDate: start),
                                     cadence: .none, now: now, when: when, calendar: calendar, rollPastOnce: true)
@@ -218,6 +223,7 @@ public enum LocalToolAdapter {
                 return reminder(text: text, at: when.withPlausibleHour(start), cadence: cadence, now: now, when: when,
                                 calendar: calendar)
             }
+            let title = eventTitle(model: modelTitle, ownerText: ownerText)
             let swapped = modelEnd.map { $0 < modelStart } ?? false
             let end = when.eventEnd(start: start, modelEnd: swapped ? modelStart : modelEnd)
             return .real(name: tool.realTool, input: .object([
@@ -278,9 +284,17 @@ public enum LocalToolAdapter {
         var presented = result
         switch name {
         case "remind_me", "declare_goal":
-            guard let unsupported = LocalWhen(now: Date(), calendar: dates.calendar, ownerText: ownerText).unsupportedCadence,
-                  input["action"]?.stringValue == "create" else { return result }
-            presented.content = result.content + " " + unsupportedNote(unsupported.phrase)
+            guard input["action"]?.stringValue == "create" else { return result }
+            let when = LocalWhen(now: Date(), calendar: dates.calendar, ownerText: ownerText)
+            if let unsupported = when.unsupportedCadence {
+                presented.content = result.content + " " + unsupportedNote(unsupported.phrase)
+            } else if LocalWhen.words(LocalWhen.fold(when.scheduleText)).contains("hoy"),
+                      let fire = input["fire_at"]?.stringValue.flatMap(dates.parseISODateTime),
+                      !dates.calendar.isDateInToday(fire) {
+                presented.content = result.content + " " + pastTodayNote(dates.time(fire))
+            } else {
+                return result
+            }
         case "list_events":
             presented.content = readableEvents(result.content, dates: dates)
         case "write_note":
@@ -305,6 +319,11 @@ public enum LocalToolAdapter {
     static func changeNote(_ ownerText: String, tab: String) -> String {
         guard LocalWhen.asksToChange(ownerText) else { return "" }
         return "Eso no lo puedo cambiar desde aquí: hazlo en la tab \(tab). Lo que hay:\n"
+    }
+
+    /// "hoy a las 12" cuando ya pasaron.
+    public static func pastTodayNote(_ time: String) -> String {
+        "Ojo: esa hora de hoy ya pasó; te lo puse mañana a las \(time)."
     }
 
     /// Lo que se le dice al dueño cuando pidió una repetición que la app no hace.
@@ -429,6 +448,28 @@ public enum LocalToolAdapter {
         let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
         let named = OnDevicePromptBuilder.salientStems(model).contains { owner.contains($0) }
         return named ? model : (dictatedReminder(ownerText) ?? model)
+    }
+
+    /// El título del evento: el del modelo si solo usa palabras del dueño; si
+    /// inventa (medido: "Reunión de equipo" para "agéndame reunión el lunes"),
+    /// lo dictado tras "agéndame", sin la fecha y la hora.
+    static func eventTitle(model: String, ownerText: String) -> String {
+        guard !ownerText.isEmpty else { return model }
+        let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
+        let invented = OnDevicePromptBuilder.salientStems(model).contains { !owner.contains($0) }
+        guard invented, let dictated = dictatedEvent(ownerText) else { return model }
+        return dictated.prefix(1).uppercased() + dictated.dropFirst()
+    }
+
+    static func dictatedEvent(_ ownerText: String) -> String? {
+        let lower = ownerText.lowercased()
+        guard let key = lower.firstMatch(of: /ag[eé]nd(?:a|ame)\s+(?:una?\s+|la\s+|el\s+)?/) else { return nil }
+        var rest = String(lower[key.range.upperBound...])
+        let cut = try? Regex("\\s+(?:hoy|mañana|pasado mañana|el (?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
+            + "|este |esta |a las? \\d|de \\d{1,2} a|en \\S+ (?:horas?|minutos?)|para el|para mañana).*$")
+        if let cut, let match = rest.firstMatch(of: cut) { rest = String(rest[..<match.range.lowerBound]) }
+        let text = rest.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return text.isEmpty ? nil : text
     }
 
     /// "recuérdame hoy a las 6 de la tarde que mañana es el examen" → "mañana es el examen".
@@ -623,7 +664,7 @@ struct LocalWhen {
     /// Sin am/pm se lee horario de oficina (1-6 ⇒ tarde, 12 ⇒ mediodía).
     var ownerRange: (start: (hour: Int, minute: Int), end: (hour: Int, minute: Int))? {
         let owner = scheduleText
-        guard let m = owner.firstMatch(of: /\bde (\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)? a (\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)?(?! de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/),
+        guard let m = owner.firstMatch(of: /\bde (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)? a (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/),
               let h1 = Int(m.1), let h2 = Int(m.4), (0...23).contains(h1), (0...23).contains(h2) else { return nil }
         let afternoon = owner.contains("de la tarde") || owner.contains("de la noche")
         func hour(_ raw: Int, _ meridiem: Substring?) -> Int {
@@ -726,6 +767,8 @@ struct LocalWhen {
         return calendar.date(bySettingHour: clock.0, minute: clock.1, second: 0, of: later ?? today) ?? modelDate
     }
 
+    var offsetMinutes: Double? { offset(scheduleText).map { $0 / 60 } }
+
     /// La hora de un recordatorio cuando el dueño no dijo ninguna.
     static let defaultReminderHour = 9
 
@@ -761,7 +804,12 @@ struct LocalWhen {
     /// ("recuérdame el viernes cambiar el aceite" es un recordatorio).
     static func asksToChange(_ ownerText: String) -> Bool {
         let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        if ["recuerd", "recordarme", "agend", "anota", "apunta", "toma nota"].contains(where: owner.contains) {
+        // Primero la negación: "ya no quiero que me recuerdes…", "deja de recordarme…".
+        if owner.firstMatch(of: /\b(?:no (?:quiero que )?me recuerdes|deja de recordarme|ya no me recuerdes|no me recuerdes)\b/) != nil {
+            return true
+        }
+        // Un imperativo de creación como palabra, al inicio: es una creación.
+        if owner.firstMatch(of: /^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b/) != nil {
             return false
         }
         let verb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
@@ -776,8 +824,12 @@ struct LocalWhen {
     static func changeHint(_ ownerText: String) -> String? {
         guard asksToChange(ownerText) else { return nil }
         let owner = fold(ownerText)
-        if owner.contains("recordatorio") { return "Para cambiarlo o borrarlo, hazlo en la tab Recordatorios." }
-        if owner.contains("evento") || owner.contains("cita") { return "Eso se cambia en tu app Calendario." }
+        if owner.contains("recordatorio") || owner.contains("recuerd") || owner.contains("recordarme") {
+            return "Eso lo borras en la tab Recordatorios."
+        }
+        if ["evento", "cita", "agenda", "calendario"].contains(where: owner.contains) {
+            return "Eso lo borras en tu app Calendario."
+        }
         return owner.contains("cumpl") || owner.contains("logr") || owner.contains("termin")
             ? "Márcala como lograda en la tab Metas." : "Para cambiarla o borrarla, hazlo en la tab Metas."
     }
@@ -786,6 +838,7 @@ struct LocalWhen {
     var ownerAsksForAReminder: Bool {
         let owner = Self.fold(ownerText)
         return ["recuerdame", "recordarme", "recuerdeme"].contains(where: owner.contains) && !owner.contains("meta")
+            && !Self.asksToChange(ownerText)
     }
 
     var ownerMentionsTime: Bool { times(scheduleText).contains { $0.explicit || $0.afterLas } }

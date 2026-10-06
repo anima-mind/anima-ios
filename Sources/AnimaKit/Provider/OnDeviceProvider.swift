@@ -129,6 +129,8 @@ public struct OnDeviceRequest: Sendable, Equatable {
     public var fallbackText: String?
     /// Lo que la redacción debe nombrar para no perder el dato. Ver `acceptsConfirmation`.
     public var salientWords: [SalientGroup]
+    /// La ronda fue solo de listados: se entrega `fallbackText` tal cual.
+    public var listIsDeterministic: Bool = false
 
     public init(instructions: String, history: [OnDeviceTranscriptEntry], prompt: String,
                 tools: [OnDeviceToolDefinition], maxResponseTokens: Int, fallbackText: String? = nil,
@@ -377,6 +379,7 @@ public enum OnDevicePromptBuilder {
         let prompt: String
         var fallbackText: String?
         var salient: [SalientGroup] = []
+        var listIsDeterministic = false
         let toolsSucceeded = endsInSuccessfulToolResults(ctx.messages)
         if toolsSucceeded {
             // Éxito: la ronda de tools se pliega a texto ("Ya quedó hecho: …")
@@ -415,6 +418,10 @@ public enum OnDevicePromptBuilder {
                 }
             }
             if onlyReads {
+                listIsDeterministic = round.allSatisfy { entry in
+                    if case .toolCall(_, let name, _) = entry { return LocalToolAdapter.listTools.contains(name) }
+                    return true
+                }
                 results = results.map(withoutListIds)
                 salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems)
                     .filter { !$0.isEmpty }.map { SalientGroup($0) }
@@ -428,6 +435,7 @@ public enum OnDevicePromptBuilder {
             if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
                 salient = [SalientGroup(["tab"])]
             }
+            if results.contains(where: { $0.contains("ya pasó; te lo puse mañana") }) { salient.append(SalientGroup(["pas"])) }
             // Una repetición no soportada se dice siempre ("aún no lo repito").
             if results.contains(where: { $0.contains("aún no lo repito") }) { salient.append(SalientGroup(["repit"])) }
             let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)
@@ -453,11 +461,13 @@ public enum OnDevicePromptBuilder {
                                           schema: OnDeviceSchema.from(jsonSchema: schema, name: name))
         }
 
-        return OnDeviceRequest(instructions: instructionParts.joined(separator: "\n\n"),
+        var built = OnDeviceRequest(instructions: instructionParts.joined(separator: "\n\n"),
                                history: entries, prompt: prompt, tools: definitions,
                                maxResponseTokens: fallbackText == nil ? opts.route.maxTokens
                                    : min(opts.route.maxTokens, confirmationMaxTokens),
                                fallbackText: fallbackText, salientWords: salient)
+        built.listIsDeterministic = listIsDeterministic
+        return built
     }
 
     /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
@@ -724,7 +734,11 @@ public struct OnDeviceProvider: Provider {
                 }
 
                 do {
-                    for try await element in session.stream(request) {
+                    // Listas (recordatorios, metas, agenda): el listado determinista, sin
+                    // llamar al modelo (medido: inventaba metas extra al resumir).
+                    let elements: AsyncThrowingStream<OnDeviceStreamElement, Error> = request.listIsDeterministic
+                        ? AsyncThrowingStream { $0.finish() } : session.stream(request)
+                    for try await element in elements {
                         switch element {
                         case .snapshot(let snapshot):
                             let delta = tracker.delta(for: snapshot)
@@ -764,7 +778,8 @@ public struct OnDeviceProvider: Provider {
                     tracker = SnapshotDeltaTracker()
                     let accepted = OnDevicePromptBuilder.acceptsConfirmation(text, salient: request.salientWords)
                         && OnDevicePromptBuilder.agreesWithTheResult(text, fallback: request.fallbackText ?? "", now: Date())
-                    _ = tracker.delta(for: accepted ? text : (request.fallbackText ?? ""))
+                    let chosen = accepted && !request.listIsDeterministic ? text : (request.fallbackText ?? "")
+                    _ = tracker.delta(for: chosen.replacingOccurrences(of: ".».", with: "»."))
                     toolCall = nil
                     continuation.yield(.textDelta(tracker.text))
                 }

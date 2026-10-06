@@ -60,8 +60,10 @@ import Testing
         await model.refresh()
         #expect(model.status == .notDetermined && model.scheduledCount == 1)
         #expect(model.hubSummary == "Sin decidir")
+        #expect(model.enabled && !model.toggleIsOn && !model.toggleIsEnabled)   // sin permiso: OFF, no ON gris
         await model.requestPermission()
         #expect(model.status == .granted)
+        #expect(model.toggleIsOn && model.toggleIsEnabled)
         #expect(model.hubSummary == "Permitidas · 1 programadas")
         #expect(NotificationsSettingsModel.hubSummary(status: .denied, scheduled: 4) == "Denegadas")
         #expect(SettingsRoute.allCases.count == 6)
@@ -71,6 +73,9 @@ import Testing
         #expect(NotificationsSettingsModel.statusLabel(.notDetermined) == "Sin decidir")
         #expect(NotificationsSettingsModel.countLabel(1) == "1 recordatorio programado")
         #expect(NotificationsSettingsModel.countLabel(3) == "3 recordatorios programados")
+        let denied = NotificationsSettingsModel(scheduler: try F.world(status: .denied).fake, reminders: nil)
+        await denied.refresh()
+        #expect(!denied.toggleIsOn && !denied.toggleIsEnabled)
     }
 
     /// Campo batch 5 #3: "Avisos de Anima" se prende y apaga desde la app.
@@ -96,6 +101,7 @@ import Testing
 
         await model.setEnabled(false)
         #expect(!preference.isEnabled && !model.enabled)
+        #expect(!model.toggleIsOn && model.toggleIsEnabled)
         #expect(await w.fake.pendingIds() == ["handoff-x"])            // lo de Anima, cancelado; lo ajeno, no
         #expect(await w.reminders.scheduledCount() == 1)               // el store queda intacto
         #expect(model.hubSummary == "Avisos apagados")

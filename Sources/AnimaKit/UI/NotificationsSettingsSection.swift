@@ -51,6 +51,11 @@ public final class NotificationsSettingsModel: ObservableObject {
         await refresh()
     }
 
+    /// El toggle se ve ON solo si de verdad avisa: preferencia ON y permiso del
+    /// iPhone concedido (sin decidir o denegado = OFF y deshabilitado).
+    public var toggleIsOn: Bool { enabled && status == .granted }
+    public var toggleIsEnabled: Bool { status == .granted }
+
     public static func statusLabel(_ status: NotificationAuthorization) -> String {
         switch status {
         case .granted: return "Permitidas"
@@ -109,11 +114,11 @@ public struct NotificationsSettingsSection: View {
                     }
                     Spacer(minLength: 0)
                     Toggle("Avisos de Anima", isOn: Binding(
-                        get: { model.enabled && model.status != .denied },
+                        get: { model.toggleIsOn },
                         set: { on in Task { await model.setEnabled(on) } }))
                         .labelsHidden()
                         .tint(Theme.Colors.accent)
-                        .disabled(model.status != .granted)
+                        .disabled(!model.toggleIsEnabled)
                         .accessibilityIdentifier("settings.notifications.toggle")
                 }
                 .padding(.vertical, 10)

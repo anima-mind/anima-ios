@@ -141,5 +141,10 @@ public enum BrainSchema {
                 );
                 """)
         }
+        // "Vaciar invalidadas" (Memoria): bi-temporal — siguen en la DB marcadas,
+        // fuera de la UI. Solo aplica a memorias YA invalidadas.
+        m.registerMigration("v16-memory-purged") { db in
+            try db.execute(sql: "ALTER TABLE memory ADD COLUMN purged_at REAL NULL")
+        }
     }
 }

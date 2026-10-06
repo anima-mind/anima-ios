@@ -11,6 +11,8 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var detectedMode: AuthMode?
     @Published public var statusText: String = ""
     @Published public var costs: [Telemetry.CostRow] = []
+    /// Una fila por modelo, con nombre para humanos (la vista de costos).
+    public var modelCosts: [Telemetry.ModelCostRow] { Telemetry.byModel(costs) }
     @Published public var totalCost: Double = 0
     @Published public var monthlyBudgetUSD: Int?
     // Modo de operación (§4.9): cambia entre los 3 sin re-onboarding.
@@ -50,6 +52,10 @@ public final class SettingsViewModel: ObservableObject {
     public var glasses: GlassesViewModel?
     /// Sección Notificaciones (capa proactiva); la inyecta el shell.
     public var notifications: NotificationsSettingsModel?
+    /// "Por aprobar" en Mente (la inyecta el shell).
+    public var approvals: ApprovalsInboxViewModel?
+    /// Pila del hub: el shell la empuja (aviso del chat → Mente).
+    @Published public var path: [SettingsRoute] = []
     /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
     public var nightSimulator: NightSimulator?
     /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
@@ -348,18 +354,29 @@ public final class SettingsViewModel: ObservableObject {
 /// lista compacta de filas con resumen vivo que pushean sub-pantallas.
 public enum SettingsRoute: String, Hashable, CaseIterable, Sendable {
     case account, model, skills, glasses, mind, notifications
+
+    /// Nombre visible de la fila del hub (el mismo que usa AppGuide).
+    public var title: String {
+        switch self {
+        case .account: return "Cuenta"
+        case .model: return "Modelo y costos"
+        case .skills: return "Skills"
+        case .glasses: return "Gafas"
+        case .mind: return "Mente"
+        case .notifications: return "Notificaciones"
+        }
+    }
 }
 
 public struct SettingsView: View {
     @ObservedObject private var model: SettingsViewModel
-    @State private var path: [SettingsRoute] = []
 
     public init(model: SettingsViewModel) {
         self.model = model
     }
 
     public var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack(path: $model.path) {
             ZStack {
                 Theme.Colors.bg.ignoresSafeArea()
                 ScrollView {
@@ -368,7 +385,7 @@ public struct SettingsView: View {
                             AccountHubRow(account: account)
                             hubDivider
                         }
-                        hubRow(.model, title: "Modelo y costos", subtitle: model.modelSummary, glyph: "cpu")
+                        hubRow(.model, title: SettingsRoute.model.title, subtitle: model.modelSummary, glyph: "cpu")
                         if let skills = model.skills {
                             hubDivider
                             SkillsHubRow(skills: skills)
@@ -378,7 +395,11 @@ public struct SettingsView: View {
                             GlassesHubRow(glasses: glasses)
                         }
                         hubDivider
-                        hubRow(.mind, title: "Mente", subtitle: model.mindSummary, glyph: "moon")
+                        if let approvals = model.approvals {
+                            MindHubRow(summary: model.mindSummary, approvals: approvals)
+                        } else {
+                            hubRow(.mind, title: SettingsRoute.mind.title, subtitle: model.mindSummary, glyph: "moon")
+                        }
                         if let notifications = model.notifications {
                             hubDivider
                             NotificationsHubRow(notifications: notifications)
@@ -421,23 +442,23 @@ public struct SettingsView: View {
         switch route {
         case .account:
             if let account = model.account {
-                SettingsSubScreen(title: "Cuenta") { AccountSettingsSection(account: account) }
+                SettingsSubScreen(title: route.title) { AccountSettingsSection(account: account) }
             }
         case .model:
-            SettingsSubScreen(title: "Modelo y costos") {
+            SettingsSubScreen(title: route.title) {
                 ModelSettingsContent(model: model)
             }
         case .skills:
             if let skills = model.skills { SkillsSettingsScreen(model: skills) }
         case .glasses:
             if let glasses = model.glasses {
-                SettingsSubScreen(title: "Gafas") { GlassesSettingsSection(model: glasses) }
+                SettingsSubScreen(title: route.title) { GlassesSettingsSection(model: glasses) }
             }
         case .mind:
-            SettingsSubScreen(title: "Mente") { MindSettingsContent(model: model) }
+            SettingsSubScreen(title: route.title) { MindSettingsContent(model: model) }
         case .notifications:
             if let notifications = model.notifications {
-                SettingsSubScreen(title: "Notificaciones") { NotificationsSettingsSection(model: notifications) }
+                SettingsSubScreen(title: route.title) { NotificationsSettingsSection(model: notifications) }
             }
         }
     }
@@ -482,7 +503,7 @@ private struct AccountHubRow: View {
     @ObservedObject var account: AccountViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.account) {
-            SettingsHubRowLabel(title: "Cuenta", subtitle: subtitle, glyph: "person.crop.circle")
+            SettingsHubRowLabel(title: SettingsRoute.account.title, subtitle: subtitle, glyph: "person.crop.circle")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.account")
@@ -499,7 +520,7 @@ private struct SkillsHubRow: View {
     @ObservedObject var skills: SkillsViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.skills) {
-            SettingsHubRowLabel(title: "Skills", subtitle: skills.summaryLine, glyph: "book")
+            SettingsHubRowLabel(title: SettingsRoute.skills.title, subtitle: skills.summaryLine, glyph: "book")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.skills")
@@ -510,10 +531,27 @@ private struct GlassesHubRow: View {
     @ObservedObject var glasses: GlassesViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.glasses) {
-            SettingsHubRowLabel(title: "Gafas", subtitle: glasses.hubSummary, glyph: "eyeglasses")
+            SettingsHubRowLabel(title: SettingsRoute.glasses.title, subtitle: glasses.hubSummary, glyph: "eyeglasses")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.glasses")
+    }
+}
+
+private struct MindHubRow: View {
+    let summary: String
+    @ObservedObject var approvals: ApprovalsInboxViewModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.mind) {
+            SettingsHubRowLabel(title: SettingsRoute.mind.title, subtitle: subtitle, glyph: "moon")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.mind")
+    }
+    private var subtitle: String {
+        let count = approvals.badgeCount
+        guard count > 0 else { return summary }
+        return "\(count) por aprobar · \(summary)"
     }
 }
 
@@ -521,7 +559,7 @@ private struct NotificationsHubRow: View {
     @ObservedObject var notifications: NotificationsSettingsModel
     var body: some View {
         NavigationLink(value: SettingsRoute.notifications) {
-            SettingsHubRowLabel(title: "Notificaciones", subtitle: notifications.hubSummary, glyph: "bell")
+            SettingsHubRowLabel(title: SettingsRoute.notifications.title, subtitle: notifications.hubSummary, glyph: "bell")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.notifications")
@@ -592,17 +630,20 @@ struct ModelSettingsContent: View {
                 .accessibilityIdentifier("settings.mode.hybrid")
             }
 
-            ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
-                HStack {
-                    Text(row.what)
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.textMuted)
-                    Spacer()
-                    Text(row.backend.label(remote: model.remoteProvider))
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.accentText)
+            VStack(spacing: Theme.Space.unit * 2) {
+                ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
+                    HStack {
+                        Text(row.what)
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.textMuted)
+                        Spacer()
+                        Text(row.backend.label(remote: model.remoteProvider))
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.accentText)
+                    }
                 }
             }
+            .padding(.top, Theme.Space.stack)
             if let notice = model.modeNotice {
                 Text(notice)
                     .font(Theme.Type_.meta)
@@ -691,11 +732,11 @@ struct ModelSettingsContent: View {
                     .font(Theme.Type_.meta)
                     .foregroundStyle(Theme.Colors.textFaint)
             } else {
-                ForEach(model.costs, id: \.model) { row in
+                ForEach(model.modelCosts) { row in
                     HStack {
-                        VStack(alignment: .leading) {
-                            Text(row.model).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
-                            Text("\(row.turnClass) · \(row.turns) turnos")
+                        VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
+                            Text(row.displayName).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
+                            Text(row.breakdown)
                                 .font(Theme.Type_.meta).foregroundStyle(Theme.Colors.textFaint)
                         }
                         Spacer()
@@ -704,9 +745,12 @@ struct ModelSettingsContent: View {
                             .foregroundStyle(Theme.Colors.textMuted)
                     }
                     .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("settings.costs.row")
                 }
             }
         }
+        .padding(.top, Theme.Space.stack)
     }
 
     private func label(_ text: String) -> some View {
@@ -722,7 +766,14 @@ struct ModelSettingsContent: View {
 struct MindSettingsContent: View {
     @ObservedObject var model: SettingsViewModel
 
-    var body: some View { mindSection }
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+            if let approvals = model.approvals {
+                ApprovalsSection(model: approvals)
+            }
+            mindSection
+        }
+    }
 
     /// Sección Mente: repetir el onboarding (sin borrar memoria).
     private var mindSection: some View {

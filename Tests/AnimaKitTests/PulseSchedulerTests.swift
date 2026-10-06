@@ -69,7 +69,7 @@ import GRDB
         let later = try await w.reminders.create(text: "llamar a mamá", fireAt: F.date(2026, 10, 6, 18))
         w.advance(2 * 3600)
         let outcome = await PulseRunner(reconciler: w.reconciler, engine: nil, scheduler: w.scheduler).run(sessionId: sid)
-        #expect(outcome.delivered.map(\.text) == ["Te recordé: pagar la tarjeta. ¿Cómo te fue?"])
+        #expect(outcome.delivered.map(\.text) == ["Te recuerdo: pagar la tarjeta"])
         #expect(outcome.intentions.isEmpty)
         #expect(await w.fake.pendingIds() == ["anima-reminder-\(later.id)"])
         #expect(await PulseRunner(reconciler: nil, engine: nil, scheduler: nil).run(sessionId: nil)

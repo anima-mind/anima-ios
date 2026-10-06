@@ -40,9 +40,25 @@ public struct AllowlistEntry: Sendable, Equatable, Hashable {
 
 public struct PermissionPolicy: Sendable {
     private let allowlist: Set<AllowlistEntry>
+    /// Lo que el dueño autorizó "siempre" (persistido; se revoca en Ajustes).
+    private let ownerAllowlist: @Sendable () -> Set<AllowlistEntry>
 
-    public init(allowlist: Set<AllowlistEntry> = []) {
+    public init(allowlist: Set<AllowlistEntry> = [],
+                ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry> = { [] }) {
         self.allowlist = allowlist
+        self.ownerAllowlist = ownerAllowlist
+    }
+
+    /// Batch 5b #1: escrituras SOLO en el estado propio de Anima y reversibles
+    /// desde la app (Metas, Recordatorios) → sin sheet. Lo que toca el mundo
+    /// (agenda, Recordatorios del iPhone, cámara…) sigue pidiendo ok.
+    public static let internalReversible: Set<AllowlistEntry> = Set(
+        ["declare", "set_checkin", "clear_checkin", "mark_achieved"].map { AllowlistEntry(tool: "goals", operation: $0) }
+        + ["create", "complete", "cancel", "snooze"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
+
+    /// La política de la app: internas reversibles + lo autorizado siempre.
+    public static func app(ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry>) -> PermissionPolicy {
+        PermissionPolicy(allowlist: internalReversible, ownerAllowlist: ownerAllowlist)
     }
 
     /// Decide sobre una acción. `known` = la tool está registrada en el
@@ -53,8 +69,9 @@ public struct PermissionPolicy: Sendable {
         case .afferent:
             return .allow
         case .efferent:
-            if let operation, allowlist.contains(AllowlistEntry(tool: tool, operation: operation)) {
-                return .allow
+            if let operation {
+                let entry = AllowlistEntry(tool: tool, operation: operation)
+                if allowlist.contains(entry) || ownerAllowlist().contains(entry) { return .allow }
             }
             return .ask
         }

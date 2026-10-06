@@ -23,9 +23,14 @@ public final class ChatViewModel: ObservableObject {
         public var isProactive: Bool = false
         public var intentionId: String?
         public var resolved: Bool = false
+        /// Cómo respondió el dueño a la propuesta (estado visible tras responder).
+        public var outcome: Intention.Outcome?
         /// Capa proactiva: el recordatorio entregado o la meta del check-in.
         public var reminderId: String?
         public var goalId: String?
+        /// Hora del aviso/pregunta y meta asociada: la etiqueta de la card.
+        public var proactiveAt: Date?
+        public var goalStatement: String?
         /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
         public var isVoice: Bool = false
         /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
@@ -34,6 +39,67 @@ public final class ChatViewModel: ObservableObject {
         public var imageData: Data?
         /// Solo-teléfono: la foto viajó como descripción de texto (FIX G).
         public var photoSentAsText: Bool = false
+        /// Cuándo se dijo: hora al pie y separador de día (como WhatsApp).
+        public var sentAt = Date()
+
+        /// Tipo de card proactiva (nil si es un mensaje normal).
+        public var proactiveKind: ProactiveMessage.Kind? {
+            guard isProactive else { return nil }
+            if let reminderId { return .reminder(id: reminderId) }
+            if let goalId { return .checkIn(goalId: goalId) }
+            if let intentionId { return .intention(id: intentionId) }
+            return nil
+        }
+
+        static func proactive(_ item: ProactiveMessage) -> DisplayMessage {
+            var message = DisplayMessage(role: .assistant, text: item.text, isProactive: true)
+            switch item.kind {
+            case .reminder(let id): message.reminderId = id
+            case .checkIn(let goalId): message.goalId = goalId
+            case .intention(let id): message.intentionId = id
+            }
+            message.proactiveAt = item.at
+            message.goalStatement = item.goalStatement
+            return message
+        }
+    }
+
+    /// Reloj y formato de fechas de las cards y las horas (inyectables en tests).
+    public var now: @Sendable () -> Date = { Date() }
+    public var dates = AnimaDateText()
+
+    /// "Recordatorio · hoy 8:30 p. m." | "Seguimiento · <meta>" | "Propuesta".
+    public func cardLabel(_ message: DisplayMessage) -> String {
+        guard let kind = message.proactiveKind else { return "" }
+        return ProactiveCard.label(kind, at: message.proactiveAt, goalStatement: message.goalStatement,
+                                   now: now(), dates: dates, selfName: selfName)
+    }
+
+    /// "8:30 p. m." al pie de cada mensaje.
+    public func timeLabel(_ message: DisplayMessage) -> String {
+        dates.time(message.sentAt)
+    }
+
+    /// Separadores de día ("Hoy", "Ayer", "lunes 5 de octubre") antes del primer
+    /// mensaje de cada día; el separador de sesión no cuenta como mensaje.
+    public func dayHeaders() -> [UUID: String] {
+        Self.dayHeaders(messages, now: now(), dates: dates)
+    }
+
+    public static func dayHeaders(_ messages: [DisplayMessage], now: Date, dates: AnimaDateText) -> [UUID: String] {
+        var out: [UUID: String] = [:]
+        var lastDay: Date?
+        for message in messages where !message.isSessionDivider {
+            let day = dates.calendar.startOfDay(for: message.sentAt)
+            if day != lastDay { out[message.id] = dates.dayHeader(message.sentAt, now: now) }
+            lastDay = day
+        }
+        return out
+    }
+
+    public func cardFollowUp(_ message: DisplayMessage) -> String? {
+        guard let kind = message.proactiveKind else { return nil }
+        return ProactiveCard.followUp(kind, at: message.proactiveAt, now: now())
     }
 
     /// Foto elegida en el composer, esperando el texto opcional del dueño.
@@ -49,22 +115,39 @@ public final class ChatViewModel: ObservableObject {
     /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
     /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
     /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
-    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
+    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = [],
+                               boundaries: [ContextBoundary] = []) -> [DisplayMessage] {
         func message(_ turn: VisibleTurn) -> DisplayMessage {
-            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
-                           imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            if turn.role == .assistant, let tag = turn.proactive,
+               let proactive = ProactiveMessage(tag: tag, text: turn.text) {
+                var card = DisplayMessage.proactive(proactive)
+                if let createdAt = turn.createdAt { card.sentAt = createdAt }
+                return card
+            }
+            var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                                         imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            if let createdAt = turn.createdAt { message.sentAt = createdAt }
+            return message
         }
         var out = previous.map(message)
         if !out.isEmpty {
             out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
         }
-        out += current.map(message)
+        var pending = boundaries.sorted { $0.fromSeq < $1.fromSeq }
+        for turn in current {
+            while let next = pending.first, let seq = turn.seq, seq >= next.fromSeq {
+                out.append(DisplayMessage(role: .assistant, text: next.dividerText, isSessionDivider: true))
+                pending.removeFirst()
+            }
+            out.append(message(turn))
+        }
+        out += pending.map { DisplayMessage(role: .assistant, text: $0.dividerText, isSessionDivider: true) }
         return out
     }
 
     /// Carga el historial al cablearse (antes de cualquier turno nuevo).
-    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = []) {
-        let restored = Self.history(current: current, previous: previous)
+    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = [], boundaries: [ContextBoundary] = []) {
+        let restored = Self.history(current: current, previous: previous, boundaries: boundaries)
         guard !restored.isEmpty else { return }
         messages = restored + messages
     }
@@ -102,6 +185,12 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var mind = MindState()
     /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
     @Published public private(set) var selfName: String = Birth.seed.name
+    /// Cuánto del contexto del modelo activo ocupa la conversación (medidor).
+    @Published public private(set) var contextGauge: ContextGauge?
+    /// Cambios de identidad / metas inferidas esperando al dueño: aviso sobre el chat.
+    @Published public var pendingApprovals = 0
+    /// Tap al aviso → Ajustes → Mente (lo cablea el shell).
+    public var onOpenApprovals: (() -> Void)?
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -169,8 +258,8 @@ public final class ChatViewModel: ObservableObject {
         let pending = await desireEngine.pendingIntentions()
         for intention in pending where !shownIntentionIds.contains(intention.id) {
             shownIntentionIds.insert(intention.id)
-            messages.append(DisplayMessage(role: .assistant, text: intention.proposedText,
-                                           isProactive: true, intentionId: intention.id))
+            messages.append(.proactive(ProactiveMessage(kind: .intention(id: intention.id), text: intention.proposedText,
+                                                        at: intention.createdAt)))
         }
     }
 
@@ -180,15 +269,17 @@ public final class ChatViewModel: ObservableObject {
         for item in proactive {
             switch item.kind {
             case .reminder(let id):
-                guard !messages.contains(where: { $0.reminderId == id && $0.text == item.text }) else { continue }
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, reminderId: id))
+                guard !messages.contains(where: {
+                    $0.reminderId == id && $0.text == item.text && $0.proactiveAt == item.at
+                }) else { continue }
+                messages.append(.proactive(item))
             case .checkIn(let goalId):
                 guard !messages.contains(where: { $0.goalId == goalId && $0.text == item.text && !$0.resolved }) else { continue }
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, goalId: goalId))
+                messages.append(.proactive(item))
             case .intention(let id):
                 guard !shownIntentionIds.contains(id) else { continue }
                 shownIntentionIds.insert(id)
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, intentionId: id))
+                messages.append(.proactive(item))
             }
         }
     }
@@ -205,9 +296,15 @@ public final class ChatViewModel: ObservableObject {
         focusedMessageId = match?.id ?? messages.last?.id
     }
 
+    /// "Hagámoslo": la propuesta queda aceptada Y el dueño se lo dice a ella,
+    /// para que la EJECUTE (cree el recordatorio, el bloque…) y responda.
     public func accept(_ message: DisplayMessage) async {
         await resolve(message, outcome: .accepted)
+        let text = Self.acceptText(message.text)
+        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
     }
+
+    public static func acceptText(_ proposal: String) -> String { "Acepto: \(proposal)" }
 
     public func dismiss(_ message: DisplayMessage) async {
         await resolve(message, outcome: .dismissed)
@@ -218,6 +315,7 @@ public final class ChatViewModel: ObservableObject {
         await desireEngine?.recordOutcome(id: id, outcome: outcome)
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             messages[index].resolved = true
+            messages[index].outcome = outcome
         }
     }
 
@@ -240,7 +338,7 @@ public final class ChatViewModel: ObservableObject {
             }
         }
         if !text.isEmpty { content.append(.text(text)) }
-        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
+        await dispatch(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
                   content: content)
     }
 
@@ -310,14 +408,97 @@ public final class ChatViewModel: ObservableObject {
         let text = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
         eventSink.yield(.voiceTranscript(text))
-        await run(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
+        await dispatch(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
     }
 
-    /// "Try again" del error card: reintenta el último turno sin duplicar la
-    /// burbuja del usuario — el mensaje nunca se pierde.
+    /// "Reintentar" del error card: reintenta el último turno sin duplicar la
+    /// burbuja del usuario — el mensaje nunca se pierde. Si fue por contexto
+    /// excedido, primero recorta la conversación (si no, reintentar repetía el error).
     public func retry() async {
         guard let content = lastUserContent, !isStreaming else { return }
+        if messages.last?.isError == true, messages.last?.text == AgentLoop.contextExceededMessage {
+            try? await loop.trimHistory(sessionId: sessionId)
+            messages.append(DisplayMessage(role: .assistant, text: ContextBoundary(
+                kind: .trim, fromSeq: 0, model: contextGauge?.model, createdAt: now()).dividerText,
+                isSessionDivider: true))
+        }
+        await dispatch(nil, content: content)
+    }
+
+    // MARK: Conexión (5b #7)
+
+    @Published public private(set) var isOffline = false
+    /// La conversación va a un modelo remoto (Claude/OpenAI/Gemini): sin red, se encola.
+    public var usesRemoteConversation = false
+    /// Hay modelo local para seguir sin red (Solo teléfono / Híbrido).
+    public var localModelAvailable = false
+    private var queuedContent: [ContentBlock]?
+    public static let offlineQueuedNote = "Sin conexión: te lo envío apenas vuelva la red."
+
+    /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
+    /// (con aviso claro) en vez de fallar y pedir "Reintentar".
+    private func dispatch(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
+        guard isOffline, usesRemoteConversation else {
+            await run(bubble, content: content)
+            return
+        }
+        if let bubble { messages.append(bubble) }
+        messages.append(DisplayMessage(role: .assistant, text: Self.offlineQueuedNote, isSessionDivider: true))
+        lastUserContent = content
+        queuedContent = content
+    }
+
+    public var hasQueuedTurn: Bool { queuedContent != nil }
+
+    public func setOffline(_ offline: Bool) async {
+        guard offline != isOffline else { return }
+        isOffline = offline
+        await sendQueuedIfOnline()
+    }
+
+    /// El turno encolado sin red sale apenas hay red y nada en curso (si la red
+    /// volvió a mitad de un turno, sale al terminarlo).
+    private func sendQueuedIfOnline() async {
+        guard !isOffline, let content = queuedContent, !isStreaming else { return }
+        queuedContent = nil
         await run(nil, content: content)
+    }
+
+    // MARK: Contexto (medidor, compactar, nueva conversación)
+
+    /// Lo cablea el shell: resume la sesión con el córtex de ciclo.
+    public var compactor: ConversationCompactor?
+    /// Lo cablea el shell: cierra la sesión y abre una nueva (memoria intacta).
+    public var onNewConversation: (() -> Void)?
+    @Published public private(set) var isCompacting = false
+
+    public func refreshContext() async {
+        contextGauge = await loop.contextGauge(sessionId: sessionId)
+    }
+
+    public func compact() async {
+        guard let compactor, !isStreaming, !isCompacting else { return }
+        isCompacting = true
+        defer { isCompacting = false }
+        let outcome = (try? await compactor.compact(sessionId: sessionId)) ?? .nothingToDo
+        let divider: String?
+        switch outcome {
+        case .compacted: divider = ContextBoundary(kind: .compaction, fromSeq: 0, createdAt: now()).dividerText
+        case .trimmed: divider = ContextBoundary(kind: .trim, fromSeq: 0, model: contextGauge?.model,
+                                                 createdAt: now()).dividerText
+        case .nothingToDo: divider = nil
+        }
+        if let divider {
+            messages.append(DisplayMessage(role: .assistant, text: divider, isSessionDivider: true))
+        }
+        await refreshContext()
+    }
+
+    public static let newConversationText = "— nueva conversación —"
+
+    /// El chat recién abierto por "Nueva conversación": solo el separador.
+    public func markNewConversation() {
+        messages = [DisplayMessage(role: .assistant, text: Self.newConversationText, isSessionDivider: true)]
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
@@ -329,7 +510,7 @@ public final class ChatViewModel: ObservableObject {
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
         messages.append(assistant)
-        let index = messages.count - 1
+        var index = messages.count - 1
         isStreaming = true
 
         for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
@@ -350,6 +531,15 @@ public final class ChatViewModel: ObservableObject {
                 errorText = "Turno detenido: \(stop)"
             case .skillAutomated(let summary):
                 assistant.automation = summary
+            case .contextTrimmed(let model):
+                // El separador va antes del turno que lo provocó.
+                let at = bubble == nil ? index : max(0, index - 1)
+                messages.insert(DisplayMessage(role: .assistant, text: ContextBoundary(
+                    kind: .trim, fromSeq: 0, model: model, createdAt: now()).dividerText, isSessionDivider: true),
+                    at: at)
+                index += 1
+            case .context(let gauge):
+                contextGauge = gauge
             case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
                 break
             }
@@ -361,6 +551,8 @@ public final class ChatViewModel: ObservableObject {
         if messages.indices.contains(index) { messages[index] = assistant }
         isStreaming = false
         await loadMind()
+        await refreshContext()
+        await sendQueuedIfOnline()
     }
 }
 
@@ -401,6 +593,12 @@ public struct ChatView: View {
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
+    @State private var showContextSheet = false
+    /// Alto medido del sheet de contexto (abraza su contenido con cualquier Dynamic Type).
+    @State private var contextSheetHeight = ContextSheet.initialHeight
+    /// ¿El dueño está al fondo del chat? (si subió a leer, no se le mueve).
+    @State private var followsBottom = true
+    static let followSlack: CGFloat = 80
     @State private var showPhotoMenu = false
     @State private var photoSource: PhotoSource?
     /// Visor fullscreen de una foto (thumb del composer o de una burbuja).
@@ -421,16 +619,28 @@ public struct ChatView: View {
                 if let error = model.errorText {
                     errorBanner(error)
                 }
+                if model.pendingApprovals > 0 {
+                    approvalsBanner(model.pendingApprovals)
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
+                        let headers = model.dayHeaders()
                         LazyVStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
                             ForEach(model.messages) { message in
-                                bubble(message).id(message.id)
+                                VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                                    if let header = headers[message.id] {
+                                        DaySeparator(text: header)
+                                    }
+                                    bubble(message)
+                                }
+                                .id(message.id)
                             }
                         }
                         .padding(Theme.Space.screenInset)
                     }
-                    .defaultScrollAnchor(.bottom)
+                    // Solo el offset INICIAL al fondo: anclar siempre al fondo peleaba
+                    // con el scrollTo por delta y el chat "bailaba" (5b #7).
+                    .followingBottom($followsBottom, slack: Self.followSlack)
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
@@ -439,14 +649,25 @@ public struct ChatView: View {
                         model.cancelVoice()   // tap fuera de la listening bar: descarta
                     })
                     .accessibilityIdentifier("chat.messages")
+                    // Auto-scroll solo si el dueño ya estaba al fondo, solo cuando
+                    // cambia el ÚLTIMO mensaje y sin animación (nada de loops).
                     .onChange(of: model.messages.last?.text) { _, _ in
-                        if let last = model.messages.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
+                        guard followsBottom, let last = model.messages.last else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                    // Un mensaje nuevo del dueño siempre baja (es su acción).
+                    .onChange(of: model.messages.count) { old, new in
+                        guard new > old, let last = model.messages.last,
+                              followsBottom || model.messages.dropLast().last?.role == .user else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                     .onChange(of: model.focusedMessageId) { _, id in
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
+                }
+                if model.isOffline {
+                    OfflinePill(localAvailable: model.localModelAvailable)
+                        .padding(.top, Theme.Space.unit * 1.5)
                 }
                 if model.isListening {
                     ListeningBar(transcript: model.liveTranscript,
@@ -460,6 +681,15 @@ public struct ChatView: View {
         .task {
             await model.loadMind()
             await model.loadProactiveIntentions()
+            await model.refreshContext()
+        }
+        .sheet(isPresented: $showContextSheet) {
+            ContextSheet(model: model)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contextSheetHeight = $0 }
+                .presentationDetents([.height(contextSheetHeight)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.Colors.surface)
         }
         .sheet(isPresented: $showMindSheet) {
             MindSheet(mind: model.mind, glasses: model.glasses)
@@ -496,41 +726,39 @@ public struct ChatView: View {
         #endif
     }
 
-    // MARK: Header (mark + nombre del self centrados; body line y badge a los lados)
+    // MARK: Header — nombre del self + body line a la izquierda, la marca
+    // respirando al centro, badge de plasticidad a la derecha.
+
+    static let headerMarkSize: CGFloat = 30
 
     private var header: some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .top) {
-                HStack(alignment: .top) {
-                    BodyLine(glasses: model.glasses)
-                        .padding(.top, 4)
-                    Spacer()
-                    Button {
-                        showMindSheet = true
-                        Task { await model.loadMind() }
-                    } label: {
-                        PlasticityBadge(mind: model.mind)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat.plasticityBadge")
-                }
-                VStack(spacing: 2) {
-                    BreathMark(size: 22, p: model.mind.p, phase: .breathing)
-                        .accessibilityHidden(true)
+        VStack(spacing: Theme.Space.unit * 2) {
+            HStack(alignment: .center, spacing: 0) {
+                VStack(alignment: .leading, spacing: Theme.Space.unit) {
                     Text(model.selfName)
                         .font(Theme.Type_.screenTitle)
                         .foregroundStyle(Theme.Colors.text)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                        .frame(maxWidth: 180)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("chat.selfName")
+                    BodyLine(glasses: model.glasses)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("chat.selfName")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                BreathMark(size: Self.headerMarkSize, p: model.mind.p, phase: .breathing)
+                    .frame(width: Self.headerMarkSize + Theme.Space.stack * 2)
+                    .accessibilityHidden(true)
+                Button {
+                    showMindSheet = true
+                    Task { await model.loadMind() }
+                } label: {
+                    PlasticityBadge(mind: model.mind)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityIdentifier("chat.plasticityBadge")
             }
-            LinearGradient(colors: [Theme.Colors.border.opacity(0), Theme.Colors.border, Theme.Colors.border.opacity(0)],
-                           startPoint: .leading, endPoint: .trailing)
-                .frame(height: Theme.Stroke.hairline)
+            ContextMeter(gauge: model.contextGauge) { showContextSheet = true }
         }
         .padding(.horizontal, Theme.Space.screenInset)
         .padding(.top, Theme.Space.stack)
@@ -585,8 +813,10 @@ public struct ChatView: View {
                     Text(message.text)
                         .font(Theme.Type_.body)
                         .foregroundStyle(Theme.Colors.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("chat.userMessage")
                 }
+                MessageTime(text: model.timeLabel(message))
             }
                 .padding(Theme.Space.cardPad)
                 .background(
@@ -615,7 +845,7 @@ public struct ChatView: View {
                 if !message.thinking.isEmpty || (message.isStreaming && message.text.isEmpty) {
                     thoughtLine(message)
                 }
-                if !message.text.isEmpty || message.isStreaming {
+                if !message.text.isEmpty {
                     if message.isRefusal {
                         refusalCard(message)
                     } else if message.isError {
@@ -623,6 +853,9 @@ public struct ChatView: View {
                     } else {
                         streamedText(message)
                     }
+                }
+                if !message.isStreaming, !message.text.isEmpty {
+                    MessageTime(text: model.timeLabel(message))
                 }
             }
         }
@@ -641,8 +874,9 @@ public struct ChatView: View {
         .accessibilityValue(message.isStreaming ? "streaming" : "done")
     }
 
-    /// Thought line: chevron que rota + "Pensando…" pulsante mientras razona,
-    /// luego "Pensó · primera frase"; tap expande el bloque con regla izquierda.
+    /// Thought line: la marca respirando + "Pensando…" mientras razona (sin
+    /// caret: el caret solo existe con texto fluyendo), luego chevron + "Pensó ·
+    /// primera frase"; tap expande el bloque con regla izquierda.
     @ViewBuilder
     private func thoughtLine(_ message: ChatViewModel.DisplayMessage) -> some View {
         let expanded = expandedThoughts.contains(message.id)
@@ -653,14 +887,14 @@ public struct ChatView: View {
                 else { expandedThoughts.insert(message.id) }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .light))
-                        .foregroundStyle(Theme.Colors.textFaint)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .animation(.easeOut(duration: 0.2), value: expanded)
                     if thinkingNow {
-                        ThinkingPulseLabel()
+                        ThinkingIndicator(p: model.mind.p)
                     } else {
+                        Image(systemName: "chevron.right")
+                            .font(Theme.Type_.label.weight(.light))
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(.easeOut(duration: 0.2), value: expanded)
                         Text("Pensó · \(firstSentence(of: message.thinking))")
                             .font(Theme.Type_.secondary)
                             .foregroundStyle(Theme.Colors.textMuted)
@@ -797,40 +1031,112 @@ public struct ChatView: View {
                 .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
     }
 
-    static func proactiveLabel(_ message: ChatViewModel.DisplayMessage) -> String {
-        if message.reminderId != nil { return "RECORDATORIO DE ANIMA" }
-        if message.goalId != nil { return "CHECK-IN" }
-        return "PROPUESTA DE ANIMA"
-    }
-
-    /// Propuesta proactiva del deseo (§5.8): card con borde+glow accent.
+    /// Lo que ella dice sin que se lo pidan (recordatorio, check-in, propuesta):
+    /// ícono accent a la izquierda, etiqueta pequeña, su voz y —si el aviso ya
+    /// pasó— el seguimiento. Surface + hairline accent.
+    @ViewBuilder
     private func proactiveCard(_ message: ChatViewModel.DisplayMessage) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(Self.proactiveLabel(message))
-                .font(Theme.Type_.label)
-                .kerning(0.66)
-                .foregroundStyle(Theme.Colors.accentText)
-            Text(message.text)
+        let kind = message.proactiveKind
+        HStack(alignment: .top, spacing: Theme.Space.stack) {
+            Image(systemName: kind.map(ProactiveCard.symbol) ?? "sparkles")
                 .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .fixedSize(horizontal: false, vertical: true)
-            if message.intentionId != nil, !message.resolved {
-                HStack(spacing: Theme.Space.stack) {
-                    Button("Descartar") { Task { await model.dismiss(message) } }
+                .foregroundStyle(Theme.Colors.accent)
+                .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 4)
+                .frame(width: 22, height: 22)
+                .padding(.top, Theme.Space.unit / 4)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Theme.Space.unit) {
+                Text(model.cardLabel(message))
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("chat.proactive.label")
+                Text(message.text)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let followUp = model.cardFollowUp(message) {
+                    Text(followUp)
+                        .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.textMuted)
-                    Spacer()
-                    Button("Aceptar") { Task { await model.accept(message) } }
-                        .foregroundStyle(Theme.Colors.accentText)
+                        .accessibilityIdentifier("chat.proactive.followUp")
                 }
-                .font(Theme.Type_.secondary)
+                if message.intentionId != nil {
+                    if let outcome = message.outcome {
+                        Label(outcome == .accepted ? "Aceptada" : "Descartada",
+                              systemImage: outcome == .accepted ? "checkmark" : "xmark")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .accessibilityIdentifier("chat.proactive.outcome")
+                    } else if !message.resolved {
+                        HStack(spacing: Theme.Space.unit * 2) {
+                            Button { Task { await model.accept(message) } } label: {
+                                Text("Hagámoslo")
+                                    .foregroundStyle(Theme.Colors.accentText)
+                                    .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+                                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                        .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.isStreaming)
+                            .accessibilityIdentifier("chat.proactive.accept")
+                            Button { Task { await model.dismiss(message) } } label: {
+                                Text("Ahora no")
+                                    .foregroundStyle(Theme.Colors.textMuted)
+                                    .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+                                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                        .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("chat.proactive.dismiss")
+                        }
+                        .font(Theme.Type_.secondary)
+                        .padding(.top, Theme.Space.unit * 1.5)
+                    }
+                }
             }
         }
         .padding(Theme.Space.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card)
+                .fill(Theme.Colors.surface))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
-        .shadow(color: Theme.Colors.accent.opacity(0.35), radius: 10)
+        .opacity(message.outcome == .dismissed ? 0.55 : 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.proactive.\(kind?.slug ?? "intention")")
+    }
+
+    /// Aviso discreto: hay cambios esperando su aprobación (→ Ajustes → Mente).
+    private func approvalsBanner(_ count: Int) -> some View {
+        Button { model.onOpenApprovals?() } label: {
+            HStack(spacing: Theme.Space.unit * 2) {
+                Image(systemName: "checkmark.seal")
+                    .font(Theme.Type_.secondary.weight(.light))
+                    .foregroundStyle(Theme.Colors.accent)
+                Text(ApprovalsInboxViewModel.bannerText(count))
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(Theme.Type_.label.weight(.light))
+                    .foregroundStyle(Theme.Colors.textFaint)
+            }
+            .padding(.horizontal, Theme.Space.cardPad)
+            .frame(minHeight: Theme.minHitTarget)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .strokeBorder(Theme.Colors.accent.opacity(0.5), lineWidth: Theme.Stroke.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, Theme.Space.screenInset)
+        .padding(.top, Theme.Space.unit * 2)
+        .accessibilityIdentifier("chat.approvalsBanner")
     }
 
     private func errorBanner(_ text: String) -> some View {
@@ -861,32 +1167,46 @@ public struct ChatView: View {
         }
     }
 
-    /// Adjunto PENDIENTE dentro del contenedor del composer (FIX G): misma card
-    /// que el campo, encima del input, con etiqueta "Adjunta · lista para enviar"
-    /// y la X. Jamás flota en el historial (parecía mensaje ya enviado).
+    /// Adjunto PENDIENTE dentro del contenedor del composer, encima del campo
+    /// (como Mensajes): thumb con anillo accent, X arriba a la derecha y un check
+    /// abajo que dice "listo para enviar" sin texto. Jamás flota en el historial.
     @ViewBuilder
     private var pendingAttachment: some View {
         if let image = model.pendingImage {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top, spacing: Theme.Space.stack) {
+                ZStack(alignment: .topTrailing) {
                     Button { viewerImage = ViewerImage(data: image.thumb) } label: {
-                        PhotoThumb(data: image.thumb, width: 72, height: 52)
+                        PhotoThumb(data: image.thumb, width: 72, height: 72, ring: Theme.Colors.accent,
+                                   ringWidth: Theme.Stroke.icon)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Ver foto adjunta")
                     .accessibilityIdentifier("chat.attachment.thumb")
-                    HStack(spacing: 4) {
-                        Image(systemName: "paperclip")
-                            .font(.system(size: 11, weight: .light))
-                        Text("Adjunta · lista para enviar")
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(Theme.Type_.body)
+                            .foregroundStyle(Theme.Colors.accent)
+                            .background(Circle().fill(Theme.Colors.surface).padding(1))
+                            .offset(x: 5, y: 5)
+                            .accessibilityHidden(true)
                     }
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(Theme.Colors.textMuted)
-                    .padding(.top, 4)
-                    Spacer(minLength: 0)
-                    NavCloseButton("attachment") { model.removePhoto() }
-                        .frame(width: 32, height: 32)
+                    Button { model.removePhoto() } label: {
+                        Image(systemName: "xmark")
+                            .font(Theme.Type_.tab.weight(.semibold))
+                            .foregroundStyle(Theme.Colors.bg)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Theme.Colors.textMuted))
+                            .overlay(Circle().strokeBorder(Theme.Colors.surface, lineWidth: Theme.Stroke.icon))
+                            .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 18, y: -18)
+                    .accessibilityLabel("Quitar foto")
+                    .accessibilityIdentifier("nav.close.attachment")
                 }
+                .padding(.top, Theme.Space.unit)
+                .padding(.trailing, Theme.Space.unit * 2)
                 if let notice = model.pendingImageNotice {
                     Text(notice)
                         .font(Theme.Type_.meta)
@@ -897,10 +1217,9 @@ public struct ChatView: View {
             }
             .padding(.horizontal, Theme.Space.cardPad)
             .padding(.top, 10)
+            .transition(.scale(scale: 0.85, anchor: .bottomLeading).combined(with: .opacity))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat.attachment.pending")
-            Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
-                .padding(.horizontal, Theme.Space.cardPad)
         }
     }
 
@@ -977,6 +1296,68 @@ public struct ChatView: View {
     }
 }
 
+extension View {
+    /// Ancla inicial al fondo + si el usuario sigue al fondo.
+    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat) -> some View {
+        defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
+            } action: { _, value in
+                atBottom.wrappedValue = value
+            }
+    }
+}
+
+/// "Sin conexión" centrado sobre el composer (5b #7).
+struct OfflinePill: View {
+    let localAvailable: Bool
+
+    var body: some View {
+        HStack(spacing: Theme.Space.unit * 1.5) {
+            Image(systemName: "wifi.slash")
+                .font(Theme.Type_.label.weight(.light))
+            Text(localAvailable ? "Sin conexión · modelo local disponible" : "Sin conexión")
+        }
+        .font(Theme.Type_.meta)
+        .foregroundStyle(Theme.Colors.textMuted)
+        .padding(.horizontal, Theme.Space.stack)
+        .padding(.vertical, Theme.Space.unit * 1.5)
+        .background(Capsule().fill(Theme.Colors.surface))
+        .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.offline")
+    }
+}
+
+/// Separador de día centrado (como WhatsApp): "Hoy", "Ayer", "lunes 5 de octubre".
+struct DaySeparator: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Type_.meta)
+            .foregroundStyle(Theme.Colors.textMuted)
+            .padding(.horizontal, Theme.Space.unit * 2.5)
+            .padding(.vertical, Theme.Space.unit)
+            .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("chat.dayHeader")
+    }
+}
+
+/// Hora pequeña y muted al pie de un mensaje.
+struct MessageTime: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Type_.tabular(Theme.Type_.label))
+            .foregroundStyle(Theme.Colors.textFaint)
+            .accessibilityIdentifier("chat.messageTime")
+    }
+}
+
 /// Foto a mostrar en el visor (thumb del composer o de una burbuja).
 struct ViewerImage: Identifiable {
     let id = UUID()
@@ -1042,20 +1423,24 @@ struct MindGlassesAction: View {
     }
 }
 
-// MARK: - "Pensando…" con pulso
+// MARK: - "Pensando…" con la marca
 
-struct ThinkingPulseLabel: View {
-    @State private var dim = false
+/// Indicador de carga de la marca: BreathMark pequeño respirando + "Pensando…"
+/// muted. Nada de ProgressView genérico ni caret.
+struct ThinkingIndicator: View {
+    static let markSize: CGFloat = 17
+    var p: Double = 1
 
     var body: some View {
-        Text("Pensando…")
-            .font(Theme.Type_.secondary)
-            .foregroundStyle(Theme.Colors.textMuted)
-            .opacity(dim ? 0.35 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: Theme.Motion.thinkingPulse)
-                    .repeatForever(autoreverses: true)) { dim = true }
-            }
+        HStack(spacing: Theme.Space.unit * 1.5) {
+            BreathMark(size: Self.markSize, p: p, phase: .breathing)
+                .accessibilityHidden(true)
+            Text("Pensando…")
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.thinking")
     }
 }
 
@@ -1110,8 +1495,11 @@ public struct MindSheet: View {
                 Text(mind.regimeSentence)
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.textMuted)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, Theme.Space.screenInset)
+                    .accessibilityIdentifier("mind.regimeSentence")
                 Text("p(n) = 0.05 + 0.95·e^(−n/30)")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Theme.Colors.textFaint)
@@ -1158,43 +1546,6 @@ public struct MindSheet: View {
     }
 }
 
-/// El texto del asistente con markdown: prosa inline + bloques de código en
-/// vista monoespaciada sobre surface (accent jamás de relleno). Re-parsea el
-/// mensaje completo en cada delta (ChatMarkdown): sin parpadeos por fragmento.
-struct MarkdownMessage: View {
-    let text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(ChatMarkdown.segments(text).enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case .text(let attributed):
-                    Text(attributed)
-                        .font(Theme.Type_.body)
-                        .foregroundStyle(Theme.Colors.text)
-                        .tint(Theme.Colors.accentText)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .code(let code, _):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(code)
-                            .font(.system(size: 13, design: .monospaced))
-                            .foregroundStyle(Theme.Colors.text)
-                            .textSelection(.enabled)
-                            .padding(Theme.Space.cardPad)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card)
-                            .fill(Theme.Colors.surface))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card)
-                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                }
-            }
-        }
-    }
-}
-
 /// Listening bar (components.md): borde accent, 5 barras de onda escalonadas,
 /// "Escuchando…" + transcript en vivo, acción de texto "Listo" y X para descartar.
 struct ListeningBar: View {
@@ -1220,10 +1571,13 @@ struct ListeningBar: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Inset del texto = el del glyph de la X (unit + ~cardPad): simétrico.
             Button("Listo", action: onDone)
                 .font(Theme.Type_.secondary)
                 .foregroundStyle(Theme.Colors.accentText)
+                .padding(.trailing, Theme.Space.cardPad)
                 .frame(minHeight: Theme.minHitTarget)
+                .contentShape(Rectangle())
                 .accessibilityIdentifier("chat.voice.done")
         }
         .padding(.horizontal, Theme.Space.unit)
@@ -1265,6 +1619,8 @@ struct PhotoThumb: View {
     let data: Data
     let width: CGFloat
     let height: CGFloat
+    var ring: Color = Theme.Colors.border
+    var ringWidth: CGFloat = Theme.Stroke.hairline
     @State private var image: CGImage?
     @State private var failed = false
 
@@ -1281,7 +1637,7 @@ struct PhotoThumb: View {
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
-            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            .strokeBorder(ring, lineWidth: ringWidth))
         .task(id: data) {
             image = await ImageLoader.load(data, maxPixel: ImageLoader.thumbMaxPixel)
             failed = image == nil

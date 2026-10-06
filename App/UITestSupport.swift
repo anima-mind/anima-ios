@@ -17,10 +17,65 @@ enum UITestMode {
 
     static let seedGoalFlag = "--uitest-seed-goal"
     static let seededGoalStatement = "Ahorrar 10 millones para invertir"
+    /// Meta INFERIDA pendiente de confirmar: una aprobación en Ajustes → Mente.
+    static let seedInferredGoalFlag = "--uitest-seed-inferred-goal"
+    static let seededInferredStatement = "Dormir 7 horas"
 
-    static let isActive = ProcessInfo.processInfo.arguments.contains(flag)
-    static let seedsGoal = isActive && ProcessInfo.processInfo.arguments.contains(seedGoalFlag)
-    static let shouldReset = isActive && ProcessInfo.processInfo.arguments.contains(resetFlag)
+    /// Recordatorio sembrado a +N s con notificaciones REALES (XCUITest del tap al push).
+    static let seedReminderPrefix = "--uitest-seed-reminder="
+    static let seededReminderText = "Cita médica de prueba"
+    static let seededReminderMessage = "Oye, ya casi es tu cita médica de prueba."
+    /// Persiste el modo UI-test (solo DEBUG + simulador) para que un lanzamiento
+    /// del sistema —tap a la notificación con la app terminada— siga aislado.
+    static let stickyFlag = "--uitest-sticky"
+
+    static let arguments: [String] = resolveArguments()
+    static let isActive = arguments.contains(flag)
+    static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
+    static let seedsInferredGoal = isActive && arguments.contains(seedInferredGoalFlag)
+    /// Una memoria activa de la "noche 1" para el XCUITest de Memoria.
+    static let seedsMemory = isActive && arguments.contains("--uitest-seed-memory")
+    static let seededMemory = "Le gusta correr temprano"
+
+    static func seedMemory(_ brain: Brain) async {
+        guard ((try? await brain.browse()) ?? []).isEmpty else { return }
+        _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
+    }
+
+    /// Sin red forzado (pill "Sin conexión" + turno encolado).
+    static let forcesOffline = isActive && arguments.contains("--uitest-offline")
+    static let shouldReset = isActive && arguments.contains(resetFlag)
+    static let seedReminderSeconds: Int? = isActive
+        ? arguments.lazy.compactMap { arg -> Int? in
+            guard arg.hasPrefix(seedReminderPrefix) else { return nil }
+            return Int(arg.dropFirst(seedReminderPrefix.count))
+        }.first
+        : nil
+    /// UNUserNotificationCenter real (y no el doble denegado) en modo UI-test.
+    static let usesRealNotifications = isActive && arguments.contains(stickyFlag)
+
+    private static var stickyURL: URL {
+        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("uitest-sticky.plist")
+    }
+
+    private static func resolveArguments() -> [String] {
+        let launched = ProcessInfo.processInfo.arguments
+        #if DEBUG && targetEnvironment(simulator)
+        if launched.contains(flag) {
+            if launched.contains(stickyFlag) {
+                let kept = launched.filter { $0 != resetFlag && !$0.hasPrefix(seedReminderPrefix) }
+                (kept as NSArray).write(to: stickyURL, atomically: true)
+            } else {
+                try? FileManager.default.removeItem(at: stickyURL)
+            }
+            return launched
+        }
+        if let stored = NSArray(contentsOf: stickyURL) as? [String] { return stored }
+        #endif
+        return launched
+    }
 
     static let suiteName = "com.joshuamoreno1.anima.uitest"
     static let keychainService = "dev.joshua.anima.provider-token.uitest"
@@ -49,6 +104,17 @@ enum UITestMode {
     static func seedGoal(_ otherModel: OtherModel) async {
         await otherModel.ingestStated(statement: seededGoalStatement,
                                       desiredState: .progressCheckIn(everyDays: 2), evidence: "uitest")
+    }
+
+    static func seedInferredGoal(_ otherModel: OtherModel) async {
+        guard await otherModel.pendingConfirmations().isEmpty else { return }
+        _ = await otherModel.infer(statement: seededInferredStatement,
+                                   desiredState: .progressCheckIn(everyDays: 1), evidence: "uitest")
+    }
+
+    /// Recordatorio de prueba a +`seconds` (el XCUITest de notificación lo toca).
+    static func seedReminder(_ store: AnimaReminderStore, seconds: Int) async {
+        _ = try? await store.create(text: seededReminderText, message: seededReminderMessage, fireAt: Date().addingTimeInterval(TimeInterval(seconds)))
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.
@@ -98,6 +164,8 @@ struct UITestScriptedProvider: Provider {
     enum Plan: Equatable {
         case text(String)
         case calendarTool
+        /// Eferente que toca el mundo: dispara el sheet de confirmación.
+        case calendarCreate
     }
 
     /// Taller de skills (FIX A): borrador fijo + la siguiente pregunta.
@@ -112,6 +180,32 @@ struct UITestScriptedProvider: Provider {
         2. Recuerda que el helecho va cada dos días.
         </skill>
         ¿Algo más o lo cambio?
+        """
+
+    /// Markdown de bloques (encabezados, tabla, listas): el mensaje real del dueño.
+    static let markdownReply = """
+        ## 📅 Plan mensual de ahorro
+
+        Para llegar a **10 millones** en un año:
+
+        | Mes | Aporte | Acumulado |
+        |-----|-------:|----------:|
+        | Octubre | $850.000 | $850.000 |
+        | Noviembre | $850.000 | $1.700.000 |
+        | Diciembre | $1.000.000 | $2.700.000 |
+
+        ### Para aterrizarlo…
+        - Programa una **transferencia automática** el día 1.
+        - Revisa gastos hormiga:
+          - domicilios
+          - suscripciones
+        1. Abre el CDT en noviembre.
+        2. Revisa el avance cada mes.
+
+        > Lo que no se mide no se mejora.
+
+        ---
+        ¿Te lo dejo como recordatorio?
         """
 
     static func plan(for ctx: AssembledContext) -> Plan {
@@ -132,6 +226,8 @@ struct UITestScriptedProvider: Provider {
             if case .text(let t) = block { return t }
             return nil
         }.joined(separator: " ")
+        if text.lowercased().contains("markdown") { return .text(markdownReply) }
+        if text.lowercased().contains("agéndame") { return .calendarCreate }
         return text.lowercased().contains("calendario") ? .calendarTool : .text(fixedReply)
     }
 
@@ -147,7 +243,8 @@ struct UITestScriptedProvider: Provider {
                     // Resumen de razonamiento: la thought line queda en pantalla
                     // (expandible) para ejercitar su tap con el teclado abierto.
                     continuation.yield(.thinkingDelta(Self.thought))
-                    let delay: Duration = reply == Self.skillReply ? .milliseconds(40) : Self.chunkDelay
+                    let delay: Duration = reply == Self.skillReply || reply == Self.markdownReply
+                        ? .milliseconds(40) : Self.chunkDelay
                     for chunk in Self.chunks(reply) {
                         try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }
@@ -156,6 +253,13 @@ struct UITestScriptedProvider: Provider {
                     continuation.yield(.blockStop(index: 0))
                     continuation.yield(.messageDelta(stopReason: .endTurn,
                                                      usage: Usage(inputTokens: 10, outputTokens: 10)))
+                case .calendarCreate:
+                    continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
+                    continuation.yield(.toolUseInputDelta(
+                        #"{"action":"create","title":"Reunión con Pedro","start":"2026-10-08T15:00:00-05:00","end":"2026-10-08T16:00:00-05:00"}"#))
+                    continuation.yield(.blockStop(index: 0))
+                    continuation.yield(.messageDelta(stopReason: .toolUse,
+                                                     usage: Usage(inputTokens: 10, outputTokens: 5)))
                 case .calendarTool:
                     continuation.yield(.toolUseStart(id: "uitest-cal-\(UUID().uuidString)", name: "calendar"))
                     continuation.yield(.toolUseInputDelta(#"{"action":"list","days_ahead":7}"#))

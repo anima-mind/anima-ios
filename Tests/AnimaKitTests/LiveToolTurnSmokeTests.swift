@@ -83,4 +83,39 @@ import Testing
         #expect(r.text.lowercased().contains("mango"))
         #expect(r.stop == .endTurn)
     }
+
+    /// Perfil compacto en el modelo de Apple (opt-in `ANIMA_FM_SMOKE=1`): con el
+    /// registro completo de tools, "recuérdame…" debe terminar en
+    /// `anima_reminders.create` con fire_at mañana a las 9 (hora local).
+    @Test func onDeviceCompactProfileCreatesAReminder() async throws {
+        guard ProcessInfo.processInfo.environment["ANIMA_FM_SMOKE"] == "1" else { return }
+        guard #available(iOS 26.0, macOS 26.0, *), OnDeviceAvailability.current().isAvailable else {
+            print("[fm compact] modelo no disponible: \(OnDeviceAvailability.current().rawValue), skip"); return }
+
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let reminders = AnimaReminderStore(queue: queue)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tools: [any SensorimotorTool] = [
+            CalendarTool(), RemindersTool(), NotesTool(root: root), PhoneContextTool(), CameraTool(), AudioTool(),
+            GlassesShowTool(host: nil), GlassesCameraTool(host: nil),
+            AnimaRemindersTool(store: reminders), GoalsTool(otherModel: OtherModel(queue: queue)),
+        ]
+        let loop = AgentLoop(provider: OnDeviceProvider.system(), store: store, telemetry: Telemetry(queue: queue),
+                             router: try OnDeviceTestConfig.router(), authMode: .apiKey, token: "",
+                             clientTools: tools, serverTools: [], sleep: { _ in })
+        let sid = try store.startSession()
+        let r = await runTurn(loop: loop, sid: sid, text: "recuérdame mañana a las 9 llamar al banco")
+        let created = await reminders.list()
+        print("[fm compact] tools:", r.tools, "stop:", r.stop as Any, "creados:", created.map { ($0.text, $0.fireAt) })
+        print("[fm compact] texto:", r.text)
+        #expect(r.tools.contains("anima_reminders"))
+        let reminder = try #require(created.first)
+        let calendar = Calendar.current
+        let tomorrow = try #require(calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())))
+        #expect(calendar.isDate(reminder.fireAt, inSameDayAs: tomorrow))
+        #expect(calendar.component(.hour, from: reminder.fireAt) == 9)
+        #expect(reminder.text.lowercased().contains("banco"))
+    }
 }

@@ -187,7 +187,7 @@ import GRDB
         expected.hour = 20
         expected.minute = 0
         #expect(daily.first?.trigger == .calendar(expected, repeats: true))
-        #expect(daily.first?.body == "¿Cómo vas con invertir 10M?")
+        #expect(daily.first?.body == "Oye, ¿cómo vas con invertir 10M?")
         #expect(daily.first?.title == "Lumen")
         #expect(daily.first?.categoryId == ProactiveNotificationIDs.checkInCategory)
         #expect(daily.first?.deepLink == AnimaDeepLink.goal(id: "g1").url)
@@ -205,7 +205,14 @@ import GRDB
         #expect(CheckInScheduler.requests(for: goal(CheckInCadence(cadence: .daily), status: .abandoned), title: "A").isEmpty)
         #expect(CheckInScheduler.requests(for: goal(CheckInCadence(cadence: .daily), source: .inferred), title: "A").isEmpty)
         #expect(CheckInScheduler.requests(for: goal(CheckInCadence(cadence: .weekly, weekday: nil)), title: "A").isEmpty)
-        #expect(CheckInScheduler.chatPrompt(for: goal(.off)) == "¿Cómo vas con invertir 10M? Cuéntame y lo anoto.")
+        #expect(CheckInScheduler.chatPrompt(for: goal(.off)) == "Oye, ¿cómo vas con invertir 10M? Cuéntame y lo anoto.")
+    }
+
+    @Test func goalReadsInsideHerSentence() {
+        #expect(CheckInScheduler.inline("Ahorrar 10 millones") == "ahorrar 10 millones")
+        #expect(CheckInScheduler.inline(" CDT al día ") == "CDT al día")
+        #expect(CheckInScheduler.inline("correr") == "correr")
+        #expect(CheckInScheduler.inline("") == "")
     }
 
     @Test func syncIsIdempotentAndCancelsOnAbandonOrAchieve() async throws {
@@ -239,7 +246,8 @@ import GRDB
                                             evidence: "")
         #expect(await w.reconciler.checkInPrompt(goalId: "nope", sessionId: sid) == nil)
         let first = try #require(await w.reconciler.checkInPrompt(goalId: id, sessionId: sid))
-        #expect(first == ProactiveMessage(kind: .checkIn(goalId: id), text: "¿Cómo vas con invertir 10M? Cuéntame y lo anoto."))
+        #expect(first == ProactiveMessage(kind: .checkIn(goalId: id), text: "Oye, ¿cómo vas con invertir 10M? Cuéntame y lo anoto.",
+                                          at: F.start, goalStatement: "invertir 10M"))
         let again = await w.reconciler.checkInPrompt(goalId: id, sessionId: sid)
         #expect(again == first)
         #expect(try w.symbolic.visibleTurns(sessionId: sid).count == 1)   // no se duplica en el transcript

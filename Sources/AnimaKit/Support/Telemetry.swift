@@ -15,6 +15,7 @@ public final class Telemetry: Sendable {
     public func record(sessionId: SessionID, turnClass: TurnClass, model: String,
                         usage: Usage, toolCalls: Int, retries: Int) throws {
         let now = Date().timeIntervalSince1970
+        let model = ModelNames.normalized(model)
         try queue.write { db in
             try db.execute(
                 sql: """
@@ -161,15 +162,16 @@ public final class Telemetry: Sendable {
     /// Costos agregados por (modelo, clase de turno).
     public func summary() throws -> [CostRow] {
         try queue.read { db in
+            // Agrupa también en lectura (filas viejas sin normalizar al escribir).
             let rows = try Row.fetchAll(db, sql: """
-                SELECT model, turn_class,
+                SELECT LOWER(TRIM(model)) AS model, turn_class,
                        COUNT(*) AS turns,
                        SUM(input_tokens) AS input_tokens,
                        SUM(output_tokens) AS output_tokens,
                        SUM(cache_read_tokens) AS cache_read_tokens
                 FROM turn_telemetry
-                GROUP BY model, turn_class
-                ORDER BY model, turn_class
+                GROUP BY LOWER(TRIM(model)), turn_class
+                ORDER BY LOWER(TRIM(model)), turn_class
                 """)
             return rows.map { row in
                 let model: String = row["model"]
@@ -186,6 +188,40 @@ public final class Telemetry: Sendable {
                     costUSD: Pricing.cost(model: model, input: input, output: output, cacheRead: cacheRead))
             }
         }
+    }
+
+    /// UNA fila por modelo (la vista de costos): turnos por clase y costo total.
+    public struct ModelCostRow: Sendable, Equatable, Identifiable {
+        public var model: String
+        public var displayName: String
+        /// "Conversación 12 · Sueño 3", en orden de TurnClass.
+        public var breakdown: String
+        public var turns: Int
+        public var costUSD: Double
+        public var id: String { model }
+    }
+
+    public static func byModel(_ rows: [CostRow]) -> [ModelCostRow] {
+        let order = Dictionary(uniqueKeysWithValues: TurnClass.allCases.enumerated().map { ($1.rawValue, $0) })
+        var grouped: [String: [CostRow]] = [:]
+        for row in rows { grouped[ModelNames.normalized(row.model), default: []].append(row) }
+        return grouped.map { model, rows in
+            let sorted = rows.sorted { (order[$0.turnClass] ?? .max) < (order[$1.turnClass] ?? .max) }
+            var perClass: [(String, Int)] = []
+            for row in sorted {
+                let label = ModelNames.turnClassLabel(row.turnClass)
+                if let index = perClass.firstIndex(where: { $0.0 == label }) {
+                    perClass[index].1 += row.turns
+                } else {
+                    perClass.append((label, row.turns))
+                }
+            }
+            return ModelCostRow(model: model, displayName: ModelNames.friendly(model),
+                                breakdown: perClass.map { "\($0.0) \($0.1)" }.joined(separator: " · "),
+                                turns: rows.reduce(0) { $0 + $1.turns },
+                                costUSD: rows.reduce(0) { $0 + $1.costUSD })
+        }
+        .sorted { $0.costUSD != $1.costUSD ? $0.costUSD > $1.costUSD : $0.model < $1.model }
     }
 
     public func totalCostUSD() throws -> Double {

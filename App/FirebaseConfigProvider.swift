@@ -18,7 +18,10 @@ final class FirebaseConfigProvider: RemoteConfigProviding {
     func snapshot() -> ConfigSnapshot { frozen }
 
     /// Fetch+activate una vez al arrancar y congela el snapshot para la sesión.
-    static func bootstrap() async -> FirebaseConfigProvider {
+    /// Con `fetchTimeout` (proceso nacido por una acción de notificación) el
+    /// fetch tiene ese tope: si no llega, la sesión arranca con los defaults
+    /// bundled / lo último activado y el fetch termina en segundo plano.
+    static func bootstrap(fetchTimeout: TimeInterval? = nil) async -> FirebaseConfigProvider {
         let rc = RemoteConfig.remoteConfig()
         let settings = RemoteConfigSettings()
         #if DEBUG
@@ -26,10 +29,13 @@ final class FirebaseConfigProvider: RemoteConfigProviding {
         #else
         settings.minimumFetchInterval = 12 * 60 * 60
         #endif
+        if let fetchTimeout { settings.fetchTimeout = fetchTimeout }
         rc.configSettings = settings
         rc.setDefaults(fromPlist: "RemoteConfigDefaults")
 
-        _ = try? await rc.fetchAndActivate()
+        _ = await RemoteConfigFetch.run(timeout: fetchTimeout) {
+            _ = try? await RemoteConfig.remoteConfig().fetchAndActivate()
+        }
 
         let snapshot = buildSnapshot { key in rc.configValue(forKey: key).dataValue }
             stringLookup: { key in rc.configValue(forKey: key).stringValue }

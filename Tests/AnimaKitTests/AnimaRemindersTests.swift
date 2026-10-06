@@ -255,6 +255,25 @@ enum ProactiveFixtures {
         #expect(changes.value == 7)
     }
 
+    @Test func createStoresHerMessageAndSnoozeKeepsIt() async throws {
+        let w = try F.world()
+        let t = tool(w)
+        #expect(t.spec.descriptionText.contains("`message` es OBLIGATORIO"))
+        #expect(t.confirmationSummary(for: ["action": "create", "text": "cita", "message": "Oye, ya casi es tu cita",
+                                            "fire_at": "2026-10-06T09:00:00-05:00"])
+                .hasSuffix("Te diré: «Oye, ya casi es tu cita»"))
+        let created = await t.execute(["action": "create", "text": "cita médica", "repeat": "daily",
+                                       "message": "Oye, en media hora tienes la cita médica",
+                                       "fire_at": "2026-10-06T08:00:00-05:00"])
+        #expect(created.content.contains("te diré: «Oye, en media hora tienes la cita médica»"))
+        let r = try #require(await w.reminders.list(.upcoming).first)
+        #expect(r.message == "Oye, en media hora tienes la cita médica")
+        let fork = try await w.reminders.snooze(id: r.id, minutes: 10)
+        #expect(fork.message == r.message)
+        let fallback = await t.execute(["action": "create", "text": "agua", "fire_at": "2026-10-06T10:00:00-05:00"])
+        #expect(fallback.content.contains("te diré: «Te recuerdo: agua»"))
+    }
+
     @Test func listShowsFiredAndGoal() async throws {
         let w = try F.world()
         let goalId = await w.other.ingestStated(statement: "ahorrar", desiredState: .remindersOverdue(atMost: 0),
@@ -276,8 +295,8 @@ enum ProactiveFixtures {
         #expect(await t.execute(["action": "explode"]).content.contains("desconocida"))
         let past = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-05T09:00:00-05:00"])
         #expect(past.isError && past.content.contains("ya pasó"))
-        let noOffset = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-06T09:00:00"])
-        #expect(noOffset.isError && noOffset.content.contains("offset"))
+        let dateOnly = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-06"])
+        #expect(dateOnly.isError && dateOnly.content.contains("ISO 8601"))
         let empty = await t.execute(["action": "create", "text": "", "fire_at": "2026-10-06T09:00:00-05:00"])
         #expect(empty.isError && empty.content.contains("vacío"))
         let missing = await t.execute(["action": "create", "text": "x"])
@@ -286,6 +305,24 @@ enum ProactiveFixtures {
                                          "repeat": "hourly"])
         #expect(badRepeat.isError && badRepeat.content.contains("repeat"))
         #expect(await t.execute(["action": "cancel"]).content.contains("falta 'id'"))
+    }
+
+    /// Mismo parser que calendar/reminders: con offset, sin offset (hora local) y con fracción.
+    @Test func fireAtAcceptsTheSameISOFormsAsTheAgenda() async throws {
+        let w = try F.world()
+        let t = tool(w)
+        let nine = F.date(2026, 10, 6, 9)
+        for raw in ["2026-10-06T09:00:00-05:00", "2026-10-06T09:00:00", "2026-10-06T09:00:00.000-05:00",
+                    "2026-10-06T14:00:00Z", "2026-10-06T09:00"] {
+            #expect(AnimaRemindersTool.parseDate(raw, timeZone: F.tz) == nine, "\(raw)")
+        }
+        let local = await t.execute(["action": "create", "text": "llamar al banco", "message": "Oye, llama al banco",
+                                     "fire_at": "2026-10-06T09:00:00"])
+        #expect(!local.isError, "\(local.content)")
+        #expect(await w.reminders.list().first?.fireAt == nine)
+        #expect(t.confirmationSummary(for: ["action": "create", "text": "x", "fire_at": "2026-10-06T09:00:00"])
+                    .contains("martes 6 de octubre a las 09:00"))
+        #expect(AnimaRemindersTool.parseDate("mañana", timeZone: F.tz) == nil)
     }
 }
 
@@ -302,7 +339,7 @@ enum ProactiveFixtures {
         #expect(ids == ["anima-reminder-\(r.id)"])
         #expect(w.fake.requestCount == 1)
         let request = try #require(w.fake.scheduled["anima-reminder-\(r.id)"])
-        #expect(request.title == "Lumen" && request.body == "llamar al banco")
+        #expect(request.title == "Lumen" && request.body == "Te recuerdo: llamar al banco")
         #expect(request.categoryId == ProactiveNotificationIDs.reminderCategory)
         #expect(request.trigger == .at(F.date(2026, 10, 6, 9)))
         #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://reminder?id=\(r.id)")
@@ -317,6 +354,18 @@ enum ProactiveFixtures {
                                                        categoryId: "", deepLink: nil))
         _ = await w.scheduler.sync()
         #expect(await w.fake.pendingIds() == ["handoff-x"])   // no toca lo ajeno
+    }
+
+    @Test func pushSpeaksInHerVoice() async throws {
+        let w = try F.world(status: .granted)
+        let r = try await w.reminders.create(text: "cita médica", message: " Oye, en media hora tienes la cita médica ",
+                                             fireAt: F.date(2026, 10, 6, 8))
+        _ = await w.scheduler.sync()
+        let request = try #require(w.fake.scheduled["anima-reminder-\(r.id)"])
+        #expect(request.title == "Lumen")
+        #expect(request.body == "Oye, en media hora tienes la cita médica")
+        let blank = try await w.reminders.create(text: "agua", message: "  ", fireAt: F.date(2026, 10, 6, 9))
+        #expect(blank.message == nil && blank.spokenMessage == "Te recuerdo: agua")
     }
 
     @Test func repeatingSchedulesNextOccurrencesAndCapsAtMax() async throws {
@@ -367,14 +416,16 @@ enum ProactiveFixtures {
         w.advance(2 * 3600)
         let messages = await w.reconciler.reconcileDueReminders(sessionId: sid)
         #expect(messages == [
-            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recordé: llamar al banco. ¿Cómo te fue?"),
-            ProactiveMessage(kind: .reminder(id: linked.id),
-                             text: "Te recordé: revisar el CDT (va por tu meta \"invertir 10M este año\"). ¿Cómo te fue?"),
+            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recuerdo: llamar al banco",
+                             at: F.date(2026, 10, 5, 15)),
+            ProactiveMessage(kind: .reminder(id: linked.id), text: "Te recuerdo: revisar el CDT",
+                             at: F.date(2026, 10, 5, 15, 5), goalStatement: "invertir 10M este año"),
         ])
         #expect(await w.reconciler.reconcileDueReminders(sessionId: sid).isEmpty)   // sin duplicar
         let turns = try w.symbolic.visibleTurns(sessionId: sid)
         #expect(turns.map(\.text) == messages.map(\.text))
         #expect(turns.allSatisfy { $0.role == .assistant })
+        #expect(turns.map(\.proactive) == messages.map(\.tag))
         #expect(await w.reminders.reminder(id: plain.id)?.status == .fired)
     }
 

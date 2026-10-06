@@ -26,6 +26,10 @@ final class ChatUITests: AnimaUITestCase {
         XCTAssertFalse(assistantMessage(app, value: "streaming").exists)
         XCTAssertTrue(userBubble.exists)
 
+        // Como WhatsApp: separador "Hoy" y la hora al pie de cada mensaje.
+        waitUntil(element(app, "chat.dayHeader"), "label == 'Hoy'")
+        XCTAssertGreaterThanOrEqual(app.descendants(matching: .any).matching(identifier: "chat.messageTime").count, 2)
+
         // El composer vuelve a estar listo para otro turno.
         XCTAssertTrue(app.textFields["chat.input"].isEnabled)
 
@@ -52,6 +56,10 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(element(app, "mind.sheet"))
         waitFor(element(app, "mind.mark"))
         waitFor(text(app, "0 noches de consolidación"))
+        // Campo batch 5 #4: la frase del régimen completa, sin "…".
+        let sentence = element(app, "mind.regimeSentence")
+        waitUntil(sentence, "label == 'Se está formando: todo lo que viven juntos la moldea directo.'")
+        XCTAssertGreaterThan(sentence.frame.height, 20, "la frase debe caber en varias líneas")
 
         let body = element(app, "mind.row.body")
         let regime = element(app, "mind.row.regime")
@@ -147,5 +155,42 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(image)
         image.swipeDown(velocity: .fast)
         waitUntil(viewer, "exists == false")
+    }
+}
+
+/// Batch 5b #4/#5: el medidor de contexto abre su sheet; "Nueva conversación"
+/// deja el chat limpio con su separador (la memoria no se toca).
+final class ContextUITests: AnimaUITestCase {
+    @MainActor
+    func testContextMeterOpensSheetAndStartsANewConversation() {
+        let app = launch()
+        onboard(app)
+        send(app, "hola")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+
+        let meter = element(app, "chat.contextMeter")
+        waitUntil(meter, "label CONTAINS 'por ciento'")
+        tap(meter, until: element(app, "context.sheet"))
+        waitFor(element(app, "context.percent"))
+        tap(element(app, "context.newConversation"))
+        waitUntil(element(app, "context.sheet"), "exists == false")
+        waitFor(text(app, "— nueva conversación —"))
+        XCTAssertFalse(app.staticTexts.matching(identifier: "chat.userMessage").firstMatch.exists)
+    }
+}
+
+/// Batch 5b #7: sin red, pill "Sin conexión" y el turno a Claude se encola.
+final class OfflineUITests: AnimaUITestCase {
+    @MainActor
+    func testOfflinePillAndQueuedTurn() {
+        let app = makeApp(reset: true)
+        app.launchArguments.append("--uitest-offline")
+        app.launch()
+        onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
+        let pill = element(app, "chat.offline")
+        waitUntil(pill, "label CONTAINS 'Sin conexión'")
+        send(app, "hola")
+        waitFor(text(app, "Sin conexión: te lo envío apenas vuelva la red."))
+        XCTAssertFalse(assistantMessage(app).exists)
     }
 }

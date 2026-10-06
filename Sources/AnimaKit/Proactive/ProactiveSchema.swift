@@ -51,5 +51,15 @@ public enum ProactiveSchema {
 
             try db.execute(sql: "ALTER TABLE intention ADD COLUMN origin TEXT NOT NULL DEFAULT 'foreground'")
         }
+        // Lo que ella le dirá al dueño al llegar la hora (su voz, segunda persona).
+        // NULL en los viejos: se entregan con "Te recuerdo: <text>".
+        m.registerMigration("v13-reminder-message") { db in
+            try db.execute(sql: "ALTER TABLE anima_reminder ADD COLUMN message TEXT NULL")
+        }
+        // Turno proactivo (recordatorio, check-in): {kind, ref, at, goal} para que
+        // el chat lo vuelva a pintar como card al relanzar. NULL en el resto.
+        m.registerMigration("v14-proactive-turn") { db in
+            try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN proactive_json TEXT NULL")
+        }
     }
 }

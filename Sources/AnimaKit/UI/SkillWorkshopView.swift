@@ -304,11 +304,15 @@ struct SkillWorkshopView: View {
         switch message.role {
         case .mind:
             HStack(alignment: .bottom, spacing: 4) {
-                Text(message.text)
-                    .font(Theme.Type_.body)
-                    .foregroundStyle(message.isError ? Theme.Colors.textMuted : Theme.Colors.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                if message.isStreaming { StreamCaret() }
+                if message.isStreaming && message.text.isEmpty {
+                    ThinkingIndicator()
+                } else {
+                    Text(message.text)
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(message.isError ? Theme.Colors.textMuted : Theme.Colors.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if message.isStreaming { StreamCaret() }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)

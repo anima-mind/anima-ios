@@ -1,7 +1,7 @@
 // OtherModel.swift — el modelo del deseo del dueño (§5.8). El Otro = Joshua. Actor
 // sobre la DatabaseQueue compartida. Precedencia dura: stated > inferred >
 // structural. Un goal inferred NUNCA motiva nada hasta que el dueño lo confirma:
-// nace pending_confirmation y aparece en el MISMO inbox de Aprobaciones de Fase 3
+// nace pending_confirmation y aparece en el MISMO inbox de Fase 3 ("Por aprobar")
 // (un tipo de item nuevo, no una cola nueva). Confirmar → active; rechazar →
 // abandoned. Los stated los extrae el Consolidator de las sesiones del ciclo con
 // Haiku ("quiero X"); los inferred salen del reflection (Fase 3).

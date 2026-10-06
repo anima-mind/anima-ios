@@ -308,6 +308,27 @@ struct GlassesVoicePolicyTests {
         #expect(empty.isFinished(at: t0.addingTimeInterval(30)))
     }
 
+    /// Campo batch 5 #1: la nota de voz del teléfono deja respirar.
+    @Test func notaDeVozDelTelefonoEsperaDosSegundosYMedio() {
+        let t0 = Date(timeIntervalSince1970: 0)
+        var d = TurnEndDetector.phoneDictation
+        #expect(d.silence == 2.5 && d.minListen == 1.5 && d.maxDuration == 60)
+        d.start(at: t0)
+        d.partial("hola", at: t0.addingTimeInterval(0.2))
+        #expect(!d.isFinished(at: t0.addingTimeInterval(1.4)))    // escucha mínima
+        #expect(!d.isFinished(at: t0.addingTimeInterval(2.6)))    // 2.4 s de pausa: respira
+        #expect(d.isFinished(at: t0.addingTimeInterval(2.7)))     // 2.5 s tras el último parcial
+        d.partial("hola qué tal", at: t0.addingTimeInterval(2.65))
+        #expect(!d.isFinished(at: t0.addingTimeInterval(5.0)))
+        #expect(d.isFinished(at: t0.addingTimeInterval(5.15)))
+        var quick = TurnEndDetector(silence: 0.1, minListen: 1.5)
+        quick.start(at: t0)
+        quick.partial("sí", at: t0)
+        #expect(!quick.isFinished(at: t0.addingTimeInterval(1.0)))
+        #expect(quick.isFinished(at: t0.addingTimeInterval(1.5)))
+        #expect(TurnEndDetector().silence == 1.2)                 // las gafas no cambian
+    }
+
     @Test func vozSilenciosa() async {
         let silent = SilentVoice()
         #expect(await silent.capture(onRoute: { _ in }) == nil)

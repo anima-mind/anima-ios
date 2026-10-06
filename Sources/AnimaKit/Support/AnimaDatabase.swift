@@ -105,6 +105,8 @@ public enum AnimaDatabase {
 
         // Capa proactiva: recordatorios de Anima, check-ins por meta, origen de Intentions.
         ProactiveSchema.register(&m)
+        // Fronteras de contexto (recorte duro / compactación) por sesión.
+        ContextSchema.register(&m)
 
         return m
     }

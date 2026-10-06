@@ -119,19 +119,28 @@ enum OnDeviceTestConfig {
         #expect(call.input == .object(["action": .string("list"), "days_ahead": .int(2)]))
         #expect(response.content.first == .text("Reviso"))
 
-        // La tool viaja al modelo con su schema traducido (action obligatoria, enum).
+        // La tool viaja al modelo en su forma del perfil local (action obligatoria,
+        // sin enum ni descripciones por campo: los valores van en la descripción).
         let request = try #require(session.requests.value.first)
         let tool = try #require(request.tools.first)
         #expect(tool.name == "calendar")
+        #expect(tool.description.contains("list|search|create|delete"))
         guard case .object(_, _, let properties) = tool.schema else {
             Issue.record("schema raíz no es objeto"); return
         }
         let action = try #require(properties.first { $0.name == "action" })
         #expect(action.isOptional == false)
-        #expect(action.schema == .string(description: "Operación a realizar.",
-                                         choices: ["list", "search", "create", "delete"]))
-        #expect(properties.first { $0.name == "days_ahead" }?.schema == .integer(description: "Ventana para list (default 7)."))
+        #expect(action.schema == .string(description: nil, choices: nil))
+        #expect(properties.first { $0.name == "days_ahead" }?.schema == .integer(description: nil))
         #expect(properties.first { $0.name == "days_ahead" }?.isOptional == true)
+
+        // La traducción del JSON Schema completo (enum + descripciones) sigue intacta.
+        guard case .client(_, _, let fullSchema) = CalendarTool().spec,
+              case .object(_, _, let fullProps) = OnDeviceSchema.from(jsonSchema: fullSchema, name: "calendar") else {
+            Issue.record("schema completo"); return
+        }
+        #expect(fullProps.first { $0.name == "action" }?.schema
+                == .string(description: "Operación a realizar.", choices: ["list", "search", "create", "delete"]))
     }
 
     @Test func serverToolsAreNotExposedLocally() throws {

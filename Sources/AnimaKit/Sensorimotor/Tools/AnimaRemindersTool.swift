@@ -31,12 +31,15 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 "agéndame", "ponlo en el calendario" o algo con lugar, asistentes o duración \
                 usa `calendar`; si pide explícitamente sus recordatorios del iPhone o la app \
                 Recordatorios usa `reminders`. Si es ambiguo y parece una cita, pregunta una \
-                vez. Acciones: list, create {text, fire_at, repeat?, goal_id?}, complete {id}, \
-                cancel {id}, snooze {id, minutes}. fire_at en ISO 8601 CON offset, resuelto \
+                vez. Acciones: list, create {text, message, fire_at, repeat?, goal_id?}, complete {id}, \
+                cancel {id}, snooze {id, minutes}. En create, `message` es OBLIGATORIO: lo que \
+                le dirás al dueño cuando llegue la hora, en tu voz y en segunda persona, una \
+                frase cálida y concreta (p.ej. "Oye, en media hora tienes la cita médica"); \
+                jamás un título impersonal como "Avisar de la cita". fire_at en ISO 8601 (con offset; sin offset = hora local), resuelto \
                 contra la línea "Ahora:" del contexto (p.ej. 2026-10-06T09:00:00-05:00). \
-                goal_id liga el recordatorio a una meta (ver tool goals). Todo menos list \
-                requiere confirmación, que la pide el harness: llama la tool directo, sin \
-                preguntar antes en el chat.
+                goal_id liga el recordatorio a una meta (ver tool goals). Son tuyos y \
+                reversibles desde la tab Recordatorios: llama la tool directo, sin pedir \
+                permiso en el chat, y cuéntale al dueño qué quedó.
                 """,
             inputSchema: .object([
                 "type": .string("object"),
@@ -49,6 +52,10 @@ public struct AnimaRemindersTool: SensorimotorTool {
                     "text": .object([
                         "type": .string("string"),
                         "description": .string("Qué recordar, en palabras del dueño (para create)."),
+                    ]),
+                    "message": .object([
+                        "type": .string("string"),
+                        "description": .string("Obligatorio en create: lo que le dirás al dueño cuando llegue la hora, en tu voz y en segunda persona, 1 frase (p.ej. 'Oye, en media hora tienes la cita médica')."),
                     ]),
                     "fire_at": .object([
                         "type": .string("string"),
@@ -86,10 +93,12 @@ public struct AnimaRemindersTool: SensorimotorTool {
         switch input["action"]?.stringValue {
         case "create":
             let text = input["text"]?.stringValue ?? "(sin texto)"
-            let when = input["fire_at"]?.stringValue.flatMap(Self.parseDate)
+            let when = input["fire_at"]?.stringValue.flatMap { Self.parseDate($0, timeZone: timeZone) }
                 .map { Self.readable($0, timeZone: timeZone) } ?? input["fire_at"]?.stringValue ?? "?"
             let cadence = input["repeat"]?.stringValue.flatMap(ProactiveCadence.init(rawValue:))?.phrase
+            let spoken = input["message"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
             return "Recordarte '\(text)' el \(when)" + (cadence.map { " (\($0))" } ?? "")
+                + (spoken.map { ". Te diré: «\($0)»" } ?? "")
         case "complete":
             return "Marcar como hecho el recordatorio \(id)"
         case "cancel":
@@ -165,8 +174,8 @@ public struct AnimaRemindersTool: SensorimotorTool {
     private func create(_ input: JSONValue) async throws -> ToolResult {
         let text = input["text"]?.stringValue ?? ""
         let raw = try Self.require(input, "fire_at")
-        guard let fireAt = Self.parseDate(raw) else {
-            throw ToolInputError(message: "'fire_at' debe ser ISO 8601 con offset (p.ej. 2026-10-06T09:00:00-05:00).")
+        guard let fireAt = Self.parseDate(raw, timeZone: timeZone) else {
+            throw ToolInputError(message: "'fire_at' debe ser fecha y hora ISO 8601 (p.ej. 2026-10-06T09:00:00-05:00).")
         }
         let cadence: ProactiveCadence
         if let rawCadence = input["repeat"]?.stringValue {
@@ -178,10 +187,11 @@ public struct AnimaRemindersTool: SensorimotorTool {
             cadence = .none
         }
         let goalId = input["goal_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
-        let r = try await store.create(text: text, fireAt: fireAt, repeat: cadence, goalId: goalId)
+        let message = input["message"]?.stringValue
+        let r = try await store.create(text: text, message: message, fireAt: fireAt, repeat: cadence, goalId: goalId)
         await onChange()
         let suffix = cadence.phrase.map { " (\($0))" } ?? ""
-        return ToolResult(content: "Listo: te recuerdo '\(r.text)' el \(Self.readable(r.fireAt, timeZone: timeZone))\(suffix). Id \(r.id).")
+        return ToolResult(content: "Listo: te recuerdo '\(r.text)' el \(Self.readable(r.fireAt, timeZone: timeZone))\(suffix); te diré: «\(r.spokenMessage)». Id \(r.id).")
     }
 
     // MARK: - Helpers
@@ -201,14 +211,12 @@ public struct AnimaRemindersTool: SensorimotorTool {
         return input["minutes"]?.stringValue.flatMap(Int.init)
     }
 
-    /// ISO 8601 con offset explícito (con o sin fracción de segundo). Sin offset ⇒ nil.
-    static func parseDate(_ raw: String) -> Date? {
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        if let d = plain.date(from: raw) { return d }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: raw)
+    /// ISO 8601 con o sin offset y fracción (mismo parser que calendar/reminders):
+    /// sin offset = hora local de `timeZone`.
+    static func parseDate(_ raw: String, timeZone: TimeZone = .current) -> Date? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return AnimaDateText(calendar: calendar).parseISODateTime(raw)
     }
 
     /// "martes 6 de octubre a las 09:00" (es_CO, hora local).

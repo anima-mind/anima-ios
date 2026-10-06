@@ -21,6 +21,10 @@ public enum LoopEvent: Sendable, Equatable {
     case turnFinished(stopReason: StopReason?)
     case stopped(StopConditions.Stop)
     case error(String)
+    /// El contexto no cabía en el modelo activo: recorte duro determinista.
+    case contextTrimmed(model: String)
+    /// Cuánto del contexto del modelo ocupa el turno (medidor del chat).
+    case context(ContextGauge)
 }
 
 public actor AgentLoop {
@@ -180,7 +184,7 @@ public actor AgentLoop {
             let clientSpecs = await sensorimotor.toolSpecs()
             // Solo el perfil de Claude lleva server tools (web_search es de Anthropic):
             // on-device y OpenAI-compat van sin ellas.
-            let allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
+            var allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
 
             // Restructure (§5.6): si un patrón demanding matchea una tool disponible,
             // el turno se rutea a .restructure (Opus effort high) y se inyecta un
@@ -199,6 +203,7 @@ public actor AgentLoop {
                 return .error
             }
             let route = binding.router.route(turnClass)
+            allSpecs = ToolProfile.for(model: route.model).apply(allSpecs)
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -249,6 +254,19 @@ public actor AgentLoop {
             // aparte; los bloques ephemeral (system, activado) no van al transcript.
             let turn = TurnInput(sessionId: sessionId, content: content)
             var messages = try await workingMemory.assemble(turn)
+            let systemBase = AppGuide.systemBase(binding.router.systemPromptBase,
+                                                 contextBudget: workingMemory.profile.contextBudgetTokens)
+            let fit = ContextFit(profile: workingMemory.profile, systemBase: systemBase, tools: allSpecs,
+                                 route: route)
+            // Nunca un turno imposible: si el ensamblado no cabe en el modelo
+            // activo (p.ej. pasar de Claude al de Apple a mitad de conversación),
+            // recorte duro ANTES de llamar y frontera persistida.
+            let turnSeq = (try store.lastSeq(sessionId: sessionId)) + 1
+            if LocalRelief.estimateTokens(messages) > fit.availableTokens {
+                messages = try hardTrim(messages, available: fit.availableTokens, sessionId: sessionId,
+                                        turnSeq: turnSeq, model: fit.modelName, emit: emit)
+            }
+            emit(.context(fit.gauge(messages)))
             try store.append(sessionId: sessionId, message: Message(role: .user, content: content), surface: surface)
             // No se escribe al brain en caliente: se encola para el Consolidator (§5.4 a).
             try? inbox?.enqueue(sessionId: sessionId, text: userText, source: "turn")
@@ -260,6 +278,7 @@ public actor AgentLoop {
             var lastUsage = Usage()
             var loopDetector = LoopDetector(threshold: stopConditions.loopRepeatThreshold)
             var reliefRetried = false
+            var hardTrimmed = false
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -281,7 +300,7 @@ public actor AgentLoop {
                 // Controles de gestión de contexto para este request (escalera por
                 // presión). En on-device siempre vacíos: jamás betas de Anthropic.
                 let controls = await workingMemory.consumeRelief()
-                let opts = binding.callOpts(route: route, relief: controls)
+                let opts = binding.callOpts(route: route, systemPromptBase: systemBase, relief: controls)
 
                 let response: ProviderResponse
                 do {
@@ -304,7 +323,14 @@ public actor AgentLoop {
                         }
                         continue
                     }
-                    emit(.error("Contexto excedido aún tras aliviar la presión."))
+                    if !hardTrimmed {
+                        // El relieve no alcanzó: recorte duro a la mitad del disponible.
+                        hardTrimmed = true
+                        messages = try hardTrim(messages, available: fit.availableTokens / 2, sessionId: sessionId,
+                                                turnSeq: turnSeq, model: fit.modelName, emit: emit)
+                        continue
+                    }
+                    emit(.error(Self.contextExceededMessage))
                     return .error
                 } catch let error as ClassifiedError {
                     // Fatal del provider: lo Real lo registra (§5.6) antes de rendirse.
@@ -502,6 +528,51 @@ public actor AgentLoop {
         content.compactMap { block in
             if case .text(let t) = block { return t } else { return nil }
         }.joined(separator: "\n")
+    }
+
+    public static let contextExceededMessage = "Contexto excedido aún tras recortar la conversación."
+
+    /// Recorte duro + frontera persistida (la ventana de los próximos turnos
+    /// arranca en lo que se conservó) + aviso al chat.
+    private func hardTrim(_ messages: [Message], available: Int, sessionId: SessionID, turnSeq: Int,
+                          model: String, emit: @Sendable (LoopEvent) -> Void) throws -> [Message] {
+        let boundary = try store.currentBoundary(sessionId: sessionId)
+        let result = HardTrim.apply(messages, availableTokens: available)
+        guard result.didTrim else { return messages }
+        let keepsSummary = result.messages.first.map(Self.isSummary) ?? false
+        let keptRows = result.keptHistory - (keepsSummary ? 1 : 0)
+        try store.addBoundary(sessionId: sessionId, kind: .trim, fromSeq: turnSeq - keptRows,
+                              summary: keepsSummary ? boundary?.summary : nil, model: model)
+        emit(.contextTrimmed(model: model))
+        return result.messages
+    }
+
+    static func isSummary(_ message: Message) -> Bool {
+        guard message.role == .user, case .text(let t)? = message.content.first else { return false }
+        return t.hasPrefix(ContextBoundary.summaryHeader)
+    }
+
+    /// "Reintentar" tras un contexto excedido: frontera de recorte que deja solo
+    /// los últimos `keepTurns` turnos visibles en la ventana.
+    public func trimHistory(sessionId: SessionID, keepTurns: Int = 2) throws {
+        let from = try store.trimStart(sessionId: sessionId, keepTurns: keepTurns)
+        let model = selector.binding(for: .interactive).map { ModelNames.friendly($0.router.route(.interactive).model) }
+        try store.addBoundary(sessionId: sessionId, kind: .trim, fromSeq: from, model: model)
+    }
+
+    /// El medidor sin turno en curso (al abrir el chat o al cambiar de modelo).
+    public func contextGauge(sessionId: SessionID) async -> ContextGauge? {
+        guard let binding = selector.binding(for: .interactive) else { return nil }
+        let route = binding.router.route(.interactive)
+        let specs = ToolProfile.for(model: route.model).apply(await sensorimotor.toolSpecs()
+            + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : []))
+        let systemBase = AppGuide.systemBase(binding.router.systemPromptBase,
+                                             contextBudget: workingMemory.profile.contextBudgetTokens)
+        let fit = ContextFit(profile: workingMemory.profile, systemBase: systemBase, tools: specs, route: route)
+        guard let messages = try? await workingMemory.assemble(TurnInput(sessionId: sessionId, content: [])) else {
+            return nil
+        }
+        return fit.gauge(messages.filter { !$0.content.isEmpty })
     }
 
     static func describe(_ error: ClassifiedError) -> String {

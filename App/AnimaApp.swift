@@ -4,6 +4,7 @@
 // (7 tools) → AgentLoop → ChatView. El `ask` in-chat pasa por ConfirmationCenter.
 
 import SwiftUI
+import Combine
 import AnimaKit
 import FirebaseCore
 
@@ -68,7 +69,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
     @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
     @Published private(set) var goalsModel: GoalsViewModel?
+    @Published private(set) var remindersModel: RemindersViewModel?
+    /// Aprobaciones pendientes: badge de la tab Ajustes y aviso sobre el chat.
+    @Published private(set) var pendingApprovals = 0
+    private var approvalsWatch: AnyCancellable?
+    private let connectivity = ConnectivityMonitor()
+    /// Último estado de red (el chat se re-cablea: lo hereda al crearse).
+    private var offline = false
     let confirmation = ConfirmationCenter()
+    /// "Autorizar siempre" (sheet de confirmación), revocable en Ajustes → Skills.
+    private let authorized = AuthorizedActionsStore(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
     /// Identidad (Sign in with Apple vía Firebase Auth). Se crea en bootstrap,
     /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
     private(set) var account: AccountViewModel?
@@ -120,6 +130,15 @@ final class AppModel: ObservableObject {
     init() {
         voiceInvocations = VoiceInvocationOrchestrator(port: Self.makeVoiceInvocationsPort())
         voiceInvocations.start()
+        connectivity.start { [weak self] offline in
+            guard let self else { return }
+            self.offline = offline
+            Task { await self.chatModel?.setOffline(offline) }
+        }
+        let authorized = self.authorized
+        confirmation.onAlwaysAllow = { request in
+            authorized.allow(AllowlistEntry(tool: request.tool, operation: request.operation))
+        }
     }
 
     /// Consolidator vivo del proceso, para que el runner del BGProcessingTask
@@ -137,9 +156,11 @@ final class AppModel: ObservableObject {
     /// cableado ocurre UNA vez. Sin esto, un lanzamiento en background (iOS
     /// despierta la app para el sueño SIN escena) encontraba el holder vacío y
     /// el ciclo nocturno jamás corría por esa vía.
-    func ensureBootstrapped() async {
+    /// `configFetchTimeout`: tope del fetch de Remote Config si este llamado es
+    /// el que arranca el proceso (acción de notificación en background).
+    func ensureBootstrapped(configFetchTimeout: TimeInterval? = nil) async {
         if let bootstrapTask { return await bootstrapTask.value }
-        let task = Task { await self.bootstrap() }
+        let task = Task { await self.bootstrap(configFetchTimeout: configFetchTimeout) }
         bootstrapTask = task
         await task.value
     }
@@ -153,7 +174,7 @@ final class AppModel: ObservableObject {
         UITestMode.isActive ? UITestMode.forcedAvailability : OnDeviceAvailability.current()
     }
 
-    func bootstrap() async {
+    func bootstrap(configFetchTimeout: TimeInterval? = nil) async {
         if UITestMode.isActive {
             account = AccountViewModel(provider: PreviewAccountProvider(state: .signedOut),
                                        profile: AccountProfileStore(defaults: UITestMode.defaults))
@@ -161,7 +182,8 @@ final class AppModel: ObservableObject {
         } else {
             account = AccountViewModel(provider: FirebaseAccountProvider())
             // Config congelada por sesión (fetch+activate una vez).
-            let provider: FirebaseConfigProvider = await FirebaseConfigProvider.bootstrap()
+            let provider: FirebaseConfigProvider = await FirebaseConfigProvider.bootstrap(
+                fetchTimeout: configFetchTimeout)
             configProvider = provider
         }
 
@@ -204,20 +226,47 @@ final class AppModel: ObservableObject {
             let otherModel = OtherModel(queue: queue)
             self.otherModel = otherModel
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
-            self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
+            let approvals = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
+            self.approvalsModel = approvals
+            approvalsWatch = approvals.$pending.combineLatest(approvals.$pendingGoals)
+                .map { $0.count + $1.count }
+                .removeDuplicates()
+                .sink { [weak self] count in
+                    self?.pendingApprovals = count
+                    self?.chatModel?.pendingApprovals = count
+                }
             let reminderStore = AnimaReminderStore(queue: queue)
-            let notifications: any LocalNotificationScheduler = UITestMode.isActive
+            let notifications: any LocalNotificationScheduler = UITestMode.isActive && !UITestMode.usesRealNotifications
                 ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
             self.reminderStore = reminderStore
+            let preference = ProactivePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
                                                          otherModel: otherModel,
-                                                         selfName: { await selfModel.name() })
+                                                         selfName: { await selfModel.name() },
+                                                         preference: preference)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
-            let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore)
+            let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
+                                                                preference: preference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
+            notificationsModel.onEnabledChanged = { await proactive?.sync() }
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
+            let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
+            remindersList.onChange = { [weak notificationsModel] in
+                await proactive?.sync()
+                await notificationsModel?.refresh()
+            }
+            remindersList.onOpenGoal = { [weak self] goalId in
+                self?.selectedTab = .goals
+                self?.goalsModel?.focus(goalId: goalId)
+            }
+            notificationsModel.openList = { [weak self] in self?.selectedTab = .reminders }
+            self.remindersModel = remindersList
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
+            if UITestMode.seedsInferredGoal { await UITestMode.seedInferredGoal(otherModel) }
+            if let seconds = UITestMode.seedReminderSeconds {
+                await UITestMode.seedReminder(reminderStore, seconds: seconds)
+            }
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
             // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
@@ -242,12 +291,17 @@ final class AppModel: ObservableObject {
             skills.exampleMarkdown = Bundle.main.url(forResource: "Skills", withExtension: nil)
                 .flatMap { try? String(contentsOf: $0.appendingPathComponent("nota-diaria.md"), encoding: .utf8) }
             skills.makeVoice = { Self.makePhoneVoice() }
+            skills.permissions = AuthorizedActionsModel(store: authorized)
             settings.skills = skills
             settings.selfModel = selfModel
             settings.glasses = glassesModel
             settings.notifications = notificationsModel
+            settings.approvals = approvals
             self.settingsModel = settings
-            if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
+            if let brain = self.brain {
+                if UITestMode.seedsMemory { await UITestMode.seedMemory(brain) }
+                self.memoryModel = MemoryBrowserViewModel(brain: brain)
+            }
         } catch {
             phase = .misconfigured("No se pudo abrir la base de datos: \(error.localizedDescription)")
             return
@@ -375,6 +429,8 @@ final class AppModel: ObservableObject {
             // web_search deshabilitada: el round-trip de server_tool_use/pause_turn
             // manda wire format inválido (auditoría v1 gap #3); rehabilitar al arreglar.
             serverTools: [],
+            // 5b #1: lo interno y reversible no pide ok; lo autorizado "siempre" tampoco.
+            permissionPolicy: .app(ownerAllowlist: { [authorized] in authorized.entries }),
             // §8: la cámara de las gafas se confirma con pinch EN las gafas; el resto, sheet.
             confirmation: SurfaceConfirmationRouter(phone: confirmation, glasses: { [glassesHost] request in
                 await glassesHost.confirm(request)
@@ -404,6 +460,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()
+                    await self?.approvalsModel?.refresh()
                     await self?.chatModel?.loadMind()
                 }
             }
@@ -443,16 +500,31 @@ final class AppModel: ObservableObject {
                                  selfModel: selfModel)
         // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
         chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
-                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
+                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [],
+                         boundaries: (try? store.boundaries(sessionId: sessionId)) ?? [])
+        // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
+        chat.compactor = ConversationCompactor(selector: selector, store: store, telemetry: telemetry)
+        chat.onNewConversation = { [weak self] in self?.startNewConversation() }
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
+        chat.pendingApprovals = pendingApprovals
+        chat.usesRemoteConversation = mode != .onDeviceOnly
+        chat.localModelAvailable = mode == .onDeviceOnly
+        await chat.setOffline(offline)
+        chat.onOpenApprovals = { [weak self] in self?.openApprovals() }
         // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
         chat.photosAvailable = mode != .onDeviceOnly
         if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
+        // El nombre/plasticidad ANTES de publicarlo: al re-cablear (fin del
+        // onboarding, cambio de modo) la vista conserva su identidad y su `.task`
+        // no vuelve a correr — sin esto el header quedaba con el nombre semilla.
+        await chat.loadMind()
+        await chat.refreshContext()
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
+        await approvalsModel?.refresh()
         await reconcileProactive()
         if let link = pendingLink {
             pendingLink = nil
@@ -471,7 +543,28 @@ final class AppModel: ObservableObject {
 
     func didBecomeActive() {
         guard phase == .ready else { return }
-        Task { await reconcileProactive() }
+        Task {
+            await reconcileProactive()
+            await approvalsModel?.refresh()
+        }
+    }
+
+    /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;
+    /// memoria, metas y recordatorios intactos. El chat arranca limpio.
+    func startNewConversation() {
+        guard let store, let fresh = try? store.beginNewConversation(after: activeSessionId) else { return }
+        activeSessionId = fresh
+        previousSessionId = nil
+        Task {
+            await buildIfPossible()
+            chatModel?.markNewConversation()
+        }
+    }
+
+    /// Aviso del chat → Ajustes → Mente ("Por aprobar").
+    func openApprovals() {
+        selectedTab = .settings
+        settingsModel?.path = [.mind]
     }
 
     /// Sesión activa del proceso: se decide UNA vez al abrir (Recovery.decideLaunch:
@@ -562,7 +655,7 @@ final class AppModel: ObservableObject {
     /// Acción de una notificación (Hecho / En 1 hora / Sí, avancé / Hoy no): corre
     /// sin abrir la app, sobre el harness ya cableado.
     func handleNotificationAction(_ action: ProactiveNotificationAction) async {
-        await ensureBootstrapped()
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
                                              scheduler: proactiveScheduler)
         await handler.handle(action)
@@ -652,7 +745,7 @@ final class AppModel: ObservableObject {
     static func makePhoneVoice() -> (any VoiceCapturePort)? {
         if UITestMode.isActive { return UITestScriptedVoice() }
         #if os(iOS)
-        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()))
+        return GlassesVoiceCapture(audio: PhoneMicAudioSession(SystemAudioSession()), detector: .phoneDictation)
         #else
         return nil
         #endif
@@ -697,6 +790,7 @@ final class AppModel: ObservableObject {
     private func open(_ link: AnimaDeepLink) {
         switch link {
         case .chat(let turn):
+            guard deferUntilReady(link) else { return }
             selectedTab = .chat
             chatModel?.focus(turn: turn)
         case .glasses:
@@ -728,10 +822,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// false (y lo guarda) si el chat aún no está cableado.
+    /// false (y lo guarda) si el chat aún no está cableado: el cableado lo abre
+    /// al terminar. Arranca el cableado si nadie lo hizo (el tap al push puede
+    /// llegar antes que la escena).
     private func deferUntilReady(_ link: AnimaDeepLink) -> Bool {
         guard phase == .ready, chatModel != nil else {
             pendingLink = link
+            Task { await ensureBootstrapped() }
             return false
         }
         return true
@@ -774,9 +871,7 @@ final class AppModel: ObservableObject {
 }
 
 /// Tabs del shell (selección programática para el deep link del handoff).
-enum AppTab: Hashable {
-    case chat, memory, goals, approvals, settings
-}
+typealias AppTab = ShellTab
 
 /// Enrutado del shell (handoff): splash → (landing → onboarding) | chat.
 /// El TabView existente es el destino post-onboarding.
@@ -823,29 +918,29 @@ struct RootView: View {
             if let chat = app.chatModel {
                 ChatView(model: chat)
                     .confirmationOverlay(app.confirmation)
-                    .tabItem { Label("Chat", systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
+                    .tabItem { Label(AppTab.chat.title, systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
                     .tag(AppTab.chat)
             }
             if let memory = app.memoryModel {
                 MemoryBrowserView(model: memory)
-                    .tabItem { Label("Memoria", systemImage: "brain").accessibilityIdentifier("tab.memory") }
+                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
                     .tag(AppTab.memory)
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
-                    .tabItem { Label("Metas", systemImage: "target").accessibilityIdentifier("tab.goals") }
+                    .tabItem { Label(AppTab.goals.title, systemImage: "target").accessibilityIdentifier("tab.goals") }
                     .tag(AppTab.goals)
             }
-            if let approvals = app.approvalsModel {
-                ApprovalsInboxView(model: approvals)
-                    .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
-                    .tag(AppTab.approvals)
-                    .badge(approvals.badgeCount)
+            if let reminders = app.remindersModel {
+                RemindersView(model: reminders)
+                    .tabItem { Label(AppTab.reminders.title, systemImage: "bell").accessibilityIdentifier("tab.reminders") }
+                    .tag(AppTab.reminders)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
-                    .tabItem { Label("Ajustes", systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
+                    .tabItem { Label(AppTab.settings.title, systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
                     .tag(AppTab.settings)
+                    .badge(app.pendingApprovals)
             }
         }
         .tint(Theme.Colors.accent)
@@ -906,6 +1001,8 @@ extension View {
 
 struct ConfirmationOverlay: ViewModifier {
     @ObservedObject var center: ConfirmationCenter
+    /// Alto medido del contenido: el sheet abraza lo que muestra (sin área vacía).
+    @State private var height: CGFloat = 320
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: Binding(
@@ -914,7 +1011,11 @@ struct ConfirmationOverlay: ViewModifier {
         )) {
             if let request = center.pending {
                 ConfirmationSheet(request: request) { center.resolve($0) }
-                    .presentationDetents([.medium])
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                    .presentationDetents([.height(height)])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(Theme.Colors.surface)
             }
         }
     }

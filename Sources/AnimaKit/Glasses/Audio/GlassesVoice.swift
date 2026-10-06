@@ -158,18 +158,32 @@ public final class VoiceCaptureLoop: @unchecked Sendable {
     }
 }
 
-/// Fin de turno por silencio (handoff: pausa ≈ 1.2 s termina el turno).
-/// Puro: se alimenta con los parciales del reconocedor y el reloj.
+/// Fin de turno por silencio (handoff: pausa ≈ 1.2 s termina el turno en las
+/// gafas). Puro: se alimenta con los parciales del reconocedor y el reloj.
 public struct TurnEndDetector: Sendable, Equatable {
+    /// Nota de voz del composer del teléfono (campo batch 5 #1: "se corta muy
+    /// rápido y no puedo ni respirar"): 2.5 s de silencio tras el último parcial.
+    public static let phoneDictationSilence: TimeInterval = 2.5
+    /// Escucha mínima antes de poder cortar por silencio en el teléfono.
+    public static let phoneDictationMinListen: TimeInterval = 1.5
+    public static let phoneDictationMaxDuration: TimeInterval = 60
+
+    /// Composer del teléfono: pausas de respiración sin cortar.
+    public static let phoneDictation = TurnEndDetector(silence: phoneDictationSilence,
+                                                       maxDuration: phoneDictationMaxDuration,
+                                                       minListen: phoneDictationMinListen)
+
     public var silence: TimeInterval
     public var maxDuration: TimeInterval
+    public var minListen: TimeInterval
     public private(set) var transcript = ""
     public private(set) var lastChange: Date?
     public private(set) var startedAt: Date?
 
-    public init(silence: TimeInterval = 1.2, maxDuration: TimeInterval = 30) {
+    public init(silence: TimeInterval = 1.2, maxDuration: TimeInterval = 30, minListen: TimeInterval = 0) {
         self.silence = silence
         self.maxDuration = maxDuration
+        self.minListen = minListen
     }
 
     public mutating func start(at date: Date) { startedAt = date }
@@ -185,6 +199,7 @@ public struct TurnEndDetector: Sendable, Equatable {
     /// ¿Terminó el turno? (silencio tras haber oído algo, o duración máxima).
     public func isFinished(at date: Date) -> Bool {
         if let startedAt, date.timeIntervalSince(startedAt) >= maxDuration { return true }
+        if let startedAt, date.timeIntervalSince(startedAt) < minListen { return false }
         guard !transcript.isEmpty, let lastChange else { return false }
         return date.timeIntervalSince(lastChange) >= silence
     }

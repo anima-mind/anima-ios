@@ -10,25 +10,51 @@ import SwiftUI
 public final class NotificationsSettingsModel: ObservableObject {
     @Published public private(set) var status: NotificationAuthorization = .notDetermined
     @Published public private(set) var scheduledCount = 0
+    /// "Avisos de Anima": la preferencia de la app (aparte del permiso del iPhone).
+    @Published public private(set) var enabled = true
     private let scheduler: any LocalNotificationScheduler
     private let reminders: AnimaReminderStore?
+    private let preference: ProactivePreference?
     /// El shell abre los ajustes de notificaciones de iOS (UIApplication).
     public var openSystemSettings: (() -> Void)?
+    /// "N programados" → la tab Recordatorios (la cablea el shell).
+    public var openList: (() -> Void)?
+    /// Re-sincroniza lo programado al prender/apagar los avisos.
+    public var onEnabledChanged: (@Sendable () async -> Void)?
 
-    public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?) {
+    public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?,
+                preference: ProactivePreference? = nil) {
         self.scheduler = scheduler
         self.reminders = reminders
+        self.preference = preference
+        enabled = preference?.isEnabled ?? true
     }
 
     public func refresh() async {
         status = await scheduler.authorizationStatus()
         scheduledCount = await reminders?.scheduledCount() ?? 0
+        enabled = preference?.isEnabled ?? true
     }
 
     public func requestPermission() async {
         _ = await scheduler.requestAuthorization()
         await refresh()
+        await onEnabledChanged?()
     }
+
+    /// OFF: cancela lo programado y no programa nada nuevo (el store queda
+    /// intacto). ON: re-sincroniza.
+    public func setEnabled(_ on: Bool) async {
+        preference?.isEnabled = on
+        enabled = on
+        await onEnabledChanged?()
+        await refresh()
+    }
+
+    /// El toggle se ve ON solo si de verdad avisa: preferencia ON y permiso del
+    /// iPhone concedido (sin decidir o denegado = OFF y deshabilitado).
+    public var toggleIsOn: Bool { enabled && status == .granted }
+    public var toggleIsEnabled: Bool { status == .granted }
 
     public static func statusLabel(_ status: NotificationAuthorization) -> String {
         switch status {
@@ -38,11 +64,21 @@ public final class NotificationsSettingsModel: ObservableObject {
         }
     }
 
-    /// Resumen de la fila "Notificaciones" del hub: "Permitidas · N programadas" | "Denegadas".
-    public var hubSummary: String { Self.hubSummary(status: status, scheduled: scheduledCount) }
+    /// Segunda línea de la fila: el permiso del sistema y qué pasa con los avisos.
+    public static func detail(status: NotificationAuthorization, enabled: Bool) -> String {
+        switch status {
+        case .denied: return "Permiso del iPhone: denegado. Actívalo en Ajustes del iPhone."
+        case .notDetermined: return "Aún no le has dado permiso a Anima para avisarte."
+        case .granted: return enabled ? "Permiso del iPhone: permitido." : "Apagados: Anima no te avisará."
+        }
+    }
 
-    public static func hubSummary(status: NotificationAuthorization, scheduled: Int) -> String {
-        status == .granted ? "Permitidas · \(scheduled) programadas" : statusLabel(status)
+    /// Resumen de la fila "Notificaciones" del hub: "Permitidas · N programadas" | "Denegadas".
+    public var hubSummary: String { Self.hubSummary(status: status, scheduled: scheduledCount, enabled: enabled) }
+
+    public static func hubSummary(status: NotificationAuthorization, scheduled: Int, enabled: Bool = true) -> String {
+        guard status == .granted else { return statusLabel(status) }
+        return enabled ? "Permitidas · \(scheduled) programadas" : "Avisos apagados"
     }
 
     public static func countLabel(_ count: Int) -> String {
@@ -64,37 +100,68 @@ public struct NotificationsSettingsSection: View {
                 .textCase(.uppercase)
                 .kerning(0.66)
                 .foregroundStyle(Theme.Colors.textMuted)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Avisos de Anima")
-                        .font(Theme.Type_.body)
-                        .foregroundStyle(Theme.Colors.text)
-                    Spacer()
-                    Text(NotificationsSettingsModel.statusLabel(model.status))
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(model.status == .denied ? Theme.Colors.accentText : Theme.Colors.textMuted)
-                        .accessibilityIdentifier("settings.notifications.status")
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .center, spacing: Theme.Space.stack) {
+                    VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
+                        Text("Avisos de Anima")
+                            .font(Theme.Type_.body)
+                            .foregroundStyle(Theme.Colors.text)
+                        Text(NotificationsSettingsModel.detail(status: model.status, enabled: model.enabled))
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(model.status == .denied ? Theme.Colors.accentText : Theme.Colors.textFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("settings.notifications.status")
+                    }
+                    Spacer(minLength: 0)
+                    Toggle("Avisos de Anima", isOn: Binding(
+                        get: { model.toggleIsOn },
+                        set: { on in Task { await model.setEnabled(on) } }))
+                        .labelsHidden()
+                        .tint(Theme.Colors.accent)
+                        .disabled(!model.toggleIsEnabled)
+                        .accessibilityIdentifier("settings.notifications.toggle")
                 }
-                Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(Theme.Colors.textFaint)
-                    .accessibilityIdentifier("settings.notifications.count")
+                .padding(.vertical, Theme.Space.unit * 2.5)
                 switch model.status {
                 case .denied:
-                    Button("Abrir Ajustes de iOS") { model.openSystemSettings?() }
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.accentText)
-                        .accessibilityIdentifier("settings.notifications.open")
+                    divider
+                    actionButton("Abrir ajustes del iPhone", glyph: "arrow.up.forward.app",
+                                 id: "settings.notifications.open") { model.openSystemSettings?() }
                 case .notDetermined:
-                    Button("Permitir avisos") { Task { await model.requestPermission() } }
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.accentText)
-                        .accessibilityIdentifier("settings.notifications.request")
+                    divider
+                    actionButton("Permitir avisos", glyph: "bell.badge", id: "settings.notifications.request") {
+                        Task { await model.requestPermission() }
+                    }
                 case .granted:
                     EmptyView()
                 }
+                divider
+                if let openList = model.openList {
+                    Button(action: openList) {
+                        HStack(spacing: Theme.Space.unit) {
+                            Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
+                                .accessibilityIdentifier("settings.notifications.count")
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(Theme.Type_.meta.weight(.light))
+                                .foregroundStyle(Theme.Colors.textFaint)
+                        }
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .frame(minHeight: Theme.minHitTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.notifications.list")
+                } else {
+                    Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .frame(minHeight: Theme.minHitTarget)
+                        .accessibilityIdentifier("settings.notifications.count")
+                }
             }
-            .padding(Theme.Space.cardPad)
+            .padding(.horizontal, Theme.Space.cardPad)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.Colors.surface)
             .overlay(
@@ -103,6 +170,28 @@ public struct NotificationsSettingsSection: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         }
         .task { await model.refresh() }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
+    }
+
+    private func actionButton(_ title: String, glyph: String, id: String,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer(minLength: 0)
+                Image(systemName: glyph)
+                    .font(Theme.Type_.secondary.weight(.light))
+            }
+            .font(Theme.Type_.secondary)
+            .foregroundStyle(Theme.Colors.accentText)
+            .frame(minHeight: Theme.minHitTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
     }
 }
 #endif

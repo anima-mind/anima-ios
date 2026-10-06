@@ -7,14 +7,16 @@ import Foundation
 
 public struct CalendarTool: SensorimotorTool {
     private let makeStore: @Sendable () -> (any CalendarStore)?
+    private let dates: AnimaDateText
 
-    public init() {
-        self.init(makeStore: CalendarTool.systemStore)
+    public init(dates: AnimaDateText = AnimaDateText()) {
+        self.init(makeStore: CalendarTool.systemStore, dates: dates)
     }
 
     /// Inyección para tests: el store se crea por ejecución (como EKEventStore).
-    init(makeStore: @escaping @Sendable () -> (any CalendarStore)?) {
+    init(makeStore: @escaping @Sendable () -> (any CalendarStore)?, dates: AnimaDateText = AnimaDateText()) {
         self.makeStore = makeStore
+        self.dates = dates
     }
 
     static let systemStore: @Sendable () -> (any CalendarStore)? = {
@@ -89,7 +91,7 @@ public struct CalendarTool: SensorimotorTool {
         switch input["action"]?.stringValue {
         case "create":
             let title = input["title"]?.stringValue ?? "(sin título)"
-            let start = input["start"]?.stringValue ?? "?"
+            let start = input["start"]?.stringValue.map(dates.readableISO) ?? "?"
             return "Crear evento '\(title)' el \(start)"
         case "delete":
             return "Borrar el evento \(input["event_id"]?.stringValue ?? "?")"
@@ -105,7 +107,7 @@ public struct CalendarTool: SensorimotorTool {
         guard let store = makeStore() else {
             return ToolResult(content: "El calendario no está disponible en esta plataforma.", isError: true)
         }
-        return await CalendarActions.run(action: action, input: input, store: store, now: Date())
+        return await CalendarActions.run(action: action, input: input, store: store, now: Date(), dates: dates)
     }
 }
 
@@ -134,7 +136,8 @@ enum CalendarActions {
     static let searchWindowDays = 90
     static let maxListed = 50
 
-    static func run(action: String, input: JSONValue, store: any CalendarStore, now: Date) async -> ToolResult {
+    static func run(action: String, input: JSONValue, store: any CalendarStore, now: Date,
+                    dates: AnimaDateText = AnimaDateText()) async -> ToolResult {
         let granted: Bool
         do {
             granted = try await store.requestAccess()
@@ -152,7 +155,7 @@ enum CalendarActions {
         case "search":
             return list(store: store, now: now, daysAhead: searchWindowDays, query: input["query"]?.stringValue)
         case "create":
-            return create(store: store, input: input)
+            return create(store: store, input: input, dates: dates)
         case "delete":
             return delete(store: store, eventId: input["event_id"]?.stringValue)
         default:
@@ -179,15 +182,15 @@ enum CalendarActions {
         return ToolResult(content: lines.joined(separator: "\n"))
     }
 
-    static func create(store: any CalendarStore, input: JSONValue) -> ToolResult {
+    static func create(store: any CalendarStore, input: JSONValue,
+                       dates: AnimaDateText = AnimaDateText()) -> ToolResult {
         guard let title = input["title"]?.stringValue, !title.isEmpty else {
             return ToolResult(content: "Error: falta 'title'.", isError: true)
         }
-        let df = ISO8601DateFormatter()
-        guard let startStr = input["start"]?.stringValue, let start = df.date(from: startStr) else {
+        guard let startStr = input["start"]?.stringValue, let start = dates.parseISODateTime(startStr) else {
             return ToolResult(content: "Error: 'start' inválido (usa ISO 8601).", isError: true)
         }
-        let end = input["end"]?.stringValue.flatMap { df.date(from: $0) }
+        let end = input["end"]?.stringValue.flatMap(dates.parseISODateTime)
             ?? start.addingTimeInterval(3600)
         do {
             let id = try store.createEvent(title: title, start: start, end: end)

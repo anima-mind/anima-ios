@@ -68,12 +68,21 @@ struct GlassesVoiceHardeningTests {
             try AudioInputFormatGuard.check(sampleRate: 0, channels: 1)
         }
         #expect(throws: VoiceCaptureFailure.self) { try AudioInputFormatGuard.check(sampleRate: 8000, channels: 0) }
-        #expect(throws: VoiceCaptureFailure.microphoneUnavailable(route: nil,
-                                                                 detail: "formato inconsistente 8000 ≠ 48000 Hz")) {
-            try AudioInputFormatGuard.check(sampleRate: 8000, channels: 1, outputSampleRate: 48000)
-        }
         #expect(throws: Never.self) { try AudioInputFormatGuard.check(sampleRate: 8000, channels: 1) }
-        #expect(throws: Never.self) { try AudioInputFormatGuard.check(sampleRate: 48000, channels: 2, outputSampleRate: 48000) }
+    }
+
+    @Test func hfpA8kHzConSalidaA48kHzEsValido() {
+        // El tap va con el formato de salida del nodo: in ≠ out no es un fallo.
+        #expect(throws: Never.self) {
+            try AudioInputFormatGuard.check(input: (8000, 1), tap: (48000, 1))
+        }
+        #expect(throws: Never.self) { try AudioInputFormatGuard.check(input: (48000, 2), tap: (48000, 2)) }
+        #expect(throws: VoiceCaptureFailure.microphoneUnavailable(route: nil, detail: "formato inválido 0 Hz · 1 ch")) {
+            try AudioInputFormatGuard.check(input: (8000, 1), tap: (0, 1))
+        }
+        #expect(throws: VoiceCaptureFailure.microphoneUnavailable(route: nil, detail: "formato inválido 8000 Hz · 0 ch")) {
+            try AudioInputFormatGuard.check(input: (8000, 0), tap: (48000, 1))
+        }
     }
 
     @Test func micDeLasGafasSinFormatoEsErrorVisibleYVuelveAA2DP() async {
@@ -111,7 +120,8 @@ struct GlassesVoiceHardeningTests {
             resolve: { .success(Recognizer(log, error: MockError("-10868"))) }, onRoute: { _ in },
             onFailure: { f in failures.mutate { $0.append(f) } })
         #expect(failures.value == [.engineFailed("-10868")])
-        #expect(failures.value.first?.message == "No pude usar el micrófono (-10868).")
+        #expect(failures.value.first?.message == "No pude arrancar el micrófono. Reintenta.")
+        #expect(failures.value.first?.description == "el audio no arrancó: -10868")
     }
 
     @Test func sinPermisosNoSeTocaElAudioYSeDiceLaCausa() async {
@@ -172,6 +182,12 @@ struct GlassesVoiceHardeningTests {
         #expect(Set(all.map(\.description)).count == all.count)
         #expect(VoiceCaptureFailure.microphoneUnavailable(route: nil, detail: "d").message.contains("gafas"))
         #expect(VoiceCaptureFailure.heading == "No pude usar el micrófono.")
+        for failure in all {
+            #expect(!failure.message.contains("("), "detalle crudo en el HUD: \(failure.message)")
+        }
+        #expect(VoiceCaptureFailure.microphoneUnavailable(route: .glassesHFP, detail: "0 Hz").description
+                == "mic no disponible (ruta glassesHFP): 0 Hz")
+        #expect(VoiceCaptureFailure.speechPermissionDenied.description == "sin permiso de dictado")
     }
 
     @Test func elDefaultDeLaCapturaConFalloDelega() async {

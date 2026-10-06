@@ -27,47 +27,52 @@ public enum VoiceCaptureFailure: Error, Sendable, Equatable, CustomStringConvert
 
     public static let heading = "No pude usar el micrófono."
 
-    /// Una línea para el HUD.
+    /// Una línea fija por causa para el HUD (sin detalle crudo).
     public var message: String {
         switch self {
         case .speechPermissionDenied: return "Sin permiso de dictado. Actívalo en Ajustes del iPhone → Anima."
         case .microphonePermissionDenied: return "Sin permiso de micrófono. Actívalo en Ajustes del iPhone → Anima."
-        case .recognizerUnavailable(let why): return "El dictado no está disponible (\(why))."
+        case .recognizerUnavailable: return "El dictado en español no está disponible en este iPhone."
         case .microphoneUnavailable(let route, _):
             return route == .phoneMic ? "Mic del teléfono no disponible. Reintenta."
                                       : "Mic de las gafas no disponible. Reintenta."
-        case .engineFailed(let why): return "No pude usar el micrófono (\(why))."
+        case .engineFailed: return "No pude arrancar el micrófono. Reintenta."
         }
     }
 
+    /// Para el diagnóstico: la causa con el detalle crudo.
     public var description: String {
         switch self {
-        case .speechPermissionDenied: return "speech permission denied"
-        case .microphonePermissionDenied: return "microphone permission denied"
-        case .recognizerUnavailable(let why): return "recognizer unavailable: \(why)"
-        case .microphoneUnavailable(let route, let detail): return "mic unavailable (\(route?.rawValue ?? "?")): \(detail)"
-        case .engineFailed(let why): return "engine failed: \(why)"
+        case .speechPermissionDenied: return "sin permiso de dictado"
+        case .microphonePermissionDenied: return "sin permiso de micrófono"
+        case .recognizerUnavailable(let why): return "dictado no disponible: \(why)"
+        case .microphoneUnavailable(let route, let detail):
+            return "mic no disponible (ruta \(route?.rawValue ?? "?")): \(detail)"
+        case .engineFailed(let why): return "el audio no arrancó: \(why)"
         }
     }
 }
 
-/// El guard del tap: `installTap` con 0 Hz / 0 canales (o formatos de entrada y
-/// salida distintos) lanza una NSException — crash, no `throws`. Solo se
-/// instala el tap si el formato es usable.
+/// El guard del tap: `installTap` con 0 Hz / 0 canales lanza una NSException
+/// (crash, no `throws`). Que el input HFP (8 kHz) y la salida del nodo (48 kHz)
+/// difieran es normal: el tap se instala con el formato de SALIDA del nodo, así
+/// que solo se exige que ambos formatos sean usables.
 public enum AudioInputFormatGuard {
-    public static func check(sampleRate: Double, channels: UInt32,
-                             outputSampleRate: Double? = nil) throws(VoiceCaptureFailure) {
+    public static func check(sampleRate: Double, channels: UInt32) throws(VoiceCaptureFailure) {
         guard sampleRate > 0, channels > 0 else {
             throw .microphoneUnavailable(route: nil, detail: "formato inválido \(Int(sampleRate)) Hz · \(channels) ch")
         }
-        if let outputSampleRate, outputSampleRate != sampleRate {
-            throw .microphoneUnavailable(route: nil,
-                                         detail: "formato inconsistente \(Int(sampleRate)) ≠ \(Int(outputSampleRate)) Hz")
-        }
+    }
+
+    /// `input` = `inputFormat(forBus: 0)`; `tap` = `outputFormat(forBus: 0)`, el
+    /// formato con el que se instala el tap.
+    public static func check(input: (sampleRate: Double, channels: UInt32),
+                             tap: (sampleRate: Double, channels: UInt32)) throws(VoiceCaptureFailure) {
+        try check(sampleRate: input.sampleRate, channels: input.channels)
+        try check(sampleRate: tap.sampleRate, channels: tap.channels)
     }
 }
 
-/// La sesión de audio del sistema (AVAudioSession), fina y mockeable.
 public protocol AudioSessionPort: Sendable {
     /// ¿Hay un input Bluetooth HFP disponible (las gafas)?
     func hfpInputAvailable() -> Bool

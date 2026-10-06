@@ -166,12 +166,12 @@ final class SpeechRecognition: SpeechRecognitionPort, @unchecked Sendable {
         let output = input.outputFormat(forBus: 0)
         let route = AVAudioSession.sharedInstance().currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
         log("input \(Int(format.sampleRate)) Hz · \(format.channelCount) ch (salida \(Int(output.sampleRate)) Hz) · ruta [\(route)]")
-        try AudioInputFormatGuard.check(sampleRate: format.sampleRate, channels: format.channelCount,
-                                        outputSampleRate: output.sampleRate)
+        try AudioInputFormatGuard.check(input: (format.sampleRate, format.channelCount),
+                                        tap: (output.sampleRate, output.channelCount))
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true   // el audio crudo no sale del teléfono
         request.shouldReportPartialResults = true
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: output) { buffer, _ in
             request.append(buffer)
         }
         let observer = NotificationCenter.default.addObserver(

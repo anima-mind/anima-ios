@@ -60,6 +60,33 @@ public enum HUDPhoto {
     /// Lo que muestra "pensando…" y el espejo en el teléfono.
     public static let question = "Foto desde las gafas"
     public static let failure = "La cámara de las gafas no respondió. Vuelve a intentarlo desde el inicio."
+    public static let failureHeading = "No pude tomar la foto."
+
+    /// El error de la captura en una línea para el dueño (nil = cancelada: sin aviso).
+    public static func message(for error: Error) -> String? {
+        if error is CancellationError { return nil }
+        switch error {
+        case GlassesPhotoError.setupFailed(let why):
+            return why == "timeout" ? "La cámara no arrancó (timeout). Reintenta."
+                                    : "La cámara no arrancó (\(why)). Reintenta."
+        case GlassesPhotoError.unsupported(let why):
+            return "Las gafas no dejaron tomar la foto (\(why)). Reintenta."
+        case GlassesPhotoError.failed(let why):
+            return "La foto falló (\(why)). Reintenta."
+        case GlassesPhotoError.permissionDenied:
+            return "Permiso de cámara denegado en Meta AI. Actívalo en Meta AI y reintenta."
+        case GlassesPhotoError.timeout:
+            return "La foto no llegó a tiempo. Reintenta."
+        case GlassesPhotoError.busy:
+            return "Ya hay una foto en curso. Espera unos segundos."
+        case GlassesPhotoError.unavailable:
+            return "La cámara de las gafas no está disponible."
+        case is GlassesBodyError:
+            return "Las gafas no están conectadas."
+        default:
+            return failure
+        }
+    }
 }
 
 public struct HUDConversationState: Sendable, Equatable {
@@ -121,7 +148,7 @@ public enum HUDStateMachine {
             next.screen = .thinking(question: HUDPhoto.question)
             return (next, [.submitPhoto(image)])
         case (.capturing, .photoFailed(let message)):
-            next.screen = .attention(message)
+            next.screen = .trouble(heading: HUDPhoto.failureHeading, message: message)
             return (next, [.returnHomeLater])
         case (.capturing, .action(.cancel)), (.capturing, .action(.back)):
             next.screen = home
@@ -224,7 +251,8 @@ public enum HUDStateMachine {
 
         // Vistas terminales → Home
         case (.answer, .action(.back)), (.agentCard, .action(.back)), (.agentCard, .action(.dismiss)),
-             (.declined, .action(.back)), (.attention, .action(.back)), (.handoff, .action(.back)):
+             (.declined, .action(.back)), (.attention, .action(.back)), (.handoff, .action(.back)),
+             (.trouble, .action(.back)):
             next.screen = home
             return (next, [])
 

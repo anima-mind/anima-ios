@@ -25,12 +25,24 @@ public enum GlassesPhotoError: Error, Equatable, CustomStringConvertible {
     case unsupported(String)
     /// Fallo real de captura: se propaga (sin fallback).
     case failed(String)
+    /// Meta AI no concedió el permiso de cámara (o no respondió).
+    case permissionDenied(String?)
+    /// La cámara arrancó pero la foto no llegó a tiempo.
+    case timeout
+    /// Ya hay una captura en vuelo (máximo una: los resultados no traen id).
+    case busy
+    /// No hay cámara (sin sesión, `addCamera` nil).
+    case unavailable(String)
 
     public var description: String {
         switch self {
         case .setupFailed(let why): return "la cámara de las gafas no arrancó (\(why))"
         case .unsupported(let why): return "foto directa no soportada (\(why))"
         case .failed(let why): return "la foto falló (\(why))"
+        case .permissionDenied(let why): return "permiso de cámara denegado en Meta AI" + (why.map { " (\($0))" } ?? "")
+        case .timeout: return "la foto no llegó a tiempo"
+        case .busy: return "ya hay una foto en curso"
+        case .unavailable(let why): return "la cámara de las gafas no está disponible (\(why))"
         }
     }
 }

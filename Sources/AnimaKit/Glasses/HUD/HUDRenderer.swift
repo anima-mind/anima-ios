@@ -24,6 +24,8 @@ public enum HUDScreen: Sendable, Equatable {
     case answer(HUDCard)
     case declined(String)
     case attention(String)
+    /// Un fallo del cuerpo con título propio (foto, micrófono): siempre visible.
+    case trouble(heading: String, message: String)
     /// Confirmación de cámara con pinch EN las gafas (§8).
     case cameraConfirm(reason: String)
     /// Card proyectada por el agente (`glasses_show`), ya validada.
@@ -104,6 +106,12 @@ public enum HUDRenderer {
         case .attention(let message):
             return HUDView(name: "attention", root: root(back: true, [
                 .flexBox(card(icon: .exclamationTriangle, meta: "Atención", heading: "No pude responder.",
+                              body: HUDSummary.clip(message, HUDValidator.bodyLimit), group: nil)),
+            ]))
+
+        case .trouble(let heading, let message):
+            return HUDView(name: "trouble", root: root(back: true, [
+                .flexBox(card(icon: .exclamationTriangle, meta: "Atención", heading: heading,
                               body: HUDSummary.clip(message, HUDValidator.bodyLimit), group: nil)),
             ]))
 

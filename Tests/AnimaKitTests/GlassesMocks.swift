@@ -56,6 +56,9 @@ final class MockSession: GlassesSessionPort, @unchecked Sendable {
     let startError: Error?
     let displayError: Error?
     let photo = Locked<Result<Data, Error>>(.success(Data([0xFF, 0xD8, 0xFF])))
+    /// Captura scriptada (cuelgues, latencia); gana sobre `photo`.
+    let photoScript = Locked<(@Sendable () async throws -> Data)?>(nil)
+    let photoCalls = Locked(0)
     let autoStart: Bool
 
     init(display: MockDisplay = MockDisplay(), autoStart: Bool = true, startError: Error? = nil,
@@ -84,7 +87,11 @@ final class MockSession: GlassesSessionPort, @unchecked Sendable {
         if let displayError { throw displayError }
         return display
     }
-    func capturePhoto() async throws -> Data { try photo.value.get() }
+    func capturePhoto() async throws -> Data {
+        photoCalls.mutate { $0 += 1 }
+        if let script = photoScript.value { return try await script() }
+        return try photo.value.get()
+    }
 
     /// El SDK termina la sesión por su cuenta (back físico / apagado).
     func endFromDevice() {

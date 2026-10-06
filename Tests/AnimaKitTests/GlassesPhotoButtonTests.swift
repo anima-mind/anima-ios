@@ -30,7 +30,8 @@ struct HUDPhotoStateTests {
             #expect(r.state.screen == home); #expect(r.effects == [.cancelCapture])
         }
         let failed = HUDStateMachine.reduce(S(screen: .capturing), .photoFailed(HUDPhoto.failure))
-        #expect(failed.state.screen == .attention(HUDPhoto.failure)); #expect(failed.effects == [.returnHomeLater])
+        #expect(failed.state.screen == .trouble(heading: HUDPhoto.failureHeading, message: HUDPhoto.failure))
+        #expect(failed.effects == [.returnHomeLater])
         #expect(HUDStateMachine.reduce(failed.state, .action(.back)).state.screen == home)
         #expect(HUDStateMachine.reduce(S(screen: .capturing), .exited).effects == [.cancelCapture])
         let camera = HUDStateMachine.reduce(S(screen: .capturing), .cameraRequested(reason: "r"))
@@ -130,19 +131,21 @@ struct GlassesPhotoButtonTests {
                                         errorDwell: 0.05)
         await surface.start()
         await surface.handle(.action(.photo))
-        #expect(await eventually { await surface.state.screen == .attention(HUDPhoto.failure) })
+        let failed = HUDScreen.trouble(heading: HUDPhoto.failureHeading, message: HUDPhoto.failure)
+        #expect(await eventually { await surface.state.screen == failed })
         #expect(await eventually { await surface.state.screen == .home(status: nil) })
 
-        // Foto que no es imagen: mismo error breve.
+        // Foto que no es imagen: error breve propio.
         runtime.lastSession?.photo.mutate { $0 = .success(Data([1, 2, 3])) }
+        let damaged = HUDScreen.trouble(heading: HUDPhoto.failureHeading, message: "La foto llegó dañada. Reintenta.")
         await surface.handle(.action(.photo))
-        #expect(await eventually { await surface.state.screen == .attention(HUDPhoto.failure) })
+        #expect(await eventually { await surface.state.screen == damaged })
         // Si el dueño ya se movió, el regreso automático no lo pisa.
         await surface.handle(.action(.back))
         await surface.handle(.action(.talk))
         voice.cancel()
         try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(surface.state.screen != .attention(HUDPhoto.failure))
+        #expect(surface.state.screen != damaged)
 
         // Cancelar durante la captura: vuelve al Home sin turno.
         runtime.lastSession?.photo.mutate { $0 = .success(makeJPEG()) }

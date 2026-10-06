@@ -506,13 +506,61 @@ public actor GlassesBody {
 
     // MARK: - Cámara
 
+    /// Tope de la foto completa (permiso + standalone + reintento + stream). La
+    /// pantalla "Tomando la foto…" SIEMPRE sale antes de esto.
+    public private(set) var photoDeadline: TimeInterval = 40
+    /// Hay una captura del hardware en vuelo (aunque el que esperaba ya se fue).
+    public private(set) var photoInFlight = false
+
+    public func setPhotoDeadline(_ seconds: TimeInterval) { photoDeadline = seconds }
+
+    /// Foto POV. Máximo UNA captura en el hardware a la vez (doc DAT: los
+    /// resultados no traen id); quien espera recupera el control al vencer el
+    /// tope o al cancelar, y la captura vieja se cancela y se suelta sola.
     public func capturePhoto() async throws -> Data {
         guard let session, displayStarted else {
+            diagnostics.record(.photo, "rechazada: sin sesión activa")
             await record(errorClass: "glasses_unavailable", raw: "capturePhoto sin sesión activa")
             throw GlassesBodyError.unavailable("gafas no conectadas")
         }
-        return try await session.capturePhoto()
+        guard !photoInFlight else {
+            diagnostics.record(.photo, "rechazada: ya hay una captura en vuelo")
+            throw GlassesPhotoError.busy
+        }
+        photoInFlight = true
+        let started = now()
+        diagnostics.record(.photo, "captura iniciada")
+        let operation = Task { try await session.capturePhoto() }
+        Task { [weak self] in
+            let result = await operation.result
+            await self?.photoFinished(result.map(\.count), since: started)
+        }
+        do {
+            let data = try await GlassesDeadline.wait(operation, timeout: photoDeadline,
+                                                      timeoutError: { GlassesPhotoError.timeout })
+            diagnostics.record(.photo, "foto recibida (\(data.count) bytes, \(elapsedMs(since: started)) ms)")
+            return data
+        } catch is CancellationError {
+            diagnostics.record(.photo, "cancelada por el dueño (\(elapsedMs(since: started)) ms)")
+            throw CancellationError()
+        } catch {
+            diagnostics.record(.photo, "falló: \(error) (\(elapsedMs(since: started)) ms)")
+            await record(errorClass: "glasses_camera", raw: "\(error)")
+            throw error
+        }
     }
+
+    private func photoFinished(_ result: Result<Int, Error>, since started: Date) {
+        photoInFlight = false
+        let outcome: String
+        switch result {
+        case .success(let bytes): outcome = "ok \(bytes) bytes"
+        case .failure(let error): outcome = "\(error)"
+        }
+        diagnostics.record(.photo, "hardware libre (\(outcome), \(elapsedMs(since: started)) ms)")
+    }
+
+    private func elapsedMs(since date: Date) -> Int { Int(now().timeIntervalSince(date) * 1000) }
 
     // MARK: - RealRegister
 

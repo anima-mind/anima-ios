@@ -182,10 +182,12 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
                     if let image = ImageDownscaler.imageBlock(from: data) {
                         event = .photoCaptured(image)
                     } else {
-                        event = .photoFailed(HUDPhoto.failure)
+                        body.diagnostics.record(.photo, "imagen ilegible (\(data.count) bytes)")
+                        event = .photoFailed("La foto llegó dañada. Reintenta.")
                     }
                 } catch {
-                    event = .photoFailed(HUDPhoto.failure)
+                    guard let message = HUDPhoto.message(for: error) else { return }
+                    event = .photoFailed(message)
                 }
                 guard !Task.isCancelled else { return }
                 await self?.handle(event)

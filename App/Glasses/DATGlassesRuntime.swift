@@ -246,31 +246,41 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     }
 
     // MARK: Cámara POV (MWDATCamera 1.0.0, re-verificado contra el .swiftinterface)
-    // Política (reintento + fallback) en GlassesPhotoCapture (AnimaKit, testeada):
-    //   1. `Camera.photo` standalone (experimental 1.0): listeners ANTES de
-    //      `photo.start()`, captura en el primer `.started` con
-    //      `capturePhoto(resolution: .large, quality: .high)` → PhotoCaptureData;
-    //   2. fallback: el flujo viejo por stream (stream.start → .streaming →
-    //      capturePhoto(format: .jpeg) → photoDataPublisher).
-    // Cada intento usa una cámara NUEVA (addCamera): una detenida queda inválida.
-    // ⚠️ Pendiente de device: latencia/calidad reales de la standalone.
+    // Política (reintento + fallback) en GlassesPhotoCapture; tope global, una
+    // captura en vuelo y cancelación en GlassesBody (AnimaKit, testeadas). Aquí:
+    //   0. la sesión debe estar `.started` (pausada = transportes suspendidos);
+    //   1. permiso de cámara (Meta AI, ida y vuelta) con tope + re-chequeo;
+    //   2. `Camera.photo` standalone: listeners ANTES de `photo.start()`, captura
+    //      en el primer `.started` FUERA del callback del listener (en el main
+    //      actor, como el sample oficial), `.stopped` sin captura = setupFailed;
+    //   3. fallback: el stream (stream.start → .streaming → capturePhoto(.jpeg)).
+    // Cada intento: cámara NUEVA (una detenida queda inválida), continuation
+    // NO lanzante resuelta UNA vez (GlassesOnce: éxito, error, tope o cancelación)
+    // y teardown en orden fijo y una sola vez: tokens → photo/stream.stop() →
+    // camera.stop(). Ningún listener toca la cámara tras resolverse el intento.
     func capturePhoto() async throws -> Data {
         #if canImport(MWDATCamera)
-        let status = try await wearables.checkPermissionStatus(.camera)
-        if status != .granted {
-            guard try await wearables.requestPermission(.camera) == .granted else {
-                throw DATCameraError.permissionDenied
-            }
+        let diag = GlassesDiagnostics.shared
+        guard session.state == .started else {
+            diag.record(.photo, "sesión \(session.state) — sin captura")
+            throw GlassesPhotoError.failed("la sesión de las gafas no está activa (\(session.state))")
         }
+        let wearables = self.wearables
+        try await GlassesCameraPermission.ensure(
+            check: { try await wearables.checkPermissionStatus(.camera) == .granted },
+            request: { try await wearables.requestPermission(.camera) == .granted },
+            timeout: Self.permissionTimeout,
+            log: { diag.record(.photo, $0) })
+        try Task.checkCancellation()
         let session = self.session
         return try await GlassesPhotoCapture.capture(
             standalone: { try await Self.standalonePhoto(session) },
             stream: { try await Self.streamPhoto(session) },
             onPath: { path, why in
-                NSLog("[Anima] glasses photo via %@%@", path.rawValue, why.map { " (\($0))" } ?? "")
+                diag.record(.photo, "entregada por \(path.rawValue)\(why.map { " (\($0))" } ?? "")")
             })
         #else
-        throw DATCameraError.unavailable
+        throw GlassesPhotoError.unavailable("build sin MWDATCamera")
         #endif
     }
 
@@ -280,130 +290,150 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     /// (ImageDownscaler), así que pagaría latencia de transferencia por nada.
     static let photoResolution: PhotoResolution = .large
     static let photoQuality: PhotoQuality = .high
-    static let photoStartTimeout: UInt64 = 6_000_000_000
-    static let photoTimeout: UInt64 = 25_000_000_000
+    static let permissionTimeout: TimeInterval = 90
+    static let photoStartTimeout: TimeInterval = 6
+    static let photoTimeout: TimeInterval = 25
+    static let streamTimeout: TimeInterval = 15
 
+    @MainActor
     static func standalonePhoto(_ session: DeviceSession) async throws -> Data {
-        guard let camera = try session.addCamera(config: StreamConfiguration()) else {
-            throw DATCameraError.unavailable
+        let diag = GlassesDiagnostics.shared
+        let added: Camera?
+        do { added = try session.addCamera(config: StreamConfiguration()) } catch {
+            diag.record(.photo, "addCamera: \(error)")
+            throw GlassesPhotoError.unsupported("addCamera: \(error)")
         }
-        defer { camera.stop() }
+        guard let camera = added else { throw GlassesPhotoError.unsupported("addCamera nil") }
         let photo = camera.photo
-        let once = DATOnce<Result<Data, Error>>()
-        let requested = DATFlag()
-        let starting = DATFlag()
-        var tokens: [any AnyListenerToken] = []
-        let data: Data = try await withCheckedThrowingContinuation { continuation in
-            once.set { continuation.resume(with: $0) }
-            // Registrar TODO antes de start(): los publishers no re-emiten.
-            tokens.append(photo.photoDataPublisher.listen { capture in
-                // El shutter físico publica en el mismo canal: solo vale tras pedirla.
-                if requested.isSet { once.fire(.success(capture.imageData)) }
-            })
-            tokens.append(photo.errorPublisher.listen { error in once.fire(.failure(map(error))) })
-            tokens.append(photo.statePublisher.listen { state in
-                switch state {
-                case .starting:
-                    starting.set()
-                case .started:
-                    // `.started` puede repetirse: capturar solo en el primero.
-                    if requested.setOnce() { photo.capturePhoto(resolution: photoResolution, quality: photoQuality) }
-                case .stopped:
-                    if starting.isSet, !requested.isSet {
-                        once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+        let bag = ListenerTokenBag()
+        let once = GlassesOnce<Result<Data, Error>>()
+        let requested = GlassesFlag()
+        let starting = GlassesFlag()
+        let firstBytes = GlassesFlag()
+        let started = Date()
+        let ms: @Sendable () -> Int = { Int(Date().timeIntervalSince(started) * 1000) }
+        var timers: [Task<Void, Never>] = []
+        let result: Result<Data, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Result<Data, Error>, Never>) in
+                once.set { continuation.resume(returning: $0) }
+                // Registrar TODO antes de start(): los publishers no re-emiten.
+                photo.photoDataPublisher.listen { capture in
+                    // El shutter físico publica en el mismo canal: solo vale tras pedirla.
+                    if requested.isSet { once.fire(.success(capture.imageData)) }
+                }.store(in: bag)
+                photo.transferProgressPublisher.listen { progress in
+                    if firstBytes.setOnce() { diag.record(.photo, "standalone transfiriendo (\(progress.totalBytes) bytes)") }
+                }.store(in: bag)
+                photo.errorPublisher.listen { error in
+                    diag.record(.photo, "standalone error: \(error)")
+                    once.fire(.failure(map(error)))
+                }.store(in: bag)
+                photo.statePublisher.listen { state in
+                    diag.record(.photo, "standalone \(state) (\(ms()) ms)")
+                    switch state {
+                    case .starting:
+                        starting.set()
+                    case .started:
+                        // `.started` puede repetirse: capturar solo en el primero, y
+                        // fuera del callback del SDK (sample oficial: hop al main).
+                        guard !once.isResolved, requested.setOnce() else { return }
+                        Task { @MainActor in
+                            guard !once.isResolved else { return }
+                            photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
+                        }
+                    case .stopped:
+                        if starting.isSet, !requested.isSet {
+                            once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+                        }
+                    default:
+                        break
                     }
-                default:
-                    break
-                }
-            })
-            photo.start()
-            Task {
-                try? await Task.sleep(nanoseconds: photoStartTimeout)
-                if !requested.isSet { once.fire(.failure(GlassesPhotoError.setupFailed("timeout"))) }
+                }.store(in: bag)
+                photo.start()
+                timers.append(Task {
+                    try? await Task.sleep(nanoseconds: UInt64(photoStartTimeout * 1_000_000_000))
+                    if !requested.isSet { once.fire(.failure(GlassesPhotoError.setupFailed("timeout"))) }
+                })
+                timers.append(Task {
+                    try? await Task.sleep(nanoseconds: UInt64(photoTimeout * 1_000_000_000))
+                    once.fire(.failure(GlassesPhotoError.timeout))
+                })
             }
-            Task {
-                try? await Task.sleep(nanoseconds: photoTimeout)
-                once.fire(.failure(DATCameraError.timeout))
-            }
+        } onCancel: {
+            once.fire(.failure(CancellationError()))
         }
-        for token in tokens { await token.cancel() }
+        timers.forEach { $0.cancel() }
+        await bag.cancelAll()
         photo.stop()
-        return data
+        camera.stop()
+        diag.record(.photo, "standalone teardown (\(ms()) ms)")
+        return try result.get()
     }
 
     static func map(_ error: PhotoError) -> GlassesPhotoError {
         switch error {
         case .sessionSetupFailed: return .setupFailed(error.description)
         case .serviceUnavailable, .notReady: return .unsupported(error.description)
+        case .permissionDenied: return .permissionDenied(error.description)
+        case .busy: return .busy
         default: return .failed(error.description)
         }
     }
 
     /// El flujo PRE-1.0 (frame del stream): fallback de la standalone.
+    @MainActor
     static func streamPhoto(_ session: DeviceSession) async throws -> Data {
-        guard let camera = try session.addCamera(config: StreamConfiguration()) else {
-            throw DATCameraError.unavailable
+        let diag = GlassesDiagnostics.shared
+        let added: Camera?
+        do { added = try session.addCamera(config: StreamConfiguration()) } catch {
+            diag.record(.photo, "addCamera (stream): \(error)")
+            throw GlassesPhotoError.unavailable("addCamera: \(error)")
         }
-        defer { camera.stop() }
+        guard let camera = added else { throw GlassesPhotoError.unavailable("addCamera nil (stream)") }
         let stream = camera.stream
-        let once = DATOnce<Result<Data, Error>>()
-        var tokens: [any AnyListenerToken] = []
-        let photo: Data = try await withCheckedThrowingContinuation { continuation in
-            once.set { continuation.resume(with: $0) }
-            tokens.append(stream.photoDataPublisher.listen { photo in once.fire(.success(photo.data)) })
-            tokens.append(stream.errorPublisher.listen { error in once.fire(.failure(error)) })
-            tokens.append(stream.statePublisher.listen { state in
-                if state == .streaming { _ = stream.capturePhoto(format: .jpeg) }
-            })
-            stream.start()
-            if stream.state == .streaming { _ = stream.capturePhoto(format: .jpeg) }
-            Task {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                once.fire(.failure(DATCameraError.timeout))
+        let bag = ListenerTokenBag()
+        let once = GlassesOnce<Result<Data, Error>>()
+        let requested = GlassesFlag()
+        var timer: Task<Void, Never>?
+        let requestCapture: @Sendable () -> Void = {
+            guard !once.isResolved, requested.setOnce() else { return }
+            Task { @MainActor in
+                guard !once.isResolved else { return }
+                _ = stream.capturePhoto(format: .jpeg)
             }
         }
-        for token in tokens { await token.cancel() }
+        let result: Result<Data, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Result<Data, Error>, Never>) in
+                once.set { continuation.resume(returning: $0) }
+                stream.photoDataPublisher.listen { photo in
+                    if requested.isSet { once.fire(.success(photo.data)) }
+                }.store(in: bag)
+                stream.errorPublisher.listen { error in
+                    diag.record(.photo, "stream error: \(error)")
+                    once.fire(.failure(GlassesPhotoError.failed("\(error)")))
+                }.store(in: bag)
+                stream.statePublisher.listen { state in
+                    diag.record(.photo, "stream \(state)")
+                    if state == .streaming { requestCapture() }
+                }.store(in: bag)
+                stream.start()
+                if stream.state == .streaming { requestCapture() }
+                timer = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(streamTimeout * 1_000_000_000))
+                    once.fire(.failure(GlassesPhotoError.timeout))
+                }
+            }
+        } onCancel: {
+            once.fire(.failure(CancellationError()))
+        }
+        timer?.cancel()
+        await bag.cancelAll()
         stream.stop()
-        return photo
+        camera.stop()
+        diag.record(.photo, "stream teardown")
+        return try result.get()
     }
     #endif
-}
-
-enum DATCameraError: Error, CustomStringConvertible {
-    case unavailable, permissionDenied, timeout
-    var description: String {
-        switch self {
-        case .unavailable: return "la cámara de las gafas no está disponible"
-        case .permissionDenied: return "sin permiso de cámara en Meta AI"
-        case .timeout: return "la foto no llegó a tiempo"
-        }
-    }
-}
-
-/// Bandera atómica (listeners del SDK llegan en cualquier hilo).
-final class DATFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func set() { lock.lock(); value = true; lock.unlock() }
-    /// true solo para el primero que la levanta.
-    func setOnce() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if value { return false }
-        value = true
-        return true
-    }
-}
-
-/// Resuelve una continuation una sola vez (listeners del SDK pueden repetir).
-final class DATOnce<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var handler: ((T) -> Void)?
-    func set(_ handler: @escaping (T) -> Void) { lock.lock(); self.handler = handler; lock.unlock() }
-    func fire(_ value: T) {
-        lock.lock(); let h = handler; handler = nil; lock.unlock()
-        h?(value)
-    }
 }
 
 // MARK: - Display

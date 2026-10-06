@@ -156,9 +156,11 @@ final class AppModel: ObservableObject {
     /// cableado ocurre UNA vez. Sin esto, un lanzamiento en background (iOS
     /// despierta la app para el sueño SIN escena) encontraba el holder vacío y
     /// el ciclo nocturno jamás corría por esa vía.
-    func ensureBootstrapped() async {
+    /// `configFetchTimeout`: tope del fetch de Remote Config si este llamado es
+    /// el que arranca el proceso (acción de notificación en background).
+    func ensureBootstrapped(configFetchTimeout: TimeInterval? = nil) async {
         if let bootstrapTask { return await bootstrapTask.value }
-        let task = Task { await self.bootstrap() }
+        let task = Task { await self.bootstrap(configFetchTimeout: configFetchTimeout) }
         bootstrapTask = task
         await task.value
     }
@@ -172,7 +174,7 @@ final class AppModel: ObservableObject {
         UITestMode.isActive ? UITestMode.forcedAvailability : OnDeviceAvailability.current()
     }
 
-    func bootstrap() async {
+    func bootstrap(configFetchTimeout: TimeInterval? = nil) async {
         if UITestMode.isActive {
             account = AccountViewModel(provider: PreviewAccountProvider(state: .signedOut),
                                        profile: AccountProfileStore(defaults: UITestMode.defaults))
@@ -180,7 +182,8 @@ final class AppModel: ObservableObject {
         } else {
             account = AccountViewModel(provider: FirebaseAccountProvider())
             // Config congelada por sesión (fetch+activate una vez).
-            let provider: FirebaseConfigProvider = await FirebaseConfigProvider.bootstrap()
+            let provider: FirebaseConfigProvider = await FirebaseConfigProvider.bootstrap(
+                fetchTimeout: configFetchTimeout)
             configProvider = provider
         }
 
@@ -652,7 +655,7 @@ final class AppModel: ObservableObject {
     /// Acción de una notificación (Hecho / En 1 hora / Sí, avancé / Hoy no): corre
     /// sin abrir la app, sobre el harness ya cableado.
     func handleNotificationAction(_ action: ProactiveNotificationAction) async {
-        await ensureBootstrapped()
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
                                              scheduler: proactiveScheduler)
         await handler.handle(action)

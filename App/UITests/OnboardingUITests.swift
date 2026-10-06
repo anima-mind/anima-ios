@@ -29,7 +29,7 @@ final class OnboardingUITests: AnimaUITestCase {
         passPermissionsAndGlasses(app)
         completeBirth(app)
         waitForChat(app)
-        // Header (FIX D): el nombre del self, centrado bajo el mark.
+        // Header (campo batch 5 #5): el nombre del self a la izquierda; la marca al centro.
         let header = element(app, "chat.selfName")
         waitUntil(header, "label == 'Anima'")
     }

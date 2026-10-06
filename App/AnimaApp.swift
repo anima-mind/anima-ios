@@ -481,6 +481,10 @@ final class AppModel: ObservableObject {
         // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
         chat.photosAvailable = mode != .onDeviceOnly
         if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
+        // El nombre/plasticidad ANTES de publicarlo: al re-cablear (fin del
+        // onboarding, cambio de modo) la vista conserva su identidad y su `.task`
+        // no vuelve a correr — sin esto el header quedaba con el nombre semilla.
+        await chat.loadMind()
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)

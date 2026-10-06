@@ -584,37 +584,37 @@ public struct ChatView: View {
         #endif
     }
 
-    // MARK: Header (mark + nombre del self centrados; body line y badge a los lados)
+    // MARK: Header — nombre del self + body line a la izquierda, la marca
+    // respirando al centro, badge de plasticidad a la derecha.
+
+    static let headerMarkSize: CGFloat = 30
 
     private var header: some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .top) {
-                HStack(alignment: .top) {
-                    BodyLine(glasses: model.glasses)
-                        .padding(.top, 4)
-                    Spacer()
-                    Button {
-                        showMindSheet = true
-                        Task { await model.loadMind() }
-                    } label: {
-                        PlasticityBadge(mind: model.mind)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("chat.plasticityBadge")
-                }
-                VStack(spacing: 2) {
-                    BreathMark(size: 22, p: model.mind.p, phase: .breathing)
-                        .accessibilityHidden(true)
+        VStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(model.selfName)
                         .font(Theme.Type_.screenTitle)
                         .foregroundStyle(Theme.Colors.text)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                        .frame(maxWidth: 180)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("chat.selfName")
+                    BodyLine(glasses: model.glasses)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("chat.selfName")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                BreathMark(size: Self.headerMarkSize, p: model.mind.p, phase: .breathing)
+                    .frame(width: Self.headerMarkSize + Theme.Space.stack * 2)
+                    .accessibilityHidden(true)
+                Button {
+                    showMindSheet = true
+                    Task { await model.loadMind() }
+                } label: {
+                    PlasticityBadge(mind: model.mind)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityIdentifier("chat.plasticityBadge")
             }
             LinearGradient(colors: [Theme.Colors.border.opacity(0), Theme.Colors.border, Theme.Colors.border.opacity(0)],
                            startPoint: .leading, endPoint: .trailing)

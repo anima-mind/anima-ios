@@ -25,7 +25,8 @@ public enum LoopEvent: Sendable, Equatable {
     case contextTrimmed(model: String)
     /// Cuánto del contexto del modelo ocupa el turno (medidor del chat).
     case context(ContextGauge)
-    /// Una tool falló y el turno cerró sin éxito: la línea "⚠️ No pude …".
+    /// Una tool falló y el texto final no lo admitía: la línea "⚠️ No pude …"
+    /// que el loop antepuso al mensaje (la card la muestra con alerta).
     case toolFailure(String)
 }
 
@@ -366,10 +367,19 @@ public actor AgentLoop {
                     return .refused
                 }
 
-                let assistantMessage = Message.assistant(response.content)
+                // Nunca mentir tras un error: si una intención falló y el texto
+                // final no lo admite, la línea fija va al frente.
+                var content = response.content
+                if response.stopReason != .toolUse, response.stopReason != .pauseTurn,
+                   let notice = ToolFailureNotice.notice(failures: failures.entries,
+                                                         finalText: Self.plainText(response.content)) {
+                    content = ToolFailureNotice.prepend(notice, to: content)
+                    emit(.toolFailure(notice))
+                }
+                let assistantMessage = Message.assistant(content)
                 try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage, surface: surface)
                 messages.append(assistantMessage)
-                emit(.assistantMessage(response.content))
+                emit(.assistantMessage(content))
 
                 switch response.stopReason {
                 case .pauseTurn:

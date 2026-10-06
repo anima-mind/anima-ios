@@ -295,8 +295,8 @@ enum ProactiveFixtures {
         #expect(await t.execute(["action": "explode"]).content.contains("desconocida"))
         let past = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-05T09:00:00-05:00"])
         #expect(past.isError && past.content.contains("ya pasó"))
-        let noOffset = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-06T09:00:00"])
-        #expect(noOffset.isError && noOffset.content.contains("offset"))
+        let dateOnly = await t.execute(["action": "create", "text": "x", "fire_at": "2026-10-06"])
+        #expect(dateOnly.isError && dateOnly.content.contains("ISO 8601"))
         let empty = await t.execute(["action": "create", "text": "", "fire_at": "2026-10-06T09:00:00-05:00"])
         #expect(empty.isError && empty.content.contains("vacío"))
         let missing = await t.execute(["action": "create", "text": "x"])
@@ -305,6 +305,24 @@ enum ProactiveFixtures {
                                          "repeat": "hourly"])
         #expect(badRepeat.isError && badRepeat.content.contains("repeat"))
         #expect(await t.execute(["action": "cancel"]).content.contains("falta 'id'"))
+    }
+
+    /// Mismo parser que calendar/reminders: con offset, sin offset (hora local) y con fracción.
+    @Test func fireAtAcceptsTheSameISOFormsAsTheAgenda() async throws {
+        let w = try F.world()
+        let t = tool(w)
+        let nine = F.date(2026, 10, 6, 9)
+        for raw in ["2026-10-06T09:00:00-05:00", "2026-10-06T09:00:00", "2026-10-06T09:00:00.000-05:00",
+                    "2026-10-06T14:00:00Z", "2026-10-06T09:00"] {
+            #expect(AnimaRemindersTool.parseDate(raw, timeZone: F.tz) == nine, "\(raw)")
+        }
+        let local = await t.execute(["action": "create", "text": "llamar al banco", "message": "Oye, llama al banco",
+                                     "fire_at": "2026-10-06T09:00:00"])
+        #expect(!local.isError, "\(local.content)")
+        #expect(await w.reminders.list().first?.fireAt == nine)
+        #expect(t.confirmationSummary(for: ["action": "create", "text": "x", "fire_at": "2026-10-06T09:00:00"])
+                    .contains("martes 6 de octubre a las 09:00"))
+        #expect(AnimaRemindersTool.parseDate("mañana", timeZone: F.tz) == nil)
     }
 }
 

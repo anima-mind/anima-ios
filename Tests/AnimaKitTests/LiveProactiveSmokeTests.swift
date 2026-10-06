@@ -80,7 +80,7 @@ import Testing
 
         let reminder = try await turn("recuérdame mañana a las 9 llamar al banco", token: token, mode: mode)
         let create = try #require(reminder.first { $0.tool == "anima_reminders" && $0.operation == "create" })
-        let fireAt = try #require(create.input["fire_at"]?.stringValue.flatMap(AnimaRemindersTool.parseDate))
+        let fireAt = try #require(create.input["fire_at"]?.stringValue.flatMap { AnimaRemindersTool.parseDate($0) })
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
         let expected = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)!
         print("[proactive smoke] recordatorio →", create.tool, create.summary)

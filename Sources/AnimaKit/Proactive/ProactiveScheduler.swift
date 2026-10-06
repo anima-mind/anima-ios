@@ -100,7 +100,7 @@ public actor ProactiveScheduler {
         let suffix = occurrence == 0 ? "" : "-\(occurrence)"
         return LocalNotificationRequest(
             id: ProactiveNotificationIDs.reminderPrefix + reminder.id + suffix,
-            title: title, body: reminder.text, trigger: .at(date),
+            title: title, body: reminder.spokenMessage, trigger: .at(date),
             categoryId: ProactiveNotificationIDs.reminderCategory,
             deepLink: AnimaDeepLink.reminder(id: reminder.id).url)
     }

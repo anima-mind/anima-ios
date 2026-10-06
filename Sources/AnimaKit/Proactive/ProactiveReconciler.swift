@@ -39,7 +39,7 @@ public actor ProactiveReconciler {
         self.now = now
     }
 
-    /// Vencidos → entregados → mensajes "Te recordé: …" en la sesión dada.
+    /// Vencidos → entregados → mensajes en su voz en la sesión dada.
     @discardableResult
     public func reconcileDueReminders(sessionId: SessionID?) async -> [ProactiveMessage] {
         var out: [ProactiveMessage] = []
@@ -70,11 +70,10 @@ public actor ProactiveReconciler {
         return ProactiveMessage(kind: .checkIn(goalId: goalId), text: text)
     }
 
+    /// Lo mismo que dijo el push: su voz. El seguimiento ("¿Cómo te fue?") lo
+    /// pone la card del chat solo si el aviso ya quedó atrás.
     static func reminderText(_ reminder: AnimaReminder, goal: Goal?) -> String {
-        if let goal {
-            return "Te recordé: \(reminder.text) (va por tu meta \"\(goal.statement)\"). ¿Cómo te fue?"
-        }
-        return "Te recordé: \(reminder.text). ¿Cómo te fue?"
+        reminder.spokenMessage
     }
 
     func persist(_ text: String, sessionId: SessionID?) {

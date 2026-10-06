@@ -51,5 +51,10 @@ public enum ProactiveSchema {
 
             try db.execute(sql: "ALTER TABLE intention ADD COLUMN origin TEXT NOT NULL DEFAULT 'foreground'")
         }
+        // Lo que ella le dirá al dueño al llegar la hora (su voz, segunda persona).
+        // NULL en los viejos: se entregan con "Te recuerdo: <text>".
+        m.registerMigration("v13-reminder-message") { db in
+            try db.execute(sql: "ALTER TABLE anima_reminder ADD COLUMN message TEXT NULL")
+        }
     }
 }

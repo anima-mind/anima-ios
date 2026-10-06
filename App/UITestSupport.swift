@@ -93,7 +93,7 @@ enum UITestMode {
 
     /// Recordatorio de prueba a +`seconds` (el XCUITest de notificación lo toca).
     static func seedReminder(_ store: AnimaReminderStore, seconds: Int) async {
-        _ = try? await store.create(text: seededReminderText, fireAt: Date().addingTimeInterval(TimeInterval(seconds)))
+        _ = try? await store.create(text: seededReminderText, message: seededReminderMessage, fireAt: Date().addingTimeInterval(TimeInterval(seconds)))
     }
 
     /// Config congelada desde los defaults bundled (RemoteConfigDefaults.plist), sin fetch.

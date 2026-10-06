@@ -59,6 +59,19 @@ import Testing
         return confirmation.requests.value
     }
 
+    /// Segunda persona y su voz: le habla al dueño ("tienes", "te", "tu"…), no un título.
+    static func speaksToOwner(_ message: String) -> Bool {
+        let words = Set(message.lowercased().split { !$0.isLetter }.map(String.init))
+        let secondPerson: Set<String> = ["tienes", "te", "tu", "tus", "recuerda", "acuérdate", "oye", "llama", "llames"]
+        return !message.isEmpty && !words.isDisjoint(with: secondPerson)
+    }
+
+    @Test func secondPersonHeuristic() {
+        #expect(Self.speaksToOwner("Oye, mañana a las 9 tienes que llamar al banco"))
+        #expect(!Self.speaksToOwner("Avisar de la cita médica"))
+        #expect(!Self.speaksToOwner(""))
+    }
+
     @Test func routesPersonalRemindersAndAgenda() async throws {
         guard ProcessInfo.processInfo.environment["ANIMA_PROACTIVE_SMOKE"] == "1" else { return }
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".anima/test-token")
@@ -72,6 +85,9 @@ import Testing
         let expected = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)!
         print("[proactive smoke] recordatorio →", create.tool, create.summary)
         #expect(fireAt == expected)
+        let message = create.input["message"]?.stringValue ?? ""
+        print("[proactive smoke] message →", message)
+        #expect(Self.speaksToOwner(message))
         #expect(!reminder.contains { $0.tool == "calendar" || $0.tool == "reminders" })
 
         let agenda = try await turn("agéndame reunión con Pedro el jueves a las 3pm", token: token, mode: mode)

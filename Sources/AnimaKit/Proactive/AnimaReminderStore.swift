@@ -28,6 +28,8 @@ public struct AnimaReminder: Sendable, Equatable, Identifiable {
 
     public var id: String
     public var text: String
+    /// Lo que ella dice al entregarlo, en su voz (nil en recordatorios viejos).
+    public var message: String?
     public var fireAt: Date
     public var repeatCadence: ProactiveCadence
     public var goalId: String?
@@ -36,6 +38,14 @@ public struct AnimaReminder: Sendable, Equatable, Identifiable {
     public var createdAt: Date
     public var firedAt: Date?
     public var doneAt: Date?
+
+    /// El cuerpo del push y de la card del chat: su voz, o el fallback.
+    public var spokenMessage: String {
+        if let message = message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            return message
+        }
+        return "Te recuerdo: \(text)"
+    }
 }
 
 public enum AnimaReminderError: Error, Equatable, LocalizedError {
@@ -77,7 +87,7 @@ public actor AnimaReminderStore {
     // MARK: - Alta
 
     @discardableResult
-    public func create(text: String, fireAt: Date, repeat cadence: ProactiveCadence = .none,
+    public func create(text: String, message: String? = nil, fireAt: Date, repeat cadence: ProactiveCadence = .none,
                        goalId: String? = nil, originSessionId: String? = nil) throws -> AnimaReminder {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw AnimaReminderError.emptyText }
@@ -89,14 +99,18 @@ public actor AnimaReminderStore {
             }
             guard exists > 0 else { throw AnimaReminderError.unknownGoal }
         }
-        let reminder = AnimaReminder(id: UUID().uuidString, text: trimmed, fireAt: fireAt,
+        let spoken = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reminder = AnimaReminder(id: UUID().uuidString, text: trimmed,
+                                     message: spoken?.isEmpty == false ? spoken : nil, fireAt: fireAt,
                                      repeatCadence: cadence, goalId: goalId, status: .scheduled,
                                      originSessionId: originSessionId, createdAt: ts, firedAt: nil, doneAt: nil)
         try queue.write { db in
             try db.execute(sql: """
-                INSERT INTO anima_reminder (id, text, fire_at, repeat, goal_id, status, origin_session_id, created_at)
-                VALUES (?,?,?,?,?,?,?,?)
-                """, arguments: [reminder.id, reminder.text, fireAt.timeIntervalSince1970, cadence.rawValue,
+                INSERT INTO anima_reminder (id, text, message, fire_at, repeat, goal_id, status, origin_session_id,
+                                            created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """, arguments: [reminder.id, reminder.text, reminder.message, fireAt.timeIntervalSince1970,
+                                 cadence.rawValue,
                                  goalId, reminder.status.rawValue, originSessionId, ts.timeIntervalSince1970])
         }
         return reminder
@@ -185,7 +199,7 @@ public actor AnimaReminderStore {
         let current = try active(id)
         let target = now().addingTimeInterval(TimeInterval(minutes * 60))
         if current.repeatCadence != .none {
-            return try create(text: current.text, fireAt: target, goalId: current.goalId,
+            return try create(text: current.text, message: current.message, fireAt: target, goalId: current.goalId,
                               originSessionId: current.originSessionId)
         }
         update(id: id, sql: "UPDATE anima_reminder SET status='scheduled', fire_at=? WHERE id=?",
@@ -250,6 +264,7 @@ public actor AnimaReminderStore {
         AnimaReminder(
             id: row["id"],
             text: row["text"] ?? "",
+            message: row["message"],
             fireAt: Date(timeIntervalSince1970: row["fire_at"]),
             repeatCadence: ProactiveCadence(rawValue: row["repeat"] ?? "none") ?? .none,
             goalId: row["goal_id"],

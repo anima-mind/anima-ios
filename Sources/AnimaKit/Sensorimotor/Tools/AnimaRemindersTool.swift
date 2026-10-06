@@ -31,8 +31,11 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 "agéndame", "ponlo en el calendario" o algo con lugar, asistentes o duración \
                 usa `calendar`; si pide explícitamente sus recordatorios del iPhone o la app \
                 Recordatorios usa `reminders`. Si es ambiguo y parece una cita, pregunta una \
-                vez. Acciones: list, create {text, fire_at, repeat?, goal_id?}, complete {id}, \
-                cancel {id}, snooze {id, minutes}. fire_at en ISO 8601 CON offset, resuelto \
+                vez. Acciones: list, create {text, message, fire_at, repeat?, goal_id?}, complete {id}, \
+                cancel {id}, snooze {id, minutes}. En create, `message` es OBLIGATORIO: lo que \
+                le dirás al dueño cuando llegue la hora, en tu voz y en segunda persona, una \
+                frase cálida y concreta (p.ej. "Oye, en media hora tienes la cita médica"); \
+                jamás un título impersonal como "Avisar de la cita". fire_at en ISO 8601 CON offset, resuelto \
                 contra la línea "Ahora:" del contexto (p.ej. 2026-10-06T09:00:00-05:00). \
                 goal_id liga el recordatorio a una meta (ver tool goals). Todo menos list \
                 requiere confirmación, que la pide el harness: llama la tool directo, sin \
@@ -49,6 +52,10 @@ public struct AnimaRemindersTool: SensorimotorTool {
                     "text": .object([
                         "type": .string("string"),
                         "description": .string("Qué recordar, en palabras del dueño (para create)."),
+                    ]),
+                    "message": .object([
+                        "type": .string("string"),
+                        "description": .string("Obligatorio en create: lo que le dirás al dueño cuando llegue la hora, en tu voz y en segunda persona, 1 frase (p.ej. 'Oye, en media hora tienes la cita médica')."),
                     ]),
                     "fire_at": .object([
                         "type": .string("string"),
@@ -89,7 +96,9 @@ public struct AnimaRemindersTool: SensorimotorTool {
             let when = input["fire_at"]?.stringValue.flatMap(Self.parseDate)
                 .map { Self.readable($0, timeZone: timeZone) } ?? input["fire_at"]?.stringValue ?? "?"
             let cadence = input["repeat"]?.stringValue.flatMap(ProactiveCadence.init(rawValue:))?.phrase
+            let spoken = input["message"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
             return "Recordarte '\(text)' el \(when)" + (cadence.map { " (\($0))" } ?? "")
+                + (spoken.map { ". Te diré: «\($0)»" } ?? "")
         case "complete":
             return "Marcar como hecho el recordatorio \(id)"
         case "cancel":
@@ -178,10 +187,11 @@ public struct AnimaRemindersTool: SensorimotorTool {
             cadence = .none
         }
         let goalId = input["goal_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
-        let r = try await store.create(text: text, fireAt: fireAt, repeat: cadence, goalId: goalId)
+        let message = input["message"]?.stringValue
+        let r = try await store.create(text: text, message: message, fireAt: fireAt, repeat: cadence, goalId: goalId)
         await onChange()
         let suffix = cadence.phrase.map { " (\($0))" } ?? ""
-        return ToolResult(content: "Listo: te recuerdo '\(r.text)' el \(Self.readable(r.fireAt, timeZone: timeZone))\(suffix). Id \(r.id).")
+        return ToolResult(content: "Listo: te recuerdo '\(r.text)' el \(Self.readable(r.fireAt, timeZone: timeZone))\(suffix); te diré: «\(r.spokenMessage)». Id \(r.id).")
     }
 
     // MARK: - Helpers

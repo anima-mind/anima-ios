@@ -255,6 +255,25 @@ enum ProactiveFixtures {
         #expect(changes.value == 7)
     }
 
+    @Test func createStoresHerMessageAndSnoozeKeepsIt() async throws {
+        let w = try F.world()
+        let t = tool(w)
+        #expect(t.spec.descriptionText.contains("`message` es OBLIGATORIO"))
+        #expect(t.confirmationSummary(for: ["action": "create", "text": "cita", "message": "Oye, ya casi es tu cita",
+                                            "fire_at": "2026-10-06T09:00:00-05:00"])
+                .hasSuffix("Te diré: «Oye, ya casi es tu cita»"))
+        let created = await t.execute(["action": "create", "text": "cita médica", "repeat": "daily",
+                                       "message": "Oye, en media hora tienes la cita médica",
+                                       "fire_at": "2026-10-06T08:00:00-05:00"])
+        #expect(created.content.contains("te diré: «Oye, en media hora tienes la cita médica»"))
+        let r = try #require(await w.reminders.list(.upcoming).first)
+        #expect(r.message == "Oye, en media hora tienes la cita médica")
+        let fork = try await w.reminders.snooze(id: r.id, minutes: 10)
+        #expect(fork.message == r.message)
+        let fallback = await t.execute(["action": "create", "text": "agua", "fire_at": "2026-10-06T10:00:00-05:00"])
+        #expect(fallback.content.contains("te diré: «Te recuerdo: agua»"))
+    }
+
     @Test func listShowsFiredAndGoal() async throws {
         let w = try F.world()
         let goalId = await w.other.ingestStated(statement: "ahorrar", desiredState: .remindersOverdue(atMost: 0),
@@ -302,7 +321,7 @@ enum ProactiveFixtures {
         #expect(ids == ["anima-reminder-\(r.id)"])
         #expect(w.fake.requestCount == 1)
         let request = try #require(w.fake.scheduled["anima-reminder-\(r.id)"])
-        #expect(request.title == "Lumen" && request.body == "llamar al banco")
+        #expect(request.title == "Lumen" && request.body == "Te recuerdo: llamar al banco")
         #expect(request.categoryId == ProactiveNotificationIDs.reminderCategory)
         #expect(request.trigger == .at(F.date(2026, 10, 6, 9)))
         #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://reminder?id=\(r.id)")
@@ -317,6 +336,18 @@ enum ProactiveFixtures {
                                                        categoryId: "", deepLink: nil))
         _ = await w.scheduler.sync()
         #expect(await w.fake.pendingIds() == ["handoff-x"])   // no toca lo ajeno
+    }
+
+    @Test func pushSpeaksInHerVoice() async throws {
+        let w = try F.world(status: .granted)
+        let r = try await w.reminders.create(text: "cita médica", message: " Oye, en media hora tienes la cita médica ",
+                                             fireAt: F.date(2026, 10, 6, 8))
+        _ = await w.scheduler.sync()
+        let request = try #require(w.fake.scheduled["anima-reminder-\(r.id)"])
+        #expect(request.title == "Lumen")
+        #expect(request.body == "Oye, en media hora tienes la cita médica")
+        let blank = try await w.reminders.create(text: "agua", message: "  ", fireAt: F.date(2026, 10, 6, 9))
+        #expect(blank.message == nil && blank.spokenMessage == "Te recuerdo: agua")
     }
 
     @Test func repeatingSchedulesNextOccurrencesAndCapsAtMax() async throws {
@@ -367,9 +398,8 @@ enum ProactiveFixtures {
         w.advance(2 * 3600)
         let messages = await w.reconciler.reconcileDueReminders(sessionId: sid)
         #expect(messages == [
-            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recordé: llamar al banco. ¿Cómo te fue?"),
-            ProactiveMessage(kind: .reminder(id: linked.id),
-                             text: "Te recordé: revisar el CDT (va por tu meta \"invertir 10M este año\"). ¿Cómo te fue?"),
+            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recuerdo: llamar al banco"),
+            ProactiveMessage(kind: .reminder(id: linked.id), text: "Te recuerdo: revisar el CDT"),
         ])
         #expect(await w.reconciler.reconcileDueReminders(sessionId: sid).isEmpty)   // sin duplicar
         let turns = try w.symbolic.visibleTurns(sessionId: sid)

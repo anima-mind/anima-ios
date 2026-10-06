@@ -123,7 +123,7 @@ struct SkillsSettingsScreen: View {
                     if let permissions = model.permissions {
                         AuthorizedActionsSection(model: permissions)
                     }
-                    Text("Con 3 éxitos seguidos pasa a practicada; con 5, a automatizada: corre sola sus lecturas y las escrituras siempre te piden ok. Un fallo la devuelve a aprendida. La práctica se guarda por nombre: renombrar una skill la vuelve nueva.")
+                    Text("Con 3 éxitos seguidos pasa a practicada; con 5, a automatizada: corre sola sus lecturas; lo que escribe te pide ok, salvo tus metas y recordatorios de Anima y lo que marcaste \"Autorizar siempre\" (lo revocas arriba, en Permisos). Un fallo la devuelve a aprendida. La práctica se guarda por nombre: renombrar una skill la vuelve nueva.")
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
                         .fixedSize(horizontal: false, vertical: true)

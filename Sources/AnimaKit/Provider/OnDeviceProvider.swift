@@ -324,7 +324,7 @@ public enum OnDevicePromptBuilder {
         }
 
         // 4. Solo tools client-side: las server-side (web_search) necesitan red.
-        let definitions: [OnDeviceToolDefinition] = tools.compactMap { spec in
+        let definitions: [OnDeviceToolDefinition] = ToolProfile.onDevice.apply(tools).compactMap { spec in
             guard case .client(let name, let description, let schema) = spec else { return nil }
             return OnDeviceToolDefinition(name: name, description: description,
                                           schema: OnDeviceSchema.from(jsonSchema: schema, name: name))

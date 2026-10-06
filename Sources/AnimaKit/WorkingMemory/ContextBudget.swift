@@ -4,12 +4,10 @@
 // - remote (Claude / OpenAI-compat): cada tool viaja como JSON
 //   {name, description, input_schema}; las server-side (web_search) suman su
 //   definición. JSON ≈ 4.2 chars/token, prosa ≈ 3.6.
-// - onDevice (Foundation Models): solo las client-side, como `Tool` con su
-//   `GenerationSchema` (traducción del JSON Schema, ver OnDeviceProvider). El
-//   framework las mete en la ventana de 4096: calibrado con
-//   `SystemLanguageModel.tokenCount(for: [Tool])` sobre las 10 tools reales
-//   (3797 tokens para 9478 chars de nombre + descripción + schema ⇒ 2.5
-//   chars/token; el español y los enums expandidos tokenizan caro).
+// - onDevice (Foundation Models): las tools del perfil `ToolProfile.onDevice`,
+//   como `Tool` con su `GenerationSchema`. Calibrado con
+//   `SystemLanguageModel.tokenCount(for: [Tool])` (≈ 2.5 chars/token: el
+//   español y los schemas tokenizan caro).
 
 import Foundation
 
@@ -34,7 +32,7 @@ public enum ContextBudget: Sendable, Equatable {
         case .remote:
             return Int(Double(ContextGauge.toolChars(tools)) / Self.remoteToolCharsPerToken)
         case .onDevice:
-            let local = tools.filter { if case .client = $0 { return true } else { return false } }
+            let local = ToolProfile.onDevice.apply(tools)
             return Int(Double(ContextGauge.toolChars(local)) / Self.onDeviceToolCharsPerToken)
         }
     }

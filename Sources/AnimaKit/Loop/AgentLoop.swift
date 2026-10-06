@@ -184,7 +184,7 @@ public actor AgentLoop {
             let clientSpecs = await sensorimotor.toolSpecs()
             // Solo el perfil de Claude lleva server tools (web_search es de Anthropic):
             // on-device y OpenAI-compat van sin ellas.
-            let allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
+            var allSpecs = clientSpecs + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
 
             // Restructure (§5.6): si un patrón demanding matchea una tool disponible,
             // el turno se rutea a .restructure (Opus effort high) y se inyecta un
@@ -203,6 +203,7 @@ public actor AgentLoop {
                 return .error
             }
             let route = binding.router.route(turnClass)
+            allSpecs = ToolProfile.for(model: route.model).apply(allSpecs)
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -563,8 +564,8 @@ public actor AgentLoop {
     public func contextGauge(sessionId: SessionID) async -> ContextGauge? {
         guard let binding = selector.binding(for: .interactive) else { return nil }
         let route = binding.router.route(.interactive)
-        let specs = await sensorimotor.toolSpecs()
-            + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : [])
+        let specs = ToolProfile.for(model: route.model).apply(await sensorimotor.toolSpecs()
+            + (selector.conversationProfile.reliefMode == .serverSide ? serverTools : []))
         let systemBase = AppGuide.systemBase(binding.router.systemPromptBase,
                                              contextBudget: workingMemory.profile.contextBudgetTokens)
         let fit = ContextFit(profile: workingMemory.profile, systemBase: systemBase, tools: specs, route: route)

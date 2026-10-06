@@ -33,7 +33,8 @@ final class GoalsUITests: AnimaUITestCase {
         tap(cadence, until: app.buttons["Diario"])
         tap(app.buttons["Diario"])
         waitUntil(status, "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
-        waitFor(byPrefix(app, "goal.checkin.time."))
+        // El control de hora y el resumen dicen la hora igual ("p. m.", no "p.m.").
+        waitUntil(byPrefix(app, "goal.checkin.time."), "label ENDSWITH '8:00 p. m.'")
 
         // Reabrir la vista: se relee de la base.
         openTab(app, "Chat")

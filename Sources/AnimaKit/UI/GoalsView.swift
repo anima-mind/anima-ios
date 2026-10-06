@@ -66,12 +66,32 @@ public final class GoalsViewModel: ObservableObject {
         await apply(goal, checkIn)
     }
 
-    public func setTime(_ goal: Goal, _ date: Date) async {
+    /// Hora en 12 h ("a. m." / "p. m."), la misma que pinta el resumen.
+    public func setTime(_ goal: Goal, hour12: Int, minute: Int, pm: Bool) async {
         var checkIn = goal.checkIn
-        let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
-        checkIn.hour = parts.hour ?? CheckInCadence.defaultHour
-        checkIn.minute = parts.minute ?? 0
+        checkIn.hour = Self.hour24(hour12, pm: pm)
+        checkIn.minute = min(max(minute, 0), 59)
         await apply(goal, checkIn)
+    }
+
+    /// 0-23 → (1-12, ¿p. m.?).
+    public static func clock12(_ hour24: Int) -> (hour: Int, pm: Bool) {
+        let hour = ((hour24 % 24) + 24) % 24
+        return (hour % 12 == 0 ? 12 : hour % 12, hour >= 12)
+    }
+
+    /// (1-12, ¿p. m.?) → 0-23.
+    public static func hour24(_ hour12: Int, pm: Bool) -> Int {
+        let base = min(max(hour12, 1), 12) % 12
+        return pm ? base + 12 : base
+    }
+
+    /// "8:00 p. m.": la hora del seguimiento con el MISMO formatter del resumen.
+    public static func timeLabel(_ checkIn: CheckInCadence, dates: AnimaDateText = AnimaDateText()) -> String {
+        var comps = DateComponents()
+        comps.year = 2026; comps.month = 1; comps.day = 1
+        comps.hour = checkIn.hour; comps.minute = checkIn.minute
+        return dates.calendar.date(from: comps).map(dates.time) ?? String(format: "%02d:%02d", checkIn.hour, checkIn.minute)
     }
 
     public func setWeekday(_ goal: Goal, _ weekday: Int) async {
@@ -104,10 +124,7 @@ public final class GoalsViewModel: ObservableObject {
 
     /// "cada día a las 8:00 p. m.", "entre semana a las 7:30 a. m.", "cada domingo a las 8:00 p. m.".
     public static func followUpPhrase(_ checkIn: CheckInCadence, dates: AnimaDateText = AnimaDateText()) -> String {
-        var comps = DateComponents()
-        comps.year = 2026; comps.month = 1; comps.day = 1
-        comps.hour = checkIn.hour; comps.minute = checkIn.minute
-        let time = dates.calendar.date(from: comps).map(dates.time) ?? String(format: "%02d:%02d", checkIn.hour, checkIn.minute)
+        let time = timeLabel(checkIn, dates: dates)
         switch checkIn.cadence {
         case .none: return "sin seguimiento"
         case .daily: return "cada día a las \(time)"
@@ -157,6 +174,8 @@ public final class GoalsViewModel: ObservableObject {
 public struct GoalsView: View {
     @ObservedObject private var model: GoalsViewModel
     @State private var showHistory = false
+    /// Meta cuyo selector de hora está abierto.
+    @State private var editingTimeFor: String?
     @State private var pendingDelete: Goal?
 
     public init(model: GoalsViewModel) {
@@ -378,14 +397,26 @@ public struct GoalsView: View {
                     .accessibilityIdentifier("goal.checkin.weekday.\(goal.id)")
                 }
                 if goal.checkIn.isActive {
-                    DatePicker("Hora", selection: Binding(
-                        get: { Self.time(goal.checkIn) },
-                        set: { date in Task { await model.setTime(goal, date) } }),
-                               displayedComponents: .hourAndMinute)
-                        .labelsHidden()
-                        .fixedSize()
-                        .environment(\.locale, Locale(identifier: "es_CO"))
-                        .accessibilityIdentifier("goal.checkin.time.\(goal.id)")
+                    Button { editingTimeFor = goal.id } label: {
+                        Text(GoalsViewModel.timeLabel(goal.checkIn))
+                            .font(Theme.Type_.tabular(Theme.Type_.secondary))
+                            .foregroundStyle(Theme.Colors.text)
+                            .padding(.horizontal, Theme.Space.stack)
+                            .frame(minHeight: Theme.minHitTarget)
+                            .background(Capsule().fill(Theme.Colors.surface))
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .accessibilityLabel("Hora del seguimiento, \(GoalsViewModel.timeLabel(goal.checkIn))")
+                    .accessibilityIdentifier("goal.checkin.time.\(goal.id)")
+                    .popover(isPresented: Binding(
+                        get: { editingTimeFor == goal.id },
+                        set: { if !$0 { editingTimeFor = nil } })) {
+                        CheckInTimePicker(checkIn: goal.checkIn) { hour12, minute, pm in
+                            Task { await model.setTime(goal, hour12: hour12, minute: minute, pm: pm) }
+                        }
+                        .presentationCompactAdaptation(.popover)
+                    }
                 }
             }
             Text(GoalsViewModel.checkInStatus(goal, model.progress[goal.id]))
@@ -397,9 +428,6 @@ public struct GoalsView: View {
         .padding(.top, 4)
     }
 
-    private static func time(_ checkIn: CheckInCadence) -> Date {
-        Calendar.current.date(bySettingHour: checkIn.hour, minute: checkIn.minute, second: 0, of: Date()) ?? Date()
-    }
 
     private func statusLabel(_ status: GoalStatus) -> String {
         switch status {
@@ -408,6 +436,54 @@ public struct GoalsView: View {
         case .abandoned: return "abandonada"
         case .pendingConfirmation: return "por confirmar"
         }
+    }
+}
+/// Hora del seguimiento en ruedas propias (hora, minutos, a. m./p. m.): el
+/// mismo formato que el resumen, sin depender del ICU del sistema ("p.m.").
+struct CheckInTimePicker: View {
+    static let wheelSize = CGSize(width: 280, height: 180)
+    let onChange: (Int, Int, Bool) -> Void
+    @State private var hour: Int
+    @State private var minute: Int
+    @State private var pm: Bool
+
+    init(checkIn: CheckInCadence, onChange: @escaping (Int, Int, Bool) -> Void) {
+        let clock = GoalsViewModel.clock12(checkIn.hour)
+        _hour = State(initialValue: clock.hour)
+        _minute = State(initialValue: checkIn.minute)
+        _pm = State(initialValue: clock.pm)
+        self.onChange = onChange
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Picker("Hora", selection: $hour) {
+                ForEach(1...12, id: \.self) { Text("\($0)").tag($0) }
+            }
+            Picker("Minutos", selection: $minute) {
+                ForEach(0..<60, id: \.self) { Text($0 < 10 ? "0\($0)" : "\($0)").tag($0) }
+            }
+            Picker("Periodo", selection: $pm) {
+                Text("a. m.").tag(false)
+                Text("p. m.").tag(true)
+            }
+        }
+        .wheelPickerStyle()
+        .font(Theme.Type_.body)
+        .frame(width: Self.wheelSize.width, height: Self.wheelSize.height)
+        .onChange(of: hour) { onChange(hour, minute, pm) }
+        .onChange(of: minute) { onChange(hour, minute, pm) }
+        .onChange(of: pm) { onChange(hour, minute, pm) }
+        .accessibilityIdentifier("goal.checkin.timePicker")
+    }
+}
+private extension View {
+    func wheelPickerStyle() -> some View {
+        #if os(iOS)
+        self.pickerStyle(.wheel)
+        #else
+        self
+        #endif
     }
 }
 #endif

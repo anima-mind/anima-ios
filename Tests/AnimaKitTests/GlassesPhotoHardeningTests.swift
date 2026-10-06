@@ -72,12 +72,14 @@ struct GlassesOnceDeadlineTests {
     }
 
     @Test func deadlineVenceAunqueLaTareaIgnoreLaCancelacion() async {
+        // La captura terca dura 8 s: el runner de CI es lento, así que el tope
+        // solo prueba que NO se esperó a la tarea, no cuántos ms tardó el scheduler.
         let started = Date()
-        let capture = stubbornCapture(3)
+        let capture = stubbornCapture(8)
         await #expect(throws: GlassesPhotoError.timeout) {
             _ = try await GlassesDeadline.run(timeout: 0.1, timeoutError: { GlassesPhotoError.timeout }, capture)
         }
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(Date().timeIntervalSince(started) < 6)
     }
 
     @Test func cancelarAlQueEsperaDevuelveElControlYCancelaLaTarea() async {

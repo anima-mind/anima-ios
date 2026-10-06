@@ -60,9 +60,9 @@ struct HUDTests {
 
     @Test func listeningIndicaFallbackAlTelefono() {
         let phone = HUDRenderer.render(.listening(viaPhone: true))
-        #expect(phone.texts.contains { $0.content == "Escuchando por el teléfono" })
+        #expect(phone.texts.contains { $0.content == "Escuchando (teléfono)… pausa para enviar" })
         let glasses = HUDRenderer.render(.listening(viaPhone: false))
-        #expect(glasses.texts.contains { $0.content.hasPrefix("Escuchando · pausa") })
+        #expect(glasses.texts.contains { $0.content == "Escuchando (gafas)… pausa para enviar" })
     }
 
     // MARK: Validador

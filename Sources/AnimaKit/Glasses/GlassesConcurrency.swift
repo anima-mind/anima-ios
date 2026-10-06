@@ -119,3 +119,14 @@ public enum GlassesCameraPermission {
         throw GlassesPhotoError.permissionDenied(why)
     }
 }
+
+/// Valor compartido con lock (callbacks de audio/SDK → la tarea que espera).
+public final class GlassesBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    public init(_ value: T) { stored = value }
+    public var value: T {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}

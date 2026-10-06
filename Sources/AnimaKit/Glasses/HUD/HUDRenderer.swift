@@ -61,7 +61,8 @@ public enum HUDRenderer {
         case .listening(let viaPhone):
             return HUDView(name: "listening", root: root(back: true, [
                 .flexBox(card(icon: .speechBubble,
-                              meta: viaPhone ? "Escuchando por el teléfono" : "Escuchando · pausa para enviar",
+                              meta: viaPhone ? "Escuchando (teléfono)… pausa para enviar"
+                                             : "Escuchando (gafas)… pausa para enviar",
                               body: "Dilo. Anima responde en voz alta y te muestra lo esencial aquí.",
                               bodySecondary: true,
                               group: HUDButtonGroup(alignment: .end, buttons: [

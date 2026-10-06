@@ -156,11 +156,20 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             listenTask?.cancel()
             let voice = self.voice
             listenTask = Task { [weak self] in
-                let transcript = await voice.capture { route in
+                let failure = GlassesBox<VoiceCaptureFailure?>(nil)
+                let transcript = await voice.capture(onRoute: { route in
                     Task { @MainActor in await self?.handle(.listeningRoute(viaPhone: route == .phoneMic)) }
-                }
+                }, onPartial: { _ in }, onFailure: { reason in
+                    failure.value = reason
+                })
                 guard !Task.isCancelled else { return }
-                await self?.handle(.transcript(transcript))
+                // El fallo se entrega DESPUÉS de la captura (orden garantizado):
+                // un transcript nil antes lo habría mandado al Home sin aviso.
+                if let reason = failure.value {
+                    await self?.handle(.voiceFailed(reason.message))
+                } else {
+                    await self?.handle(.transcript(transcript))
+                }
             }
         case .stopListening:
             voice.cancel()

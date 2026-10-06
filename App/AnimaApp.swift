@@ -764,7 +764,7 @@ final class AppModel: ObservableObject {
         if UITestMode.isActive {
             voice = SilentVoice(); speech = SilentVoice()
         } else {
-            voice = GlassesVoiceCapture(); speech = GlassesSpeaker()
+            voice = GlassesVoiceCapture(diagnostics: .shared); speech = GlassesSpeaker()
         }
         #else
         voice = SilentVoice(); speech = SilentVoice()

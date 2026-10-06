@@ -13,6 +13,8 @@ public enum HUDEvent: Sendable, Equatable {
     case listeningRoute(viaPhone: Bool)
     /// Fin de la captura de voz (nil/vacío = no se escuchó nada).
     case transcript(String?)
+    /// No se pudo escuchar (permisos, mic de las gafas sin formato, engine).
+    case voiceFailed(String)
     /// El turno del AgentLoop terminó con esta respuesta (texto completo).
     case turnFinished(reply: String)
     case turnRefused(String)
@@ -161,6 +163,9 @@ public enum HUDStateMachine {
         case (.listening, .action(.cancel)), (.listening, .action(.back)):
             next.screen = home
             return (next, [.stopListening])
+        case (.listening, .voiceFailed(let message)):
+            next.screen = .trouble(heading: VoiceCaptureFailure.heading, message: message)
+            return (next, [.returnHomeLater])
         case (.listening, .transcript(let text)):
             let heard = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             next.screen = heard.isEmpty ? home : .heard(transcript: heard)

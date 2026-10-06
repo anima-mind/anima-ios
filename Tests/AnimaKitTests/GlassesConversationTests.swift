@@ -14,6 +14,15 @@ final class MockVoice: VoiceCapturePort, SpeechOutputPort, @unchecked Sendable {
     /// Karaoke: el TTS simulado reporta el rango de CADA palabra de la
     /// utterance (como AVSpeechSynthesizer), con una pausa entre cada una.
     let wordRanges = Locked(false)
+    /// Fallo guionado: la captura no escucha y dice por qué.
+    let failure = Locked<VoiceCaptureFailure?>(nil)
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void,
+                 onFailure: @escaping @Sendable (VoiceCaptureFailure) -> Void) async -> String? {
+        if let reason = failure.value { onFailure(reason); return nil }
+        return await capture(onRoute: onRoute)
+    }
 
     func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? {
         onRoute(route.value)
@@ -157,7 +166,7 @@ struct GlassesConversationTests {
         rig.voice.hold.mutate { $0 = true }
         await rig.surface.handle(.action(.talk))
         #expect(await eventually { await rig.surface.state.screen == .listening(viaPhone: true) })
-        #expect(await eventually { rig.lastView?.texts.contains { $0.content == "Escuchando por el teléfono" } == true })
+        #expect(await eventually { rig.lastView?.texts.contains { $0.content == "Escuchando (teléfono)… pausa para enviar" } == true })
         rig.display?.tap(.cancel)
         #expect(await eventually { rig.voice.cancels.value >= 1 })
         #expect(await eventually { if case .home = await rig.surface.state.screen { return true } else { return false } })

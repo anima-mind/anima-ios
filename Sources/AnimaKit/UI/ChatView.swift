@@ -705,7 +705,7 @@ public struct ChatView: View {
                 if !message.thinking.isEmpty || (message.isStreaming && message.text.isEmpty) {
                     thoughtLine(message)
                 }
-                if !message.text.isEmpty || message.isStreaming {
+                if !message.text.isEmpty {
                     if message.isRefusal {
                         refusalCard(message)
                     } else if message.isError {
@@ -734,8 +734,9 @@ public struct ChatView: View {
         .accessibilityValue(message.isStreaming ? "streaming" : "done")
     }
 
-    /// Thought line: chevron que rota + "Pensando…" pulsante mientras razona,
-    /// luego "Pensó · primera frase"; tap expande el bloque con regla izquierda.
+    /// Thought line: la marca respirando + "Pensando…" mientras razona (sin
+    /// caret: el caret solo existe con texto fluyendo), luego chevron + "Pensó ·
+    /// primera frase"; tap expande el bloque con regla izquierda.
     @ViewBuilder
     private func thoughtLine(_ message: ChatViewModel.DisplayMessage) -> some View {
         let expanded = expandedThoughts.contains(message.id)
@@ -746,14 +747,14 @@ public struct ChatView: View {
                 else { expandedThoughts.insert(message.id) }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .light))
-                        .foregroundStyle(Theme.Colors.textFaint)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .animation(.easeOut(duration: 0.2), value: expanded)
                     if thinkingNow {
-                        ThinkingPulseLabel()
+                        ThinkingIndicator(p: model.mind.p)
                     } else {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .light))
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(.easeOut(duration: 0.2), value: expanded)
                         Text("Pensó · \(firstSentence(of: message.thinking))")
                             .font(Theme.Type_.secondary)
                             .foregroundStyle(Theme.Colors.textMuted)
@@ -1223,20 +1224,24 @@ struct MindGlassesAction: View {
     }
 }
 
-// MARK: - "Pensando…" con pulso
+// MARK: - "Pensando…" con la marca
 
-struct ThinkingPulseLabel: View {
-    @State private var dim = false
+/// Indicador de carga de la marca: BreathMark pequeño respirando + "Pensando…"
+/// muted. Nada de ProgressView genérico ni caret.
+struct ThinkingIndicator: View {
+    static let markSize: CGFloat = 17
+    var p: Double = 1
 
     var body: some View {
-        Text("Pensando…")
-            .font(Theme.Type_.secondary)
-            .foregroundStyle(Theme.Colors.textMuted)
-            .opacity(dim ? 0.35 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: Theme.Motion.thinkingPulse)
-                    .repeatForever(autoreverses: true)) { dim = true }
-            }
+        HStack(spacing: 6) {
+            BreathMark(size: Self.markSize, p: p, phase: .breathing)
+                .accessibilityHidden(true)
+            Text("Pensando…")
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.thinking")
     }
 }
 

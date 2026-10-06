@@ -185,7 +185,10 @@ public enum ChatMarkdown {
         let hashes = trimmed.prefix { $0 == "#" }.count
         guard (1...6).contains(hashes) else { return nil }
         let rest = trimmed.dropFirst(hashes)
-        guard rest.isEmpty || rest.first == " " else { return nil }
+        // "##Título" sin espacio (los modelos lo escriben a veces) también es
+        // título si sigue una letra; con un solo "#" no ("#hashtag").
+        let glued = hashes >= 2 && (rest.first?.isLetter ?? false)
+        guard rest.isEmpty || rest.first == " " || glued else { return nil }
         var text = rest.trimmingCharacters(in: .whitespaces)
         while text.hasSuffix("#") { text.removeLast() }   // "## Título ##"
         return (hashes, text.trimmingCharacters(in: .whitespaces))

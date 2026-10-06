@@ -77,6 +77,16 @@ struct ChatMarkdownTests {
         #expect(Self.paragraph(ChatMarkdown.blocks("####### siete").first).map(Self.plain) == "####### siete")
     }
 
+    @Test func encabezadoPegadoSinEspacio() {
+        #expect(ChatMarkdown.blocks("##Plan de ahorro\n###Ñandú") == [
+            .heading(level: 2, ChatMarkdown.inline("Plan de ahorro")),
+            .heading(level: 3, ChatMarkdown.inline("Ñandú")),
+        ])
+        #expect(Self.paragraph(ChatMarkdown.blocks("##1 de 3").first).map(Self.plain) == "##1 de 3")
+        #expect(Self.paragraph(ChatMarkdown.blocks("##").first) == nil)
+        #expect(Self.paragraph(ChatMarkdown.blocks("#Colombia").first).map(Self.plain) == "#Colombia")
+    }
+
     @Test func negrillaCursivaYCodigoInline() throws {
         let blocks = ChatMarkdown.blocks("Tienes **dos** reuniones y *hoy* `cron` pendiente.")
         #expect(blocks.count == 1)

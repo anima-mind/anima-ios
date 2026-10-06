@@ -13,6 +13,8 @@ public enum HUDScreen: Sendable, Equatable {
     case home(status: String?)
     /// Foto iniciada por el dueño con el botón "Foto" de la Home (sin confirmación).
     case capturing
+    /// La foto espera el permiso de cámara: Meta AI está abierta en el teléfono.
+    case cameraPermission
     /// Captura de voz activa. `viaPhone` = degradó al micrófono del teléfono.
     case listening(viaPhone: Bool)
     /// Transcript mostrado ANTES de enviarlo (regla del handoff).
@@ -53,6 +55,15 @@ public enum HUDRenderer {
             return HUDView(name: "capturing", root: root(back: true, [
                 .flexBox(card(icon: .videoCamera, meta: "Cámara", heading: "Tomando la foto…",
                               body: "Mantén la mirada en lo que quieres mostrar.", bodySecondary: true,
+                              group: HUDButtonGroup(alignment: .end, buttons: [
+                                  HUDButton("Cancelar", style: .outline, icon: .x, action: .cancel),
+                              ]))),
+            ]))
+
+        case .cameraPermission:
+            return HUDView(name: "cameraPermission", root: root(back: true, [
+                .flexBox(card(icon: .videoCamera, meta: "Permiso de cámara", heading: HUDPhoto.permissionHeading,
+                              body: "La foto se toma en cuanto vuelvas a Anima.", bodySecondary: true,
                               group: HUDButtonGroup(alignment: .end, buttons: [
                                   HUDButton("Cancelar", style: .outline, icon: .x, action: .cancel),
                               ]))),

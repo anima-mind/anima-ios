@@ -94,27 +94,35 @@ public enum GlassesDeadline {
 
 /// Permiso de cámara de las gafas (lo concede Meta AI con un deeplink de ida y
 /// vuelta). Si la app vuelve de Meta AI sin respuesta, se RE-CHEQUEA y se
-/// sigue o se falla con un error claro: nunca se cuelga esperando.
+/// sigue o se falla con un error claro: nunca se cuelga esperando. `onPrompt`
+/// avisa justo antes de abrir Meta AI (el HUD pide aprobarlo y volver).
 public enum GlassesCameraPermission {
+    public static let noResponse = "Meta AI no respondió"
+    public static let denied = "denegado"
+
     public static func ensure(check: @escaping @Sendable () async throws -> Bool,
                               request: @escaping @Sendable () async throws -> Bool,
                               timeout: TimeInterval = 90,
+                              onPrompt: @escaping @Sendable () -> Void = {},
                               log: @escaping @Sendable (String) -> Void = { _ in }) async throws {
         if try await check() { return }
         log("permiso de cámara: pidiendo a Meta AI")
-        var why: String?
+        onPrompt()
+        let why: String
         do {
             let granted = try await GlassesDeadline.run(
-                timeout: timeout, timeoutError: { GlassesPhotoError.permissionDenied("Meta AI no respondió") }, request)
+                timeout: timeout, timeoutError: { GlassesPhotoError.permissionDenied(noResponse) }, request)
             if granted { log("permiso de cámara: concedido"); return }
-            why = "denegado"
+            why = denied
         } catch is CancellationError {
             throw CancellationError()
+        } catch GlassesPhotoError.permissionDenied(let reason) {
+            why = reason ?? denied
         } catch {
             why = "\(error)"
         }
         if (try? await check()) == true { log("permiso de cámara: concedido al volver"); return }
-        log("permiso de cámara: \(why ?? "denegado")")
+        log("permiso de cámara: \(why)")
         throw GlassesPhotoError.permissionDenied(why)
     }
 }

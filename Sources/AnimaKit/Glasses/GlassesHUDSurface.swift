@@ -187,7 +187,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             captureTask = Task { [weak self] in
                 let event: HUDEvent
                 do {
-                    let data = try await body.capturePhoto()
+                    let data = try await body.capturePhoto(onPhase: { [weak self] phase in
+                        Task { @MainActor in await self?.handle(.photoPhase(phase)) }
+                    })
                     if let image = ImageDownscaler.imageBlock(from: data) {
                         event = .photoCaptured(image)
                     } else {

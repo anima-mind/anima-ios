@@ -30,6 +30,8 @@ public enum HUDEvent: Sendable, Equatable {
     case photoCaptured(ContentBlock)
     /// Botón "Foto": la cámara falló (o la foto no pudo procesarse).
     case photoFailed(String)
+    /// Botón "Foto": esperando el permiso en Meta AI / ya capturando.
+    case photoPhase(GlassesPhotoPhase)
     /// `glasses_camera` pide confirmación pinch en las gafas.
     case cameraRequested(reason: String)
     /// `glasses_show`: el agente proyecta una card (ya validada).
@@ -64,19 +66,24 @@ public enum HUDPhoto {
     public static let failure = "La cámara de las gafas no respondió. Vuelve a intentarlo desde el inicio."
     public static let failureHeading = "No pude tomar la foto."
 
-    /// El error de la captura en una línea para el dueño (nil = cancelada: sin aviso).
+    public static let permissionHeading = "Aprueba la cámara en Meta AI y vuelve…"
+
+    /// El error de la captura en una línea fija por causa (nil = cancelada:
+    /// sin aviso). El detalle crudo del SDK va solo al diagnóstico.
     public static func message(for error: Error) -> String? {
         if error is CancellationError { return nil }
         switch error {
         case GlassesPhotoError.setupFailed(let why):
-            return why == "timeout" ? "La cámara no arrancó (timeout). Reintenta."
-                                    : "La cámara no arrancó (\(why)). Reintenta."
-        case GlassesPhotoError.unsupported(let why):
-            return "Las gafas no dejaron tomar la foto (\(why)). Reintenta."
-        case GlassesPhotoError.failed(let why):
-            return "La foto falló (\(why)). Reintenta."
-        case GlassesPhotoError.permissionDenied:
-            return "Permiso de cámara denegado en Meta AI. Actívalo en Meta AI y reintenta."
+            return why == "timeout" ? "La cámara no respondió a tiempo. Reintenta."
+                                    : "La cámara no arrancó. Reintenta."
+        case GlassesPhotoError.unsupported:
+            return "Las gafas no dejaron tomar la foto. Reintenta."
+        case GlassesPhotoError.failed:
+            return "La foto falló. Reintenta."
+        case GlassesPhotoError.permissionDenied(let why):
+            return why == GlassesCameraPermission.noResponse
+                ? "Meta AI no respondió a tiempo. Aprueba la cámara y reintenta."
+                : "Permiso de cámara denegado en Meta AI. Actívalo en Meta AI y reintenta."
         case GlassesPhotoError.timeout:
             return "La foto no llegó a tiempo. Reintenta."
         case GlassesPhotoError.busy:
@@ -118,7 +125,7 @@ public enum HUDStateMachine {
             if case .cameraConfirm = state.screen { return (state, [.resolveCamera(false)]) }   // una a la vez
             var effects: [HUDEffect] = []
             if case .listening = state.screen { effects.append(.stopListening) }
-            if case .capturing = state.screen { effects.append(.cancelCapture) }
+            if state.screen == .capturing || state.screen == .cameraPermission { effects.append(.cancelCapture) }
             next.suspended = resumable(state.screen) ?? home
             next.screen = .cameraConfirm(reason: reason)
             return (next, effects)
@@ -126,7 +133,7 @@ public enum HUDStateMachine {
             var effects: [HUDEffect] = []
             switch state.screen {
             case .listening: effects.append(.stopListening)
-            case .capturing: effects.append(.cancelCapture)
+            case .capturing, .cameraPermission: effects.append(.cancelCapture)
             case .speaking: effects.append(.stopSpeaking)
             case .cameraConfirm: effects.append(.resolveCamera(false))
             default: break
@@ -146,13 +153,20 @@ public enum HUDStateMachine {
         case (.home, .action(.photo)):
             next.screen = .capturing
             return (next, [.capturePhoto])
-        case (.capturing, .photoCaptured(let image)):
+        case (.capturing, .photoPhase(.awaitingPermission)):
+            next.screen = .cameraPermission
+            return (next, [])
+        case (.cameraPermission, .photoPhase(.capturing)):
+            next.screen = .capturing
+            return (next, [])
+        case (.capturing, .photoCaptured(let image)), (.cameraPermission, .photoCaptured(let image)):
             next.screen = .thinking(question: HUDPhoto.question)
             return (next, [.submitPhoto(image)])
-        case (.capturing, .photoFailed(let message)):
+        case (.capturing, .photoFailed(let message)), (.cameraPermission, .photoFailed(let message)):
             next.screen = .trouble(heading: HUDPhoto.failureHeading, message: message)
             return (next, [.returnHomeLater])
-        case (.capturing, .action(.cancel)), (.capturing, .action(.back)):
+        case (.capturing, .action(.cancel)), (.capturing, .action(.back)),
+             (.cameraPermission, .action(.cancel)), (.cameraPermission, .action(.back)):
             next.screen = home
             return (next, [.cancelCapture])
 
@@ -269,7 +283,7 @@ public enum HUDStateMachine {
     /// Pantallas a las que tiene sentido volver tras la cámara (el turno sigue).
     static func resumable(_ screen: HUDScreen) -> HUDScreen? {
         switch screen {
-        case .listening, .cameraConfirm, .capturing: return nil
+        case .listening, .cameraConfirm, .capturing, .cameraPermission: return nil
         default: return screen
         }
     }

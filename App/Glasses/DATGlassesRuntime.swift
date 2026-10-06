@@ -246,18 +246,35 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     }
 
     // MARK: Cámara POV (MWDATCamera 1.0.0, re-verificado contra el .swiftinterface)
-    // Política (reintento + fallback) en GlassesPhotoCapture; tope global, una
-    // captura en vuelo y cancelación en GlassesBody (AnimaKit, testeadas). Aquí:
+    // Política (reintento + fallback) en GlassesPhotoCapture; permiso ANTES del
+    // tope, tope global, una captura en vuelo y cancelación en GlassesBody
+    // (AnimaKit, testeadas). Aquí:
     //   0. la sesión debe estar `.started` (pausada = transportes suspendidos);
-    //   1. permiso de cámara (Meta AI, ida y vuelta) con tope + re-chequeo;
+    //   1. permiso de cámara (Meta AI, ida y vuelta) con tope + re-chequeo, en
+    //      `ensureCameraPermission`, fuera del tope de la foto;
     //   2. `Camera.photo` standalone: listeners ANTES de `photo.start()`, captura
     //      en el primer `.started` FUERA del callback del listener (en el main
-    //      actor, como el sample oficial), `.stopped` sin captura = setupFailed;
+    //      actor, como el sample oficial), `.stopped` = GlassesStandaloneStop;
     //   3. fallback: el stream (stream.start → .streaming → capturePhoto(.jpeg)).
     // Cada intento: cámara NUEVA (una detenida queda inválida), continuation
     // NO lanzante resuelta UNA vez (GlassesOnce: éxito, error, tope o cancelación)
     // y teardown en orden fijo y una sola vez: tokens → photo/stream.stop() →
     // camera.stop(). Ningún listener toca la cámara tras resolverse el intento.
+    func ensureCameraPermission(onPrompt: @escaping @Sendable () -> Void) async throws {
+        #if canImport(MWDATCamera)
+        let diag = GlassesDiagnostics.shared
+        let wearables = self.wearables
+        try await GlassesCameraPermission.ensure(
+            check: { try await wearables.checkPermissionStatus(.camera) == .granted },
+            request: { try await wearables.requestPermission(.camera) == .granted },
+            timeout: Self.permissionTimeout,
+            onPrompt: onPrompt,
+            log: { diag.record(.photo, $0) })
+        #else
+        throw GlassesPhotoError.unavailable("build sin MWDATCamera")
+        #endif
+    }
+
     func capturePhoto() async throws -> Data {
         #if canImport(MWDATCamera)
         let diag = GlassesDiagnostics.shared
@@ -265,13 +282,6 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
             diag.record(.photo, "sesión \(session.state) — sin captura")
             throw GlassesPhotoError.failed("la sesión de las gafas no está activa (\(session.state))")
         }
-        let wearables = self.wearables
-        try await GlassesCameraPermission.ensure(
-            check: { try await wearables.checkPermissionStatus(.camera) == .granted },
-            request: { try await wearables.requestPermission(.camera) == .granted },
-            timeout: Self.permissionTimeout,
-            log: { diag.record(.photo, $0) })
-        try Task.checkCancellation()
         let session = self.session
         return try await GlassesPhotoCapture.capture(
             standalone: { try await Self.standalonePhoto(session) },
@@ -342,8 +352,10 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
                             photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
                         }
                     case .stopped:
-                        if starting.isSet, !requested.isSet {
-                            once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+                        if !once.isResolved,
+                           let failure = GlassesStandaloneStop.failure(starting: starting.isSet,
+                                                                       requested: requested.isSet) {
+                            once.fire(.failure(failure))
                         }
                     default:
                         break

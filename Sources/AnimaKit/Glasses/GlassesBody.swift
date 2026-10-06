@@ -506,10 +506,11 @@ public actor GlassesBody {
 
     // MARK: - Cámara
 
-    /// Tope de la foto completa (permiso + standalone + reintento + stream). La
-    /// pantalla "Tomando la foto…" SIEMPRE sale antes de esto.
+    /// Tope de la foto (standalone + reintento + stream), armado DESPUÉS del
+    /// permiso de cámara. La pantalla "Tomando la foto…" SIEMPRE sale antes de esto.
     public private(set) var photoDeadline: TimeInterval = 40
-    /// Hay una captura del hardware en vuelo (aunque el que esperaba ya se fue).
+    /// Hay una foto en curso (permiso o captura en el hardware, aunque el que
+    /// esperaba ya se fue).
     public private(set) var photoInFlight = false
 
     public func setPhotoDeadline(_ seconds: TimeInterval) { photoDeadline = seconds }
@@ -517,7 +518,10 @@ public actor GlassesBody {
     /// Foto POV. Máximo UNA captura en el hardware a la vez (doc DAT: los
     /// resultados no traen id); quien espera recupera el control al vencer el
     /// tope o al cancelar, y la captura vieja se cancela y se suelta sola.
-    public func capturePhoto() async throws -> Data {
+    /// El permiso (Meta AI) se resuelve antes y con su propio tope: el tiempo
+    /// del dueño en Meta AI no consume el de la cámara. `onPhase` informa si
+    /// se está esperando a Meta AI y cuándo empieza la captura.
+    public func capturePhoto(onPhase: @escaping @Sendable (GlassesPhotoPhase) -> Void = { _ in }) async throws -> Data {
         guard let session, displayStarted else {
             diagnostics.record(.photo, "rechazada: sin sesión activa")
             await record(errorClass: "glasses_unavailable", raw: "capturePhoto sin sesión activa")
@@ -528,8 +532,27 @@ public actor GlassesBody {
             throw GlassesPhotoError.busy
         }
         photoInFlight = true
-        let started = now()
+        let requested = now()
         diagnostics.record(.photo, "captura iniciada")
+        let prompted = GlassesFlag()
+        do {
+            try await session.ensureCameraPermission(onPrompt: {
+                prompted.set()
+                onPhase(.awaitingPermission)
+            })
+            try Task.checkCancellation()
+        } catch {
+            photoInFlight = false
+            if error is CancellationError {
+                diagnostics.record(.photo, "cancelada por el dueño esperando el permiso (\(elapsedMs(since: requested)) ms)")
+                throw CancellationError()
+            }
+            diagnostics.record(.photo, "sin permiso de cámara: \(error) (\(elapsedMs(since: requested)) ms)")
+            await record(errorClass: "glasses_camera", raw: "\(error)")
+            throw error
+        }
+        if prompted.isSet { onPhase(.capturing) }
+        let started = now()
         let operation = Task { try await session.capturePhoto() }
         Task { [weak self] in
             let result = await operation.result

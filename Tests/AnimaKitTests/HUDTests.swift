@@ -17,7 +17,7 @@ struct HUDTests {
         .attention("Sin red."),
         .cameraConfirm(reason: "Para ver qué estás mirando."),
         .agentCard(HUDFlexBox(background: .card, children: [.text(HUDText("Hola", style: .heading))])),
-        .handoff, .capturing,
+        .handoff, .capturing, .cameraPermission,
     ]
 
     @Test func catalogoDeIconosEsElDelSDK() {

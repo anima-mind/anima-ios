@@ -59,6 +59,9 @@ final class MockSession: GlassesSessionPort, @unchecked Sendable {
     /// Captura scriptada (cuelgues, latencia); gana sobre `photo`.
     let photoScript = Locked<(@Sendable () async throws -> Data)?>(nil)
     let photoCalls = Locked(0)
+    /// Permiso de cámara scriptado (Meta AI lento, denegado); nil = ya concedido.
+    let permissionScript = Locked<(@Sendable (@escaping @Sendable () -> Void) async throws -> Void)?>(nil)
+    let permissionCalls = Locked(0)
     let autoStart: Bool
 
     init(display: MockDisplay = MockDisplay(), autoStart: Bool = true, startError: Error? = nil,
@@ -86,6 +89,10 @@ final class MockSession: GlassesSessionPort, @unchecked Sendable {
     func addDisplay() throws -> any GlassesDisplayPort {
         if let displayError { throw displayError }
         return display
+    }
+    func ensureCameraPermission(onPrompt: @escaping @Sendable () -> Void) async throws {
+        permissionCalls.mutate { $0 += 1 }
+        if let script = permissionScript.value { try await script(onPrompt) }
     }
     func capturePhoto() async throws -> Data {
         photoCalls.mutate { $0 += 1 }

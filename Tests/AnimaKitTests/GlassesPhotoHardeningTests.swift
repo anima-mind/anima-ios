@@ -96,15 +96,33 @@ struct GlassesOnceDeadlineTests {
 
     @Test func permisoYaConcedidoNoAbreMetaAI() async throws {
         let requests = Locked(0)
-        try await GlassesCameraPermission.ensure(check: { true }, request: { requests.mutate { $0 += 1 }; return true })
+        let prompts = Locked(0)
+        try await GlassesCameraPermission.ensure(check: { true }, request: { requests.mutate { $0 += 1 }; return true },
+                                                 onPrompt: { prompts.mutate { $0 += 1 } })
         #expect(requests.value == 0)
+        #expect(prompts.value == 0)
     }
 
     @Test func permisoPedidoYConcedido() async throws {
         let log = Locked<[String]>([])
+        let prompts = Locked(0)
         try await GlassesCameraPermission.ensure(check: { false }, request: { true },
+                                                 onPrompt: { prompts.mutate { $0 += 1 } },
                                                  log: { m in log.mutate { $0.append(m) } })
         #expect(log.value == ["permiso de cámara: pidiendo a Meta AI", "permiso de cámara: concedido"])
+        #expect(prompts.value == 1)
+    }
+
+    @Test func metaAISinRespuestaDejaUnaSolaCausa() async {
+        let log = Locked<[String]>([])
+        let error = GlassesPhotoError.permissionDenied(GlassesCameraPermission.noResponse)
+        await #expect(throws: error) {
+            try await GlassesCameraPermission.ensure(check: { false }, request: stubbornBool(3), timeout: 0.1,
+                                                     log: { m in log.mutate { $0.append(m) } })
+        }
+        #expect(error.description == "permiso de cámara denegado en Meta AI (Meta AI no respondió)")
+        #expect(log.value.last == "permiso de cámara: Meta AI no respondió")
+        #expect(HUDPhoto.message(for: error) == "Meta AI no respondió a tiempo. Aprueba la cámara y reintenta.")
     }
 
     @Test func alVolverDeMetaAISeRechequea() async throws {
@@ -151,20 +169,67 @@ struct GlassesOnceDeadlineTests {
 
 @Suite("Campo — mensajes de la foto en el HUD")
 struct HUDPhotoMessageTests {
-    @Test func cadaErrorTieneSuTexto() {
+    @Test func cadaErrorTieneSuTextoFijoSinTokensDelSDK() {
         #expect(HUDPhoto.message(for: CancellationError()) == nil)
-        #expect(HUDPhoto.message(for: GlassesPhotoError.setupFailed("timeout")) == "La cámara no arrancó (timeout). Reintenta.")
-        #expect(HUDPhoto.message(for: GlassesPhotoError.setupFailed("stopped"))?.contains("stopped") == true)
-        #expect(HUDPhoto.message(for: GlassesPhotoError.unsupported("notReady"))?.contains("notReady") == true)
-        #expect(HUDPhoto.message(for: GlassesPhotoError.failed("busy"))?.hasPrefix("La foto falló") == true)
+        #expect(HUDPhoto.message(for: GlassesPhotoError.setupFailed("timeout")) == "La cámara no respondió a tiempo. Reintenta.")
+        #expect(HUDPhoto.message(for: GlassesPhotoError.setupFailed("stopped")) == "La cámara no arrancó. Reintenta.")
+        #expect(HUDPhoto.message(for: GlassesPhotoError.unsupported("notReady")) == "Las gafas no dejaron tomar la foto. Reintenta.")
+        #expect(HUDPhoto.message(for: GlassesPhotoError.failed("busy")) == "La foto falló. Reintenta.")
         #expect(HUDPhoto.message(for: GlassesPhotoError.timeout) == "La foto no llegó a tiempo. Reintenta.")
         #expect(HUDPhoto.message(for: GlassesPhotoError.busy)?.hasPrefix("Ya hay una foto en curso") == true)
         #expect(HUDPhoto.message(for: GlassesPhotoError.unavailable("nil")) == "La cámara de las gafas no está disponible.")
         #expect(HUDPhoto.message(for: GlassesBodyError.unavailable("x")) == "Las gafas no están conectadas.")
         #expect(HUDPhoto.message(for: MockError("raro")) == HUDPhoto.failure)
+        let raw: [GlassesPhotoError] = [.setupFailed("stopped"), .setupFailed("timeout"), .unsupported("notReady"),
+                                        .failed("cámara detenida tras capturePhoto"), .permissionDenied("denegado")]
+        for error in raw {
+            let message = HUDPhoto.message(for: error) ?? ""
+            #expect(!message.contains("("), "token crudo en el HUD: \(message)")
+        }
+        // El detalle crudo sigue en la descripción (diagnóstico).
+        #expect(GlassesPhotoError.unsupported("notReady").description.contains("notReady"))
         for error in [GlassesPhotoError.permissionDenied("x"), .timeout, .busy, .unavailable("y")] {
             #expect(!error.description.isEmpty)
         }
+    }
+
+    @Test func stoppedDeLaStandaloneSegunElMomento() {
+        #expect(GlassesStandaloneStop.failure(starting: false, requested: false) == nil)
+        #expect(GlassesStandaloneStop.failure(starting: true, requested: false) == .setupFailed("stopped"))
+        // Murió DESPUÉS de capturePhoto sin entregar: falla ya, sin esperar el tope.
+        #expect(GlassesStandaloneStop.failure(starting: true, requested: true)
+                == .failed(GlassesStandaloneStop.stoppedAfterCapture))
+        #expect(GlassesStandaloneStop.failure(starting: false, requested: true)
+                == .failed("cámara detenida tras capturePhoto"))
+    }
+
+    @Test func pantallaDelPermisoEsValidaYSeCancela() throws {
+        let view = HUDRenderer.render(.cameraPermission)
+        try HUDValidator.validate(view)
+        #expect(view.texts.contains { $0.content == "Aprueba la cámara en Meta AI y vuelve…" })
+        #expect(view.actions.contains(.cancel))
+        let state = HUDConversationState(screen: .capturing)
+        let waiting = HUDStateMachine.reduce(state, .photoPhase(.awaitingPermission))
+        #expect(waiting.state.screen == .cameraPermission)
+        #expect(waiting.effects.isEmpty)
+        let back = HUDStateMachine.reduce(waiting.state, .photoPhase(.capturing))
+        #expect(back.state.screen == .capturing)
+        for action in [HUDActionID.cancel, .back] {
+            let cancelled = HUDStateMachine.reduce(waiting.state, .action(action))
+            #expect(cancelled.state.screen == .home(status: nil))
+            #expect(cancelled.effects == [.cancelCapture])
+        }
+        let failed = HUDStateMachine.reduce(waiting.state, .photoFailed("x"))
+        #expect(failed.state.screen == .trouble(heading: HUDPhoto.failureHeading, message: "x"))
+        let image = ContentBlock.text("img")
+        let captured = HUDStateMachine.reduce(waiting.state, .photoCaptured(image))
+        #expect(captured.effects == [.submitPhoto(image)])
+        #expect(HUDStateMachine.reduce(waiting.state, .exited).effects == [.cancelCapture])
+        #expect(HUDStateMachine.reduce(waiting.state, .cameraRequested(reason: "r")).effects == [.cancelCapture])
+        // Fases tardías fuera de la foto no mueven la pantalla.
+        let home = HUDConversationState(screen: .home(status: nil))
+        #expect(HUDStateMachine.reduce(home, .photoPhase(.capturing)).state == home)
+        #expect(HUDStateMachine.reduce(home, .photoPhase(.awaitingPermission)).state == home)
     }
 
     @Test func pantallaDeFalloEsValidaYVuelveConAtras() throws {
@@ -247,6 +312,62 @@ struct GlassesBodyPhotoTests {
         #expect(diag.entries.contains { $0.category == .photo && $0.message.hasPrefix("falló") })
     }
 
+    @Test func elPermisoLentoNoConsumeElTopeDeLaFoto() async throws {
+        let runtime = MockRuntime()
+        let diag = GlassesDiagnostics()
+        let body = try await Self.activeBody(runtime, diagnostics: diag)
+        await body.setPhotoDeadline(0.2)
+        let session = try #require(runtime.lastSession)
+        session.permissionScript.mutate { $0 = { onPrompt in
+            onPrompt()
+            try await Task.sleep(nanoseconds: 600_000_000)   // el dueño tarda en Meta AI > tope de la foto
+        } }
+        let phases = Locked<[GlassesPhotoPhase]>([])
+        let data = try await body.capturePhoto(onPhase: { p in phases.mutate { $0.append(p) } })
+        #expect(data == Data([0xFF, 0xD8, 0xFF]))
+        #expect(phases.value == [.awaitingPermission, .capturing])
+        #expect(session.permissionCalls.value == 1)
+        #expect(session.photoCalls.value == 1)
+        #expect(await eventually { await !body.photoInFlight })
+    }
+
+    @Test func sinPermisoNoSeAbreLaCamaraNiSeEsperaElTope() async throws {
+        let runtime = MockRuntime()
+        let diag = GlassesDiagnostics()
+        let body = try await Self.activeBody(runtime, diagnostics: diag)
+        let session = try #require(runtime.lastSession)
+        session.permissionScript.mutate { $0 = { _ in throw GlassesPhotoError.permissionDenied("denegado") } }
+        let phases = Locked<[GlassesPhotoPhase]>([])
+        await #expect(throws: GlassesPhotoError.permissionDenied("denegado")) {
+            _ = try await body.capturePhoto(onPhase: { p in phases.mutate { $0.append(p) } })
+        }
+        #expect(await !body.photoInFlight)
+        #expect(session.photoCalls.value == 0)
+        #expect(phases.value.isEmpty)
+        #expect(diag.entries.contains { $0.message.hasPrefix("sin permiso de cámara") })
+        session.permissionScript.mutate { $0 = nil }
+        #expect(try await body.capturePhoto() == Data([0xFF, 0xD8, 0xFF]))
+    }
+
+    @Test func cancelarEsperandoElPermisoLiberaLaFoto() async throws {
+        let runtime = MockRuntime()
+        let diag = GlassesDiagnostics()
+        let body = try await Self.activeBody(runtime, diagnostics: diag)
+        let session = try #require(runtime.lastSession)
+        session.permissionScript.mutate { $0 = { onPrompt in
+            onPrompt()
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+        } }
+        let task = Task { try await body.capturePhoto() }
+        #expect(await eventually { await body.photoInFlight })
+        #expect(await eventually { session.permissionCalls.value == 1 })
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(await !body.photoInFlight)
+        #expect(session.photoCalls.value == 0)
+        #expect(diag.entries.contains { $0.message.hasPrefix("cancelada por el dueño esperando el permiso") })
+    }
+
     @Test func sinSesionNoCaptura() async {
         let diag = GlassesDiagnostics()
         let body = GlassesBody(runtime: MockRuntime(), diagnostics: diag)
@@ -277,6 +398,53 @@ struct GlassesPhotoScreenTests {
         await surface.handle(.action(.photo))
         let busy = HUDScreen.trouble(heading: HUDPhoto.failureHeading, message: "Ya hay una foto en curso. Espera unos segundos.")
         #expect(await eventually(3) { await surface.state.screen == busy })
+        surface.stop()
+    }
+
+    @Test func esperandoMetaAIMuestraSuPantallaYLuegoCaptura() async throws {
+        let runtime = MockRuntime()
+        let body = try await GlassesBodyPhotoTests.activeBody(runtime)
+        await body.setPhotoDeadline(0.15)
+        let session = try #require(runtime.lastSession)
+        let release = Locked(false)
+        session.permissionScript.mutate { $0 = { onPrompt in
+            onPrompt()
+            while !release.value { try await Task.sleep(nanoseconds: 10_000_000) }
+        } }
+        session.photoScript.mutate { $0 = { throw GlassesPhotoError.failed("x") } }
+        let voice = MockVoice()
+        let surface = GlassesHUDSurface(body: body, runner: MockRunner(), sessionId: "s", voice: voice, speech: voice,
+                                        errorDwell: 5)
+        await surface.start()
+        await surface.handle(.action(.photo))
+        #expect(await eventually(3) { await surface.state.screen == .cameraPermission })
+        // Más que el tope de la foto en Meta AI: no hay "no llegó a tiempo".
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        #expect(surface.state.screen == .cameraPermission)
+        release.mutate { $0 = true }
+        let failed = HUDScreen.trouble(heading: HUDPhoto.failureHeading, message: "La foto falló. Reintenta.")
+        #expect(await eventually(3) { await surface.state.screen == failed })
+        surface.stop()
+    }
+
+    @Test func cancelarEnLaPantallaDelPermisoVuelveAlHomeYLibera() async throws {
+        let runtime = MockRuntime()
+        let body = try await GlassesBodyPhotoTests.activeBody(runtime)
+        let session = try #require(runtime.lastSession)
+        session.permissionScript.mutate { $0 = { onPrompt in
+            onPrompt()
+            try await Task.sleep(nanoseconds: 5_000_000_000)
+        } }
+        let voice = MockVoice()
+        let surface = GlassesHUDSurface(body: body, runner: MockRunner(), sessionId: "s", voice: voice, speech: voice,
+                                        errorDwell: 0.05)
+        await surface.start()
+        await surface.handle(.action(.photo))
+        #expect(await eventually(3) { await surface.state.screen == .cameraPermission })
+        await surface.handle(.action(.cancel))
+        #expect(surface.state.screen == .home(status: nil))
+        #expect(await eventually { await !body.photoInFlight })
+        #expect(session.photoCalls.value == 0)
         surface.stop()
     }
 

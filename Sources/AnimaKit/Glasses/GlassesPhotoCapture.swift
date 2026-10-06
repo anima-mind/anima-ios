@@ -47,6 +47,28 @@ public enum GlassesPhotoError: Error, Equatable, CustomStringConvertible {
     }
 }
 
+/// En qué va la foto, para la pantalla del HUD.
+public enum GlassesPhotoPhase: Sendable, Equatable {
+    /// Meta AI está pidiendo el permiso de cámara (el dueño debe aprobar y volver).
+    case awaitingPermission
+    /// Permiso resuelto: la cámara está tomando la foto.
+    case capturing
+}
+
+/// Qué hacer cuando la `Camera.photo` standalone vuelve a `.stopped`.
+public enum GlassesStandaloneStop {
+    /// - starting: ya pasó por `.starting`.
+    /// - requested: ya se llamó `capturePhoto` (solo tras el primer `.started`).
+    /// nil = `.stopped` inicial (nada que resolver).
+    public static func failure(starting: Bool, requested: Bool) -> GlassesPhotoError? {
+        if requested { return .failed(stoppedAfterCapture) }
+        if starting { return .setupFailed("stopped") }
+        return nil
+    }
+
+    public static let stoppedAfterCapture = "cámara detenida tras capturePhoto"
+}
+
 public enum GlassesPhotoCapture {
     /// Ruta que terminó entregando la foto (diagnóstico/tests).
     public enum Path: String, Sendable, Equatable { case standalone, standaloneRetry, stream }

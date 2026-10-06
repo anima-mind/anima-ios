@@ -101,8 +101,12 @@ public protocol GlassesSessionPort: AnyObject, Sendable {
     func faultUpdates() -> AsyncStream<GlassesFault>
     /// Un display por sesión.
     func addDisplay() throws -> any GlassesDisplayPort
+    /// Permiso de cámara (Meta AI, ida y vuelta con tope propio). Se resuelve
+    /// ANTES del tope de la foto: el dueño puede tardar en Meta AI sin que eso
+    /// cuente como cámara colgada. `onPrompt` = se abrió Meta AI.
+    func ensureCameraPermission(onPrompt: @escaping @Sendable () -> Void) async throws
     /// Foto POV (MWDATCamera 1.0: `Camera.photo` standalone, fallback al stream —
-    /// política en GlassesPhotoCapture).
+    /// política en GlassesPhotoCapture). Supone el permiso ya concedido.
     func capturePhoto() async throws -> Data
 }
 

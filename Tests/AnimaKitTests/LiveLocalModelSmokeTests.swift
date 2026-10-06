@@ -223,7 +223,7 @@ import Testing
             let first = created.first
             let onTime: Bool = first.map { abs($0.fireAt.timeIntervalSince(expected)) <= tolerance } ?? false
             let sameCadence: Bool = first?.repeatCadence == cadence
-            let named: Bool = first?.text.lowercased().contains(word) ?? false
+            let named: Bool = first.map { LocalWhen.fold($0.text).contains(LocalWhen.fold(word)) } ?? false
             let honest: Bool = t.notice == nil && !t.text.contains("ERROR")
             let ok = created.count == 1 && onTime && sameCadence && named && honest
             Self.row(name, run, t, ok)
@@ -341,9 +341,115 @@ import Testing
         for run in 1...Self.runs {
             let world = try await World()
             let t = await Self.turn(world, "quiero ver mis metas")
-            let ok = await world.other.allGoals().isEmpty && t.calls.contains { $0.hasPrefix("list_goals") }
-                && !t.calls.contains { $0.hasPrefix("declare_goal") } && t.notice == nil
+            let empty = await world.other.allGoals().isEmpty
+            let listed = t.calls.contains { $0.hasPrefix("list_goals") } && !t.calls.contains { $0.hasPrefix("declare_goal") }
+            let answered = ["no tienes", "no hay", "ningun"].contains(where: LocalWhen.fold(t.text).contains)
+            let ok = empty && listed && answered && t.notice == nil
             Self.row("16 quiero ver mis metas", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    // MARK: - Ronda 2 del review
+
+    @Test func dayOfMonthWithMorningHour() async throws {
+        let day = Self.calendar.date(byAdding: .day, value: 9, to: Self.today)!
+        let p = Self.calendar.dateComponents([.day, .month], from: day)
+        try await expectReminder("19 día de mes 10 de la mañana",
+                                 "recuérdame el \(p.day!) de \(Self.monthNames[p.month! - 1]) a las 10 de la mañana la cita",
+                                 at: Self.at(day, 10), contains: "cita")
+    }
+
+    @Test func eventRangeAfterDayOfMonth() async throws {
+        guard Self.enabled else { return }
+        let day = Self.calendar.date(byAdding: .day, value: 9, to: Self.today)!
+        let p = Self.calendar.dateComponents([.day, .month], from: day)
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "agéndame dentista el \(p.day!) de \(Self.monthNames[p.month! - 1]) de 2 a 3 de la tarde")
+            let events = world.calendar.created.value
+            let ok = events.count == 1 && events.first?.1 == Self.at(day, 14) && events.first?.2 == Self.at(day, 15)
+                && t.notice == nil
+            Self.row("20 evento de 2 a 3", run, t, ok)
+            #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1, $0.2) })")
+        }
+    }
+
+    @Test func deletingAGoalNeverCreatesOne() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            _ = await world.other.ingestStated(statement: "correr 10 km", desiredState: .progressCheckIn(everyDays: 8),
+                                               evidence: "test")
+            let t = await Self.turn(world, "elimina mi meta de correr")
+            let goals = await world.other.allGoals()
+            let folded = LocalWhen.fold(t.text)
+            let lies = ["elimine", "eliminad", "borre", "borrad", "quitad", "ya no esta", "listo"].contains(where: folded.contains)
+            let ok = goals.count == 1 && !t.calls.contains { $0.hasPrefix("declare_goal") } && !lies
+            Self.row("21 elimina mi meta", run, t, ok)
+            #expect(ok, "corrida \(run): \(goals.map(\.statement))")
+        }
+    }
+
+    @Test func withinTwentyMinutes() async throws {
+        try await expectReminder("22 dentro de 20 min", "recuérdame dentro de 20 minutos sacar la ropa",
+                                 at: Date().addingTimeInterval(1200), contains: "ropa", tolerance: 180)
+    }
+
+    @Test func inFortyFiveMinutes() async throws {
+        try await expectReminder("23 en 45 min", "recuérdame en 45 minutos apagar el horno",
+                                 at: Date().addingTimeInterval(2700), contains: "horno", tolerance: 180)
+    }
+
+    @Test func everyFifteenDaysIsOnceAndSaid() async throws {
+        guard Self.enabled else { return }
+        let expected = Self.at(Self.calendar.date(byAdding: .day, value: 15, to: Self.today)!, 9)
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "recuérdame cada 15 días revisar la tarjeta")
+            let created = await world.reminders.list()
+            let once: Bool = created.count == 1 && created.first?.repeatCadence == ProactiveCadence.none
+            let onDate: Bool = created.first?.fireAt == expected
+            let said: Bool = LocalWhen.fold(t.text).contains("repit")
+            let ok = once && onDate && said && t.notice == nil
+            Self.row("24 cada 15 días", run, t, ok)
+            #expect(ok, "corrida \(run): \(created.map { ($0.fireAt, $0.repeatCadence) })")
+        }
+    }
+
+    @Test func eventsThisWeekInLocalTime() async throws {
+        guard Self.enabled else { return }
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        for run in 1...Self.runs {
+            let world = try await World()
+            world.calendar.records = [
+                CalendarEventRecord(id: "EK-1:ABC", title: "Dentista", notes: nil, start: Self.at(tomorrow, 15)),
+                CalendarEventRecord(id: "EK-2:DEF", title: "Almuerzo con Ana", notes: nil,
+                                    start: Self.at(Self.calendar.date(byAdding: .day, value: 2, to: Self.today)!, 13)),
+            ]
+            let t = await Self.turn(world, "¿qué eventos tengo esta semana?")
+            let folded = LocalWhen.fold(t.text)
+            let ok = folded.contains("dentista") && !t.text.contains("EK-") && !t.text.contains("Z")
+                && !t.text.contains("T15") && t.notice == nil
+            Self.row("25 eventos de la semana", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    @Test func noHourMeansAPlausibleHour() async throws {
+        try await expectReminder("26 mañana sin hora", "recuérdame mañana que hoy fue un buen día",
+                                 at: Self.at(Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!, 9),
+                                 contains: "buen")
+    }
+
+    @Test func howManyRemindersIsAQuery() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "quiero saber cuántos recordatorios tengo")
+            let ok = await world.reminders.list().isEmpty && !t.calls.contains { $0.hasPrefix("remind_me") }
+                && t.notice == nil && !t.text.contains("ERROR")
+            Self.row("27 cuántos recordatorios", run, t, ok)
             #expect(ok, "corrida \(run)")
         }
     }

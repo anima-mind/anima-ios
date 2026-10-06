@@ -114,6 +114,17 @@ import Testing
         #expect(room >= Self.onDeviceRoomFloor, "quedan \(room)")
     }
 
+    /// D: reglas del modelo local en código (Remote Config no las puede quitar).
+    @Test func localRulesTravelWithTheCompactGuide() throws {
+        let base = try Self.onDeviceSystemBase()
+        #expect(base.hasPrefix("Eres Anima"))
+        #expect(base.contains(AppGuide.localRules) && base.contains(AppGuide.compactBlock))
+        for rule in ["de tú", "1-3 frases", "placeholders", "Nunca digas que hiciste algo", "si falla, dilo"] {
+            #expect(AppGuide.localRules.contains(rule), "falta \(rule)")
+        }
+        #expect(!AppGuide.systemBase("B").contains(AppGuide.localRules))
+    }
+
     @Test func onDeviceProviderSendsTheLocalSet() throws {
         let tools = try RealToolSet.specs()
         let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("hola")]), tools: tools,

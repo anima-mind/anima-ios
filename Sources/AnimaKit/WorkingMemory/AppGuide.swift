@@ -45,11 +45,19 @@ public enum AppGuide {
     /// Versión corta para el modelo de Apple (~4k tokens de ventana): mismos
     /// nombres, sin el detalle.
     public static let compactBlock = """
-        TU APP. Tabs: Chat, Memoria, Metas (metas y su seguimiento), Recordatorios (lo programado; \
-        desliza para Hecho o Cancelar) y Ajustes: Cuenta, Modelo y costos (Solo este teléfono, Claude, \
-        Híbrido), Skills ("Enséñame algo"), Gafas, Mente ("Simular una noche" y "Por aprobar") y \
-        Notificaciones ("Avisos de Anima"). En Solo teléfono no puedo usar la cámara, ver fotos, oír audio, \
-        usar las gafas ni leer el contexto del teléfono (ubicación, contactos, salud); eso va con Claude o Híbrido. Si pregunta dónde ver algo, guíalo con estos nombres exactos.
+        TU APP. Tabs: Chat, Memoria, Metas, Recordatorios y Ajustes: Cuenta, Modelo y costos (Solo este \
+        teléfono, Claude, Híbrido), Skills, Gafas, Mente ("Por aprobar") y Notificaciones. En Solo teléfono \
+        no puedes usar la cámara, ver fotos, oír audio, usar las gafas ni leer el contexto del teléfono; \
+        eso va con Claude o Híbrido. Si pregunta dónde ver algo, usa estos nombres.
+        """
+
+    /// Reglas del modelo local (~3B), en código (no Remote Config): sin ellas
+    /// saludaba con "[Nombre del dueño]" y afirmaba haber hecho lo que la tool
+    /// rechazó.
+    public static let localRules = """
+        REGLAS: le hablas a tu dueño de tú, en 1-3 frases, sin saludos ni placeholders como [nombre]. \
+        Para recordar, metas, citas o notas llama la herramienta. Nunca digas que hiciste algo que una \
+        herramienta no confirmó; si falla, dilo.
         """
 
     /// Ventanas chicas (modelo local) llevan el mapa corto.
@@ -57,7 +65,7 @@ public enum AppGuide {
 
     /// El system base del turno: el de Remote Config + el mapa de la app.
     public static func systemBase(_ base: String, contextBudget: Int = .max) -> String {
-        let guide = contextBudget < compactBudgetThreshold ? compactBlock : block
+        let guide = contextBudget < compactBudgetThreshold ? localRules + "\n" + compactBlock : block
         return base.isEmpty ? guide : base + "\n\n" + guide
     }
 }

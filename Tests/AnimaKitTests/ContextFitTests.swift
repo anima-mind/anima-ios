@@ -131,7 +131,7 @@ import Testing
 
     @Test func compactGuideForSmallWindows() {
         #expect(AppGuide.systemBase("B", contextBudget: ContextProfile.onDevice.contextBudgetTokens)
-                == "B\n\n" + AppGuide.compactBlock)
+                == "B\n\n" + AppGuide.localRules + "\n" + AppGuide.compactBlock)
         #expect(AppGuide.systemBase("B", contextBudget: ContextProfile.claude.contextBudgetTokens) == "B\n\n" + AppGuide.block)
         for tab in ShellTab.allCases { #expect(AppGuide.compactBlock.contains(tab.title)) }
         for route in SettingsRoute.allCases { #expect(AppGuide.compactBlock.contains(route.title)) }

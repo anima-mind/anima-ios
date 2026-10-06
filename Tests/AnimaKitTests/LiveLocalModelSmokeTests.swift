@@ -192,4 +192,159 @@ import Testing
             #expect(ok, "corrida \(run)")
         }
     }
+
+    // MARK: - Casos del review (fechas relativas al reloj real)
+
+    static let calendar = Calendar.current
+    static var today: Date { calendar.startOfDay(for: Date()) }
+    static let monthNames = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                             "septiembre", "octubre", "noviembre", "diciembre"]
+    static let weekdayNames = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+
+    static func at(_ day: Date, _ hour: Int) -> Date {
+        calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
+    }
+
+    /// El próximo <weekday> (1=domingo), nunca hoy.
+    static func next(_ weekday: Int) -> Date {
+        var ahead = (weekday - calendar.component(.weekday, from: today) + 7) % 7
+        if ahead == 0 { ahead = 7 }
+        return calendar.date(byAdding: .day, value: ahead, to: today)!
+    }
+
+    /// Un recordatorio único con la prueba que se pide; imprime la fila.
+    func expectReminder(_ name: String, _ prompt: String, at expected: Date, repeat cadence: ProactiveCadence = .none,
+                        contains word: String, tolerance: TimeInterval = 0) async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, prompt)
+            let created = await world.reminders.list()
+            let first = created.first
+            let onTime: Bool = first.map { abs($0.fireAt.timeIntervalSince(expected)) <= tolerance } ?? false
+            let sameCadence: Bool = first?.repeatCadence == cadence
+            let named: Bool = first?.text.lowercased().contains(word) ?? false
+            let honest: Bool = t.notice == nil && !t.text.contains("ERROR")
+            let ok = created.count == 1 && onTime && sameCadence && named && honest
+            Self.row(name, run, t, ok)
+            #expect(ok, "corrida \(run): \(created.map { ($0.text, $0.fireAt, $0.repeatCadence) })")
+        }
+    }
+
+    @Test func fridayEveningTrash() async throws {
+        try await expectReminder("7 viernes 7 pm basura", "recuérdame el viernes a las 7 de la noche sacar la basura",
+                                 at: Self.at(Self.next(6), 19), contains: "basura")
+    }
+
+    @Test func weekdayPill() async throws {
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        var first = Self.at(Self.today, 8) > Date() ? Self.at(Self.today, 8) : Self.at(tomorrow, 8)
+        while [1, 7].contains(Self.calendar.component(.weekday, from: first)) {
+            first = Self.calendar.date(byAdding: .day, value: 1, to: first)!
+        }
+        try await expectReminder("11 laborales 8 am", "recuérdame todos los días laborales a las 8 tomar la pastilla",
+                                 at: first, repeat: .weekdays, contains: "pastilla")
+    }
+
+    @Test func explicitDateBeatsTheWeekday() async throws {
+        let day = Self.calendar.date(byAdding: .day, value: 9, to: Self.today)!
+        let p = Self.calendar.dateComponents([.day, .month, .weekday], from: day)
+        let prompt = "recuérdame el \(Self.weekdayNames[p.weekday! - 1]) \(p.day!) de \(Self.monthNames[p.month! - 1]) "
+            + "a las 10 la cita con el médico"
+        try await expectReminder("12 fecha explícita", prompt, at: Self.at(day, 10), contains: "médico")
+    }
+
+    @Test func inTwoHours() async throws {
+        try await expectReminder("13 en 2 horas", "recuérdame en 2 horas revisar el horno",
+                                 at: Date().addingTimeInterval(7200), contains: "horno", tolerance: 180)
+    }
+
+    @Test func dateWithMonth() async throws {
+        let day = Self.calendar.date(byAdding: .day, value: 40, to: Self.today)!
+        let p = Self.calendar.dateComponents([.day, .month], from: day)
+        try await expectReminder("14 día de mes", "recuérdame el \(p.day!) de \(Self.monthNames[p.month! - 1]) a las 9 pagar el arriendo",
+                                 at: Self.at(day, 9), contains: "arriendo")
+    }
+
+    @Test func dayAfterTomorrow() async throws {
+        let day = Self.calendar.date(byAdding: .day, value: 2, to: Self.today)!
+        try await expectReminder("15 pasado mañana", "recuérdame pasado mañana a las 10 llevar el carro al taller",
+                                 at: Self.at(day, 10), contains: "carro")
+    }
+
+    @Test func todayBeatsTheDictatedTomorrow() async throws {
+        let late = Self.calendar.component(.hour, from: Date()) >= 17
+        let prompt = late ? "recuérdame hoy a las 11 de la noche que mañana es el examen"
+                          : "recuérdame hoy a las 6 de la tarde que mañana es el examen"
+        try await expectReminder("17 hoy que mañana", prompt, at: Self.at(Self.today, late ? 23 : 18), contains: "examen")
+    }
+
+    @Test func everyMonday() async throws {
+        try await expectReminder("18 todos los lunes", "recuérdame todos los lunes a las 9 la reunión de equipo",
+                                 at: Self.at(Self.next(2), 9), repeat: .weekly, contains: "reuni")
+    }
+
+    @Test func readingGoalEverySunday() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "quiero leer 12 libros este año, pregúntame cada domingo")
+            let goals = await world.other.allGoals()
+            let checkIn = goals.first?.checkIn
+            let sunday: Bool = checkIn?.cadence == .weekly && checkIn?.weekday == 1
+            let named: Bool = goals.first?.statement.lowercased().contains("libros") ?? false
+            let honest: Bool = t.notice == nil && !t.text.lowercased().contains("lunes")
+            let ok = goals.count == 1 && sunday && named && honest
+            Self.row("8 meta cada domingo", run, t, ok)
+            #expect(ok, "corrida \(run): \(goals.map { ($0.statement, $0.checkIn.phrase) })")
+        }
+    }
+
+    @Test func officeWifiNote() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            defer { try? FileManager.default.removeItem(at: world.notesRoot) }
+            let t = await Self.turn(world, "anota que la clave del wifi de la oficina es casa123")
+            let files = (try? FileManager.default.contentsOfDirectory(at: world.notesRoot, includingPropertiesForKeys: nil)) ?? []
+            let content = files.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
+            let ok = files.count == 1 && content.contains("casa123") && t.notice == nil
+            Self.row("9 nota wifi", run, t, ok)
+            #expect(ok, "corrida \(run): \(files.map(\.lastPathComponent)) \(content)")
+        }
+    }
+
+    @Test func whatGoalsDoIHave() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let empty = try await World()
+            let none = await Self.turn(empty, "¿qué metas tengo?")
+            let noneOK = await empty.other.allGoals().isEmpty && none.notice == nil
+                && LocalWhen.fold(none.text).contains("no tienes") && !none.text.contains("ERROR")
+            Self.row("10a qué metas (vacío)", run, none, noneOK)
+            #expect(noneOK, "corrida \(run)")
+
+            let seeded = try await World()
+            let id = await seeded.other.ingestStated(statement: "correr una maratón",
+                                                     desiredState: .progressCheckIn(everyDays: 8), evidence: "test")
+            _ = await seeded.other.setCheckIn(id: id, CheckInCadence(cadence: .weekly, hour: 20, weekday: 1))
+            let some = await Self.turn(seeded, "¿qué metas tengo?")
+            let someOK = await seeded.other.allGoals().count == 1 && some.notice == nil
+                && LocalWhen.fold(some.text).contains("marat") && !some.text.contains("stated")
+            Self.row("10b qué metas (una)", run, some, someOK)
+            #expect(someOK, "corrida \(run)")
+        }
+    }
+
+    @Test func iWantToSeeMyGoalsNeverCreatesOne() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "quiero ver mis metas")
+            let ok = await world.other.allGoals().isEmpty && t.calls.contains { $0.hasPrefix("list_goals") }
+                && !t.calls.contains { $0.hasPrefix("declare_goal") } && t.notice == nil
+            Self.row("16 quiero ver mis metas", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
 }

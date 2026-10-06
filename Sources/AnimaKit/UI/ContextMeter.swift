@@ -52,7 +52,7 @@ struct ContextMeter: View {
 struct ContextSheet: View {
     @ObservedObject var model: ChatViewModel
     @Environment(\.dismiss) private var dismiss
-    static let height: CGFloat = 400
+    static let initialHeight: CGFloat = 400
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {

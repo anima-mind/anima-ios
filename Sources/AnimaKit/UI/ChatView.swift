@@ -594,6 +594,8 @@ public struct ChatView: View {
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
     @State private var showContextSheet = false
+    /// Alto medido del sheet de contexto (abraza su contenido con cualquier Dynamic Type).
+    @State private var contextSheetHeight = ContextSheet.initialHeight
     /// ¿El dueño está al fondo del chat? (si subió a leer, no se le mueve).
     @State private var followsBottom = true
     static let followSlack: CGFloat = 80
@@ -683,7 +685,9 @@ public struct ChatView: View {
         }
         .sheet(isPresented: $showContextSheet) {
             ContextSheet(model: model)
-                .presentationDetents([.height(ContextSheet.height)])
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contextSheetHeight = $0 }
+                .presentationDetents([.height(contextSheetHeight)])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.surface)
         }
@@ -1293,20 +1297,14 @@ public struct ChatView: View {
 }
 
 extension View {
-    /// Ancla inicial al fondo + si el usuario sigue al fondo (iOS 18+). En
-    /// sistemas viejos: el ancla clásica y "siempre al fondo".
-    @ViewBuilder
+    /// Ancla inicial al fondo + si el usuario sigue al fondo.
     func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat) -> some View {
-        if #available(iOS 18, macOS 15, *) {
-            self.defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollGeometryChange(for: Bool.self) { geo in
-                    geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
-                } action: { _, value in
-                    atBottom.wrappedValue = value
-                }
-        } else {
-            self.defaultScrollAnchor(.bottom)
-        }
+        defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
+            } action: { _, value in
+                atBottom.wrappedValue = value
+            }
     }
 }
 

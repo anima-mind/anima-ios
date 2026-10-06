@@ -43,7 +43,9 @@ final class PermissionsUITests: AnimaUITestCase {
         send(app, "Revisa mi calendario")
         answerSystemAlert(in: app, allow: false)
 
-        let reply = assistantMessage(app, value: "done", labelContains: "Calendario sin permiso")
+        // Solo teléfono: un permiso negado cierra el turno con el aviso (sin
+        // otra llamada al modelo), en la card de alerta.
+        let reply = assistantMessage(app, value: "done", labelContains: "No pude consultar tu agenda")
         waitFor(reply, timeout: 20)
         XCTAssertTrue(reply.label.contains("no ha concedido acceso"), reply.label)
         XCTAssertEqual(app.state, .runningForeground)

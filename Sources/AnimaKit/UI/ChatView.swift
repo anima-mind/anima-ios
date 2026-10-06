@@ -26,6 +26,9 @@ public final class ChatViewModel: ObservableObject {
         /// Capa proactiva: el recordatorio entregado o la meta del check-in.
         public var reminderId: String?
         public var goalId: String?
+        /// Hora del aviso/pregunta y meta asociada: la etiqueta de la card.
+        public var proactiveAt: Date?
+        public var goalStatement: String?
         /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
         public var isVoice: Bool = false
         /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
@@ -34,6 +37,43 @@ public final class ChatViewModel: ObservableObject {
         public var imageData: Data?
         /// Solo-teléfono: la foto viajó como descripción de texto (FIX G).
         public var photoSentAsText: Bool = false
+
+        /// Tipo de card proactiva (nil si es un mensaje normal).
+        public var proactiveKind: ProactiveMessage.Kind? {
+            guard isProactive else { return nil }
+            if let reminderId { return .reminder(id: reminderId) }
+            if let goalId { return .checkIn(goalId: goalId) }
+            if let intentionId { return .intention(id: intentionId) }
+            return nil
+        }
+
+        static func proactive(_ item: ProactiveMessage) -> DisplayMessage {
+            var message = DisplayMessage(role: .assistant, text: item.text, isProactive: true)
+            switch item.kind {
+            case .reminder(let id): message.reminderId = id
+            case .checkIn(let goalId): message.goalId = goalId
+            case .intention(let id): message.intentionId = id
+            }
+            message.proactiveAt = item.at
+            message.goalStatement = item.goalStatement
+            return message
+        }
+    }
+
+    /// Reloj y formato de fechas de las cards y las horas (inyectables en tests).
+    public var now: @Sendable () -> Date = { Date() }
+    public var dates = AnimaDateText()
+
+    /// "Recordatorio · hoy 8:30 p. m." | "Check-in · <meta>" | "Propuesta".
+    public func cardLabel(_ message: DisplayMessage) -> String {
+        guard let kind = message.proactiveKind else { return "" }
+        return ProactiveCard.label(kind, at: message.proactiveAt, goalStatement: message.goalStatement,
+                                   now: now(), dates: dates)
+    }
+
+    public func cardFollowUp(_ message: DisplayMessage) -> String? {
+        guard let kind = message.proactiveKind else { return nil }
+        return ProactiveCard.followUp(kind, at: message.proactiveAt, now: now())
     }
 
     /// Foto elegida en el composer, esperando el texto opcional del dueño.
@@ -51,8 +91,12 @@ public final class ChatViewModel: ObservableObject {
     /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
     public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
         func message(_ turn: VisibleTurn) -> DisplayMessage {
-            DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
-                           imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            if turn.role == .assistant, let tag = turn.proactive,
+               let proactive = ProactiveMessage(tag: tag, text: turn.text) {
+                return .proactive(proactive)
+            }
+            return DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                                  imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
         }
         var out = previous.map(message)
         if !out.isEmpty {
@@ -169,8 +213,8 @@ public final class ChatViewModel: ObservableObject {
         let pending = await desireEngine.pendingIntentions()
         for intention in pending where !shownIntentionIds.contains(intention.id) {
             shownIntentionIds.insert(intention.id)
-            messages.append(DisplayMessage(role: .assistant, text: intention.proposedText,
-                                           isProactive: true, intentionId: intention.id))
+            messages.append(.proactive(ProactiveMessage(kind: .intention(id: intention.id), text: intention.proposedText,
+                                                        at: intention.createdAt)))
         }
     }
 
@@ -180,15 +224,17 @@ public final class ChatViewModel: ObservableObject {
         for item in proactive {
             switch item.kind {
             case .reminder(let id):
-                guard !messages.contains(where: { $0.reminderId == id && $0.text == item.text }) else { continue }
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, reminderId: id))
+                guard !messages.contains(where: {
+                    $0.reminderId == id && $0.text == item.text && $0.proactiveAt == item.at
+                }) else { continue }
+                messages.append(.proactive(item))
             case .checkIn(let goalId):
                 guard !messages.contains(where: { $0.goalId == goalId && $0.text == item.text && !$0.resolved }) else { continue }
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, goalId: goalId))
+                messages.append(.proactive(item))
             case .intention(let id):
                 guard !shownIntentionIds.contains(id) else { continue }
                 shownIntentionIds.insert(id)
-                messages.append(DisplayMessage(role: .assistant, text: item.text, isProactive: true, intentionId: id))
+                messages.append(.proactive(item))
             }
         }
     }
@@ -797,42 +843,59 @@ public struct ChatView: View {
                 .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
     }
 
-    static func proactiveLabel(_ message: ChatViewModel.DisplayMessage) -> String {
-        if message.reminderId != nil { return "RECORDATORIO DE ANIMA" }
-        if message.goalId != nil { return "CHECK-IN" }
-        return "PROPUESTA DE ANIMA"
-    }
-
-    /// Propuesta proactiva del deseo (§5.8): card con borde+glow accent.
+    /// Lo que ella dice sin que se lo pidan (recordatorio, check-in, propuesta):
+    /// ícono accent a la izquierda, etiqueta pequeña, su voz y —si el aviso ya
+    /// pasó— el seguimiento. Surface + hairline accent.
+    @ViewBuilder
     private func proactiveCard(_ message: ChatViewModel.DisplayMessage) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(Self.proactiveLabel(message))
-                .font(Theme.Type_.label)
-                .kerning(0.66)
-                .foregroundStyle(Theme.Colors.accentText)
-            Text(message.text)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-                .fixedSize(horizontal: false, vertical: true)
-            if message.intentionId != nil, !message.resolved {
-                HStack(spacing: Theme.Space.stack) {
-                    Button("Descartar") { Task { await model.dismiss(message) } }
+        let kind = message.proactiveKind
+        HStack(alignment: .top, spacing: Theme.Space.stack) {
+            Image(systemName: kind.map(ProactiveCard.symbol) ?? "sparkles")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Theme.Colors.accent)
+                .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 4)
+                .frame(width: 22, height: 22)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.cardLabel(message))
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("chat.proactive.label")
+                Text(message.text)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let followUp = model.cardFollowUp(message) {
+                    Text(followUp)
+                        .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.textMuted)
-                    Spacer()
-                    Button("Aceptar") { Task { await model.accept(message) } }
-                        .foregroundStyle(Theme.Colors.accentText)
+                        .accessibilityIdentifier("chat.proactive.followUp")
                 }
-                .font(Theme.Type_.secondary)
+                if message.intentionId != nil, !message.resolved {
+                    HStack(spacing: Theme.Space.stack) {
+                        Button("Descartar") { Task { await model.dismiss(message) } }
+                            .foregroundStyle(Theme.Colors.textMuted)
+                        Spacer()
+                        Button("Aceptar") { Task { await model.accept(message) } }
+                            .foregroundStyle(Theme.Colors.accentText)
+                    }
+                    .font(Theme.Type_.secondary)
+                    .padding(.top, 4)
+                }
             }
         }
         .padding(Theme.Space.cardPad)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card)
+                .fill(Theme.Colors.surface))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
-        .shadow(color: Theme.Colors.accent.opacity(0.35), radius: 10)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chat.proactive.\(message.reminderId != nil ? "reminder" : message.goalId != nil ? "checkin" : "intention")")
+        .accessibilityIdentifier("chat.proactive.\(kind?.slug ?? "intention")")
     }
 
     private func errorBanner(_ text: String) -> some View {

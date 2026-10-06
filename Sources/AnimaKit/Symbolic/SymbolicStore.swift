@@ -74,9 +74,10 @@ public final class SymbolicStore: Sendable {
     /// Agrega un mensaje al transcript. `usage` se guarda para telemetría/costos;
     /// `surface` marca por dónde llegó (teléfono / gafas) — mismo transcript.
     public func append(sessionId: SessionID, message: Message, usage: Usage? = nil,
-                       surface: SurfaceID? = nil) throws {
+                       surface: SurfaceID? = nil, proactive: ProactiveTag? = nil) throws {
         let contentJSON = try Self.encodeBlocks(message.content)
         let usageJSON = try usage.map { try Self.encodeUsage($0) }
+        let proactiveJSON = try proactive.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
         let now = Date().timeIntervalSince1970
         try queue.write { db in
             let seq = (try Int.fetchOne(
@@ -85,10 +86,12 @@ public final class SymbolicStore: Sendable {
                 arguments: [sessionId]) ?? 0) + 1
             try db.execute(
                 sql: """
-                    INSERT INTO turn_event (session_id, seq, role, content_json, usage_json, created_at, surface)
-                    VALUES (?,?,?,?,?,?,?)
+                    INSERT INTO turn_event (session_id, seq, role, content_json, usage_json, created_at, surface,
+                                            proactive_json)
+                    VALUES (?,?,?,?,?,?,?,?)
                     """,
-                arguments: [sessionId, seq, message.role.rawValue, contentJSON, usageJSON, now, surface?.rawValue])
+                arguments: [sessionId, seq, message.role.rawValue, contentJSON, usageJSON, now, surface?.rawValue,
+                            proactiveJSON])
             try db.execute(sql: "UPDATE session SET last_event_at=? WHERE id=?", arguments: [now, sessionId])
         }
     }
@@ -125,18 +128,23 @@ public final class SymbolicStore: Sendable {
     /// la mente respondió, con sus marcas (voz, foto, superficie). Los
     /// tool_use/tool_result crudos y el razonamiento no se pintan.
     public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
-        let rows: [(String, String, String?)] = try queue.read { db in
-            try Row.fetchAll(db, sql: "SELECT role, content_json, surface FROM turn_event WHERE session_id=? ORDER BY seq ASC",
-                             arguments: [sessionId])
+        let rows: [(String, String, String?, String?)] = try queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT role, content_json, surface, proactive_json FROM turn_event WHERE session_id=? ORDER BY seq ASC
+                """, arguments: [sessionId])
                 .compactMap { row in
                     guard let role: String = row["role"], let json: String = row["content_json"] else { return nil }
-                    return (role, json, row["surface"])
+                    return (role, json, row["surface"], row["proactive_json"])
                 }
         }
-        return try rows.compactMap { role, json, surfaceRaw in
+        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw in
             guard let role = Message.Role(rawValue: role), role == .user || role == .assistant else { return nil }
-            return VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
-                               surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
+            var turn = VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
+                                   surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
+            if let raw = proactiveRaw, let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
+                turn?.proactive = tag
+            }
+            return turn
         }
     }
 
@@ -200,14 +208,17 @@ public struct VisibleTurn: Sendable, Equatable {
     /// Bytes base64 de la primera imagen del turno (thumb de la burbuja).
     public var imageBase64: String?
     public var surface: SurfaceID?
+    /// Turno proactivo (recordatorio entregado, check-in): se pinta como card.
+    public var proactive: ProactiveTag?
 
     public init(role: Message.Role, text: String, isVoice: Bool = false, imageBase64: String? = nil,
-                surface: SurfaceID? = nil) {
+                surface: SurfaceID? = nil, proactive: ProactiveTag? = nil) {
         self.role = role
         self.text = text
         self.isVoice = isVoice
         self.imageBase64 = imageBase64
         self.surface = surface
+        self.proactive = proactive
     }
 
     /// nil si el evento no tiene nada que pintar (tool_result, tool_use puro).

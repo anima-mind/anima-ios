@@ -246,7 +246,8 @@ import GRDB
                                             evidence: "")
         #expect(await w.reconciler.checkInPrompt(goalId: "nope", sessionId: sid) == nil)
         let first = try #require(await w.reconciler.checkInPrompt(goalId: id, sessionId: sid))
-        #expect(first == ProactiveMessage(kind: .checkIn(goalId: id), text: "Oye, ¿cómo vas con invertir 10M? Cuéntame y lo anoto."))
+        #expect(first == ProactiveMessage(kind: .checkIn(goalId: id), text: "Oye, ¿cómo vas con invertir 10M? Cuéntame y lo anoto.",
+                                          at: F.start, goalStatement: "invertir 10M"))
         let again = await w.reconciler.checkInPrompt(goalId: id, sessionId: sid)
         #expect(again == first)
         #expect(try w.symbolic.visibleTurns(sessionId: sid).count == 1)   // no se duplica en el transcript

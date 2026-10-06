@@ -398,13 +398,16 @@ enum ProactiveFixtures {
         w.advance(2 * 3600)
         let messages = await w.reconciler.reconcileDueReminders(sessionId: sid)
         #expect(messages == [
-            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recuerdo: llamar al banco"),
-            ProactiveMessage(kind: .reminder(id: linked.id), text: "Te recuerdo: revisar el CDT"),
+            ProactiveMessage(kind: .reminder(id: plain.id), text: "Te recuerdo: llamar al banco",
+                             at: F.date(2026, 10, 5, 15)),
+            ProactiveMessage(kind: .reminder(id: linked.id), text: "Te recuerdo: revisar el CDT",
+                             at: F.date(2026, 10, 5, 15, 5), goalStatement: "invertir 10M este año"),
         ])
         #expect(await w.reconciler.reconcileDueReminders(sessionId: sid).isEmpty)   // sin duplicar
         let turns = try w.symbolic.visibleTurns(sessionId: sid)
         #expect(turns.map(\.text) == messages.map(\.text))
         #expect(turns.allSatisfy { $0.role == .assistant })
+        #expect(turns.map(\.proactive) == messages.map(\.tag))
         #expect(await w.reminders.reminder(id: plain.id)?.status == .fired)
     }
 

@@ -100,7 +100,7 @@ import Testing
         #expect(ContextBudget.for(model: "claude-opus-4-8") == .remote)
         #expect(ContextBudget.remote.toolTokens(tools) == Int(Double(ContextGauge.toolChars(tools)) / 4.2))
         let local = ToolProfile.onDevice.apply(tools)
-        #expect(ContextBudget.onDevice.toolTokens(tools) == Int(Double(ContextGauge.toolChars(local)) / 2.5))
+        #expect(ContextBudget.onDevice.toolTokens(tools) == Int(Double(ContextGauge.toolChars(local)) / 2.2))
         #expect(ContextBudget.onDevice.toolTokens(tools) == ContextBudget.onDevice.toolTokens(local))
         let server: ToolSpec = .server(type: "web_search_20260209", name: "web_search")
         #expect(ContextBudget.remote.toolTokens(tools + [server]) > ContextBudget.remote.toolTokens(tools))
@@ -340,6 +340,16 @@ enum RealToolSet {
                 return InterceptingTool(name: name, description: description, parameters: generation)
             }
             return try? await SystemLanguageModel.default.tokenCount(for: tools)
+        }
+        #endif
+        return nil
+    }
+
+    /// Tokens reales de un texto como `Instructions`; nil si no se puede medir aquí.
+    static func frameworkInstructionTokens(_ text: String) async -> Int? {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.4, iOS 26.4, *) {
+            return try? await SystemLanguageModel.default.tokenCount(for: Instructions(text))
         }
         #endif
         return nil

@@ -31,13 +31,13 @@ final class MockOnDeviceSession: OnDeviceModelSession, @unchecked Sendable {
 enum OnDeviceTestConfig {
     static let json = Data("""
     {"on_device":{"api":{"base_url":"local://device","betas":[]},"routes":{
-      "interactive":{"model":"system_language_model","max_tokens":1500},
-      "interactiveHard":{"model":"system_language_model","max_tokens":2000},
-      "restructure":{"model":"system_language_model","max_tokens":2000},
-      "consolidation":{"model":"system_language_model","max_tokens":1000},
-      "reconsolidation":{"model":"system_language_model","max_tokens":1000},
-      "desirePulse":{"model":"system_language_model","max_tokens":600},
-      "distill":{"model":"system_language_model","max_tokens":1000}}}}
+      "interactive":{"model":"\(OnDeviceProvider.modelName)","max_tokens":1500},
+      "interactiveHard":{"model":"\(OnDeviceProvider.modelName)","max_tokens":2000},
+      "restructure":{"model":"\(OnDeviceProvider.modelName)","max_tokens":2000},
+      "consolidation":{"model":"\(OnDeviceProvider.modelName)","max_tokens":1000},
+      "reconsolidation":{"model":"\(OnDeviceProvider.modelName)","max_tokens":1000},
+      "desirePulse":{"model":"\(OnDeviceProvider.modelName)","max_tokens":600},
+      "distill":{"model":"\(OnDeviceProvider.modelName)","max_tokens":1000}}}}
     """.utf8)
 
     static let prompt = "You are Anima, a personal mind that lives entirely on this phone."
@@ -104,39 +104,39 @@ enum OnDeviceTestConfig {
 
     @Test func interceptedToolCallBecomesToolUseBlock() async throws {
         let session = MockOnDeviceSession([[
-            .snapshot("Reviso"),
-            .toolCall(name: "calendar", argumentsJSON: #"{"action":"list","days_ahead":2.0}"#),
+            .snapshot("Lo anoto"),
+            .toolCall(name: "declare_goal", argumentsJSON: #"{"statement":"leer","checkin":"weekly","hour":20.0}"#),
         ]])
         let provider = OnDeviceProvider(session: session, availability: { .available })
         let response = try await provider.completeCollecting(
-            AssembledContext(messages: [.user("¿qué tengo?")]),
-            tools: [CalendarTool().spec], opts: try OnDeviceTestConfig.opts())
+            AssembledContext(messages: [.user("quiero leer")]),
+            tools: [GoalsTool(otherModel: OtherModel(queue: try AnimaDatabase.temporary())).spec],
+            opts: try OnDeviceTestConfig.opts())
 
         #expect(response.stopReason == .toolUse)
         let call = try #require(response.toolCalls.first)
-        #expect(call.name == "calendar")
-        // 2.0 del framework → .int(2): las tools leen enteros como con Claude.
-        #expect(call.input == .object(["action": .string("list"), "days_ahead": .int(2)]))
-        #expect(response.content.first == .text("Reviso"))
+        // El provider entrega la llamada local tal cual: la traduce el loop.
+        #expect(call.name == "declare_goal")
+        // 20.0 del framework → .int(20): las tools leen enteros como con Claude.
+        #expect(call.input == .object(["statement": .string("leer"), "checkin": .string("weekly"), "hour": .int(20)]))
+        #expect(response.content.first == .text("Lo anoto"))
 
-        // La tool viaja al modelo en su forma del perfil local (action obligatoria,
-        // sin enum ni descripciones por campo: los valores van en la descripción).
+        // La tool viaja en su forma local: una intención, todo obligatorio,
+        // hora acotada y sin `action`.
         let request = try #require(session.requests.value.first)
         let tool = try #require(request.tools.first)
-        #expect(tool.name == "calendar")
-        #expect(tool.description.contains("list|search|create|delete"))
+        #expect(tool.name == "declare_goal")
+        #expect(tool.description.contains("Ej: {statement:"))
         guard case .object(_, _, let properties) = tool.schema else {
             Issue.record("schema raíz no es objeto"); return
         }
-        let action = try #require(properties.first { $0.name == "action" })
-        #expect(action.isOptional == false)
-        #expect(action.schema == .string(description: nil, choices: nil))
-        #expect(properties.first { $0.name == "days_ahead" }?.schema == .integer(description: nil))
-        #expect(properties.first { $0.name == "days_ahead" }?.isOptional == true)
+        #expect(properties.map(\.name) == ["checkin", "hour", "statement"])
+        #expect(properties.allSatisfy { !$0.isOptional })
+        #expect(properties.first { $0.name == "hour" }?.schema == .bounded(description: nil, range: 0...23))
 
-        // La traducción del JSON Schema completo (enum + descripciones) sigue intacta.
-        guard case .client(_, _, let fullSchema) = CalendarTool().spec,
-              case .object(_, _, let fullProps) = OnDeviceSchema.from(jsonSchema: fullSchema, name: "calendar") else {
+        // El schema completo (remotos) sigue traduciendo enums a choices.
+        guard case .client(let name, _, let schema) = CalendarTool().spec,
+              case .object(_, _, let fullProps) = OnDeviceSchema.from(jsonSchema: schema, name: name) else {
             Issue.record("schema completo"); return
         }
         #expect(fullProps.first { $0.name == "action" }?.schema
@@ -147,7 +147,7 @@ enum OnDeviceTestConfig {
         let request = OnDevicePromptBuilder.request(
             ctx: AssembledContext(messages: [.user("busca")]),
             tools: [WebSearchTool.spec, CalendarTool().spec], opts: try OnDeviceTestConfig.opts())
-        #expect(request.tools.map(\.name) == ["calendar"])
+        #expect(request.tools.map(\.name) == ["add_calendar_event"])
     }
 
     /// Toda tool real del Sensorimotor traduce su schema (objeto raíz con action).
@@ -181,20 +181,36 @@ enum OnDeviceTestConfig {
         #expect(request.maxResponseTokens == 1500)
     }
 
-    @Test func toolLoopContextEndsWithContinuationCue() throws {
+    /// Tras una ronda de tools exitosa el 3B solo redacta: la ronda se pliega a
+    /// texto sobre el turno del dueño, sin tools y con fallback determinista.
+    @Test func successfulToolRoundFoldsIntoThePromptWithoutTools() throws {
         let ctx = AssembledContext(messages: [
             Message(role: .system, content: [.text("[SELF]")]),
-            .user("¿qué tengo mañana?"),
-            .assistant([.toolUse(id: "t1", name: "calendar", input: .object(["action": .string("list")]))]),
-            .user([.toolResult(toolUseId: "t1", content: "Dentista 9:00", isError: false)]),
+            .user("hola"),
+            .assistant([.text("¡hola!")]),
+            .user("recuérdame mañana a las 9 llamar al banco"),
+            .assistant([.toolUse(id: "t1", name: "remind_me", input: .object(["text": .string("llamar al banco")]))]),
+            .user([.toolResult(toolUseId: "t1", content: "Listo: te recuerdo 'llamar al banco' mañana. Id AB-12.",
+                               isError: false)]),
+        ])
+        let request = OnDevicePromptBuilder.request(ctx: ctx, tools: try RealToolSet.specs(),
+                                                    opts: try OnDeviceTestConfig.opts())
+        #expect(request.history == [.prompt("hola"), .response("¡hola!")])
+        #expect(request.prompt == OnDevicePromptBuilder.quotedOwner("recuérdame mañana a las 9 llamar al banco") + "\n"
+                + OnDevicePromptBuilder.successPrompt(results: ["Listo: te recuerdo 'llamar al banco' mañana. Id AB-12."]))
+        #expect(request.tools.isEmpty)
+        #expect(request.fallbackText == "Listo: te recuerdo 'llamar al banco' mañana.")
+    }
+
+    @Test func readToolRoundAnswersWithWhatItRead() throws {
+        let ctx = AssembledContext(messages: [
+            .user("¿qué recordatorios tengo?"),
+            .assistant([.toolUse(id: "t1", name: "list_reminders", input: .object([:]))]),
+            .user([.toolResult(toolUseId: "t1", content: "Programados:\n- llamar al banco", isError: false)]),
         ])
         let request = OnDevicePromptBuilder.request(ctx: ctx, tools: [], opts: try OnDeviceTestConfig.opts())
-        #expect(request.history == [
-            .prompt("¿qué tengo mañana?"),
-            .toolCall(id: "t1", name: "calendar", argumentsJSON: #"{"action":"list"}"#),
-            .toolOutput(id: "t1", name: "calendar", content: "Dentista 9:00"),
-        ])
-        #expect(request.prompt == OnDevicePromptBuilder.continuationCue)
+        #expect(request.prompt.hasSuffix(OnDevicePromptBuilder.readPrompt(results: ["Programados:\n- llamar al banco"])))
+        #expect(request.fallbackText == "Programados:\n- llamar al banco")
     }
 
     @Test func imagesDegradeToPlaceholder() throws {

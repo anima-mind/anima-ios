@@ -160,10 +160,17 @@ public struct ProviderSelector: Sendable {
         self.availability = availability
     }
 
-    /// Selector de un solo córtex Claude (el comportamiento previo a §4.9).
+    /// Selector de un solo córtex (el comportamiento previo a §4.9). Si la ruta
+    /// interactiva es el modelo local, el selector es Solo teléfono: perfil de
+    /// contexto, presupuesto y tools del modelo de Apple (no los de Claude).
     public static func claudeOnly(provider: Provider, router: ModelRouter,
                                   authMode: AuthMode, token: String) -> ProviderSelector {
-        ProviderSelector(mode: .remote,
+        if OnDeviceProvider.isOnDevice(model: router.route(.interactive).model) {
+            return ProviderSelector(mode: .onDeviceOnly, remote: nil,
+                                    local: LocalCortex(provider: provider, router: router),
+                                    availability: { .available })
+        }
+        return ProviderSelector(mode: .remote,
                          remote: RemoteCortex(provider: provider, router: router, authMode: authMode, token: token),
                          local: nil, availability: { .deviceNotEligible })
     }

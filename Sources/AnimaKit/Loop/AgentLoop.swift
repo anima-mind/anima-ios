@@ -203,7 +203,8 @@ public actor AgentLoop {
                 return .error
             }
             let route = binding.router.route(turnClass)
-            allSpecs = ToolProfile.for(model: route.model).apply(allSpecs)
+            let toolProfile = ToolProfile.for(model: route.model)
+            allSpecs = toolProfile.apply(allSpecs)
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -238,7 +239,7 @@ public actor AgentLoop {
             // lugar el bloque con los aferentes YA ejecutados.
             if let skillEngine {
                 skillTurn.wired = true
-                let available = Set(allSpecs.map(\.name))
+                let available = Set(allSpecs.map { LocalToolAdapter.tool(named: $0.name)?.realTool ?? $0.name })
                 skillTurn.match = await skillEngine.bestMatch(userText, availableTools: available)
                 if let match = skillTurn.match {
                     skillTurn.injection = await runAutomation(match, engine: skillEngine, userText: userText,
@@ -382,14 +383,36 @@ public actor AgentLoop {
                             emit(.stopped(.loopDetected))
                             return .stopped(.loopDetected)
                         }
-                        emit(.toolStarted(name: call.name))
-                        toolCallCount += 1
-                        let result = await sensorimotor.execute(name: call.name, input: call.input)
-                        emit(.toolFinished(name: call.name, isError: result.isError))
-                        skillTurn.recordTool(call.name, isError: result.isError && !result.isRejection, rejected: result.isRejection)
+                        // Modelo local: la llamada del adapter se traduce a la tool real
+                        // (mismo Sensorimotor); el transcript conserva lo que dijo el modelo.
+                        let resolution: LocalToolAdapter.Resolution = toolProfile == .onDevice
+                            ? LocalToolAdapter.resolve(name: call.name, input: call.input, now: clock?() ?? Date(),
+                                                      ownerText: userText)
+                            : .real(name: call.name, input: call.input)
+                        let realName: String
+                        let realInput: JSONValue
+                        let result: ToolResult
+                        switch resolution {
+                        case .real(let name, let input):
+                            realName = name
+                            realInput = input
+                            emit(.toolStarted(name: name))
+                            toolCallCount += 1
+                            let executed = await sensorimotor.execute(name: name, input: input)
+                            result = toolProfile == .onDevice
+                                ? LocalToolAdapter.present(executed, local: call.name, input: input) : executed
+                        case .invalid(let tool, let message):
+                            realName = tool
+                            realInput = call.input
+                            emit(.toolStarted(name: tool))
+                            toolCallCount += 1
+                            result = ToolResult(content: message, isError: true)
+                        }
+                        emit(.toolFinished(name: realName, isError: result.isError))
+                        skillTurn.recordTool(realName, isError: result.isError && !result.isRejection, rejected: result.isRejection)
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
                         if result.isError {
-                            await realRegister?.record(.tool(name: call.name, input: call.input,
+                            await realRegister?.record(.tool(name: realName, input: realInput,
                                                              result: result, sessionId: sessionId, now: Date()))
                         }
                         results.append(.toolResult(toolUseId: call.id, content: result.content, isError: result.isError))

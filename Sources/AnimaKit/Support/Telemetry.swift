@@ -292,7 +292,7 @@ public enum Pricing {
 
     static func rate(for model: String) -> Rate {
         // Modelo local de Apple (§4.9): gratis, cero red.
-        if model == OnDeviceProvider.modelName { return Rate(input: 0, output: 0) }
+        if OnDeviceProvider.isOnDevice(model: model) { return Rate(input: 0, output: 0) }
         if let hit = table.first(where: { model.hasPrefix($0.prefix) }) { return hit.rate }
         return Rate(input: 5, output: 25)  // desconocido: asumir caro, jamás barato
     }

@@ -123,14 +123,24 @@ public struct OnDeviceRequest: Sendable, Equatable {
     public var prompt: String
     public var tools: [OnDeviceToolDefinition]
     public var maxResponseTokens: Int
+    /// Continuación tras tools exitosas: la confirmación determinista si el
+    /// modelo no logra redactar (guardrails, error). Con ella el texto no se
+    /// streamea a medias: se entrega completo o se usa este fallback.
+    public var fallbackText: String?
+    /// Lo que la redacción debe nombrar para no perder el dato (un grupo por
+    /// ítem: basta una de sus palabras). Ver `acceptsConfirmation`.
+    public var salientWords: [[String]]
 
     public init(instructions: String, history: [OnDeviceTranscriptEntry], prompt: String,
-                tools: [OnDeviceToolDefinition], maxResponseTokens: Int) {
+                tools: [OnDeviceToolDefinition], maxResponseTokens: Int, fallbackText: String? = nil,
+                salientWords: [[String]] = []) {
         self.instructions = instructions
         self.history = history
         self.prompt = prompt
         self.tools = tools
         self.maxResponseTokens = maxResponseTokens
+        self.fallbackText = fallbackText
+        self.salientWords = salientWords
     }
 }
 
@@ -194,7 +204,12 @@ public struct SnapshotDeltaTracker: Sendable, Equatable {
 public indirect enum OnDeviceSchema: Sendable, Equatable {
     case object(name: String, description: String?, properties: [Property])
     case string(description: String?, choices: [String]?)
+    /// String con forma fija (`pattern` del JSON Schema): la generación guiada
+    /// del framework solo produce texto que la cumple.
+    case patterned(description: String?, pattern: String)
     case integer(description: String?)
+    /// Entero acotado (`minimum`/`maximum`).
+    case bounded(description: String?, range: ClosedRange<Int>)
     case number(description: String?)
     case boolean(description: String?)
     case array(description: String?, items: OnDeviceSchema)
@@ -225,6 +240,9 @@ public indirect enum OnDeviceSchema: Sendable, Equatable {
             }
             return .object(name: name, description: description, properties: properties)
         case "integer":
+            if case .int(let low)? = jsonSchema["minimum"], case .int(let high)? = jsonSchema["maximum"], low <= high {
+                return .bounded(description: description, range: low...high)
+            }
             return .integer(description: description)
         case "number":
             return .number(description: description)
@@ -235,6 +253,9 @@ public indirect enum OnDeviceSchema: Sendable, Equatable {
                 ?? .string(description: nil, choices: nil)
             return .array(description: description, items: items)
         default:
+            if let pattern = jsonSchema["pattern"]?.stringValue, (choices?.isEmpty ?? true) {
+                return .patterned(description: description, pattern: pattern)
+            }
             return .string(description: description, choices: (choices?.isEmpty ?? true) ? nil : choices)
         }
     }
@@ -254,6 +275,25 @@ public enum OnDevicePromptBuilder {
     /// prompt para continuar: este cue le pide responder con ellos.
     public static let continuationCue =
         "Continúa: responde al dueño usando lo que devolvió la herramienta."
+    /// Tras una ronda de tools sin errores el modelo local solo redacta: la
+    /// continuación va SIN tools (con ellas el 3B repetía la llamada en bucle o
+    /// el framework fallaba generando otra).
+    /// Tras una lectura (list_reminders, read_note): responder con lo leído.
+    public static func readPrompt(results: [String]) -> String {
+        "Esto encontraste: " + results.joined(separator: " ")
+            + "\nRespóndele (de tú) en 1-3 frases usando solo eso."
+    }
+
+    public static func successPrompt(results: [String]) -> String {
+        "Ya lo hiciste: " + results.joined(separator: " ")
+            + "\nConfírmaselo (de tú) en UNA frase que empiece con «Listo,» y diga solo lo que quedó hecho."
+    }
+
+    /// El turno del dueño como cita: sin esto el 3B respondía COMO el dueño
+    /// ("pregúntame cómo voy" → "esta semana bajamos 1 kilo").
+    public static func quotedOwner(_ text: String) -> String {
+        "El dueño te dijo: «\(text)»"
+    }
     /// Las imágenes no llegan al modelo local (no es multimodal en v1).
     public static let imagePlaceholder = "[imagen adjunta: el modelo local no puede verla]"
 
@@ -316,7 +356,42 @@ public enum OnDevicePromptBuilder {
         //    turn input ya vienen fusionados); si el contexto termina en tool
         //    output, el cue de continuación.
         let prompt: String
-        if case .prompt(let last)? = entries.last {
+        var fallbackText: String?
+        var salient: [[String]] = []
+        let toolsSucceeded = endsInSuccessfulToolResults(ctx.messages)
+        if toolsSucceeded {
+            // Éxito: la ronda de tools se pliega a texto ("Ya quedó hecho: …")
+            // sobre el turno del dueño; sin estructura de tool el 3B redacta prosa.
+            var results: [String] = []
+            var onlyReads = true
+            while let last = entries.last {
+                if case .toolOutput(_, _, let content) = last {
+                    results.insert(content, at: 0)
+                } else if case .toolCall(_, let name, let json) = last {
+                    if !LocalToolAdapter.readOnlyTools.contains(name) {
+                        onlyReads = false
+                        let args = normalizeArguments(json)
+                        let subject = ["text", "statement", "title", "content"].compactMap { args[$0]?.stringValue }.first
+                        if let subject, !salientStems(subject).isEmpty { salient.append(salientStems(subject)) }
+                    }
+                } else {
+                    break
+                }
+                entries.removeLast()
+            }
+            if onlyReads {
+                results = results.map(withoutListIds)
+                salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems).filter { !$0.isEmpty }
+            }
+            let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)
+            fallbackText = onlyReads ? results.joined(separator: "\n") : confirmation(results: results)
+            if case .prompt(let owner)? = entries.last {
+                entries.removeLast()
+                prompt = quotedOwner(owner) + "\n" + done
+            } else {
+                prompt = done
+            }
+        } else if case .prompt(let last)? = entries.last {
             prompt = last
             entries.removeLast()
         } else {
@@ -324,7 +399,8 @@ public enum OnDevicePromptBuilder {
         }
 
         // 4. Solo tools client-side: las server-side (web_search) necesitan red.
-        let definitions: [OnDeviceToolDefinition] = ToolProfile.onDevice.apply(tools).compactMap { spec in
+        let offered = toolsSucceeded ? [] : tools
+        let definitions: [OnDeviceToolDefinition] = ToolProfile.onDevice.apply(offered).compactMap { spec in
             guard case .client(let name, let description, let schema) = spec else { return nil }
             return OnDeviceToolDefinition(name: name, description: description,
                                           schema: OnDeviceSchema.from(jsonSchema: schema, name: name))
@@ -332,7 +408,84 @@ public enum OnDevicePromptBuilder {
 
         return OnDeviceRequest(instructions: instructionParts.joined(separator: "\n\n"),
                                history: entries, prompt: prompt, tools: definitions,
-                               maxResponseTokens: opts.route.maxTokens)
+                               maxResponseTokens: fallbackText == nil ? opts.route.maxTokens
+                                   : min(opts.route.maxTokens, confirmationMaxTokens),
+                               fallbackText: fallbackText, salientWords: salient)
+    }
+
+    /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
+    static func withoutListIds(_ text: String) -> String {
+        text.replacing(/\[[0-9A-Fa-f-]{8,}\]\s*/, with: "")
+    }
+
+    /// La confirmación tras tools es una frase: tope corto (y más rápido).
+    public static let confirmationMaxTokens = 120
+
+    /// ¿La redacción del modelo sirve como confirmación? Una o dos frases
+    /// completas; si divaga (medido: "hoy me levanté a las 6…") o quedó cortada,
+    /// va la confirmación determinista.
+    /// Además: de tú (sin "el dueño" ni placeholders) y nombrando lo hecho o
+    /// leído (medido: "El recordatorio está programado para mañana" sin decir cuál).
+    public static func acceptsConfirmation(_ text: String, salient: [[String]] = []) -> Bool {
+        guard !text.isEmpty, text.count <= 240, let last = text.last, ".!?»)\"'".contains(last) else { return false }
+        let folded = fold(text)
+        if folded.contains("dueno") || text.contains("[") { return false }
+        return salient.allSatisfy { group in group.contains { folded.contains($0) } }
+    }
+
+    static func fold(_ text: String) -> String {
+        text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
+    }
+
+    static let stopwords: Set<String> = ["para", "como", "este", "esta", "esto", "todos", "todas", "cada", "antes",
+                                         "despues", "sobre", "entre", "desde", "hasta", "porque", "cuando", "donde",
+                                         "nota", "programados"]
+
+    /// Raíces (4 letras) de las palabras con contenido: "llamar al banco" → ["llam", "banc"].
+    static func salientStems(_ text: String) -> [String] {
+        fold(text).components(separatedBy: CharacterSet.letters.inverted)
+            .filter { $0.count >= 4 && !stopwords.contains($0) }
+            .map { String($0.prefix(4)) }
+    }
+
+    /// Los ítems de una lista de la tool ("- llamar al banco — miércoles…" → "llamar al banco").
+    static func listedItems(_ text: String) -> [String] {
+        text.split(separator: "\n").compactMap { line in
+            guard line.hasPrefix("- ") else { return nil }
+            let item = line.dropFirst(2)
+            return String(item.components(separatedBy: " — ").first ?? String(item))
+        }
+    }
+
+    /// "Listo: <resultado>" sin ids internos: lo que el dueño lee si el modelo
+    /// no redacta la confirmación.
+    public static func confirmation(results: [String]) -> String {
+        let cleaned = results.map { result in
+            result.replacing(/\s*\(id [^)]*\)/, with: "")
+                .replacing(/\s*Id [A-Za-z0-9-]+\.?/, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let body = cleaned.joined(separator: " ")
+        let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
+        return "Listo: " + trimmed
+    }
+
+    /// ¿El contexto termina en resultados de tool, todos exitosos?
+    static func endsInSuccessfulToolResults(_ messages: [Message]) -> Bool {
+        guard let last = messages.last, last.role == .user else { return false }
+        var sawResult = false
+        for block in last.content {
+            switch block {
+            case .toolResult(_, _, let isError):
+                if isError { return false }
+                sawResult = true
+            case .text, .thinking, .toolUse:
+                return false
+            case .image:
+                continue
+            }
+        }
+        return sawResult
     }
 
     /// Los números enteros llegan del framework como double (`7.0`): se
@@ -380,6 +533,9 @@ public enum OnDevicePromptBuilder {
 public struct OnDeviceProvider: Provider {
     /// El nombre de modelo de las rutas `on_device` en provider_config.
     public static let modelName = "system_language_model"
+    /// La única pregunta "¿esta ruta es el modelo local?" del harness (perfil de
+    /// tools, presupuesto de contexto, nombre visible, precio y selector).
+    public static func isOnDevice(model: String) -> Bool { model == modelName }
     /// `.fatal(status:)` cuando el modelo local no está disponible (el Híbrido
     /// cae a Claude ante este código).
     public static let unavailableStatus = -10
@@ -427,6 +583,7 @@ public struct OnDeviceProvider: Provider {
 
                 var tracker = SnapshotDeltaTracker()
                 var toolCall: (name: String, json: String)?
+                let buffered = request.fallbackText != nil
                 func usage() -> Usage {
                     Usage(inputTokens: inputTokens, outputTokens: Int(Double(tracker.text.count) / 3.6))
                 }
@@ -436,11 +593,16 @@ public struct OnDeviceProvider: Provider {
                         switch element {
                         case .snapshot(let snapshot):
                             let delta = tracker.delta(for: snapshot)
-                            if !delta.isEmpty { continuation.yield(.textDelta(delta)) }
+                            if !delta.isEmpty, !buffered { continuation.yield(.textDelta(delta)) }
                         case .toolCall(let name, let json):
                             toolCall = (name, json)
                         }
                     }
+                } catch where buffered && !(error is CancellationError)
+                            && (error as? OnDeviceSessionError) != .exceededContextWindow {
+                    // Tras tools exitosas, un guardrail o fallo al redactar no
+                    // deshace lo hecho: la confirmación determinista.
+                    tracker = SnapshotDeltaTracker()
                 } catch let error as OnDeviceSessionError {
                     switch error {
                     case .guardrailViolation, .refusal:
@@ -462,6 +624,14 @@ public struct OnDeviceProvider: Provider {
                     return
                 }
 
+                if buffered {
+                    let text = tracker.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    tracker = SnapshotDeltaTracker()
+                    let accepted = OnDevicePromptBuilder.acceptsConfirmation(text, salient: request.salientWords)
+                    _ = tracker.delta(for: accepted ? text : (request.fallbackText ?? ""))
+                    toolCall = nil
+                    continuation.yield(.textDelta(tracker.text))
+                }
                 var blockIndex = 0
                 if !tracker.text.isEmpty {
                     continuation.yield(.blockStop(index: blockIndex))
@@ -548,8 +718,13 @@ enum OnDeviceSchemaBridge {
                 return DynamicGenerationSchema(name: name, description: description, anyOf: choices)
             }
             return DynamicGenerationSchema(type: String.self)
+        case .patterned(_, let pattern):
+            guard let regex = try? Regex(pattern) else { return DynamicGenerationSchema(type: String.self) }
+            return DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])
         case .integer:
             return DynamicGenerationSchema(type: Int.self)
+        case .bounded(_, let range):
+            return DynamicGenerationSchema(type: Int.self, guides: [.range(range)])
         case .number:
             return DynamicGenerationSchema(type: Double.self)
         case .boolean:

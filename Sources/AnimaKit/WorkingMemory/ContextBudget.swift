@@ -16,12 +16,12 @@ public enum ContextBudget: Sendable, Equatable {
     case onDevice
 
     public static func `for`(model: String) -> ContextBudget {
-        model == OnDeviceProvider.modelName ? .onDevice : .remote
+        OnDeviceProvider.isOnDevice(model: model) ? .onDevice : .remote
     }
 
     static let proseCharsPerToken = 3.6
     static let remoteToolCharsPerToken = 4.2
-    static let onDeviceToolCharsPerToken = 2.5
+    static let onDeviceToolCharsPerToken = 2.2
 
     public func fixedTokens(systemBase: String, tools: [ToolSpec]) -> Int {
         Int(Double(systemBase.count) / Self.proseCharsPerToken) + toolTokens(tools)

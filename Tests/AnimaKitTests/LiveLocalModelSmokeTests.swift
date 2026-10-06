@@ -562,4 +562,36 @@ import Testing
             #expect(ok, "corrida \(run): \(created.map(\.fireAt))")
         }
     }
+
+    // MARK: - Ronda 5 del review
+
+    @Test func whatIsPending() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            _ = try await world.reminders.create(text: "llamar al banco", fireAt: Date().addingTimeInterval(86_400))
+            _ = await world.other.ingestStated(statement: "leer 12 libros", desiredState: .progressCheckIn(everyDays: 8),
+                                               evidence: "test")
+            world.calendar.records = [CalendarEventRecord(id: "EK:1", title: "Dentista", notes: nil,
+                                                          start: Date().addingTimeInterval(3600))]
+            let t = await Self.turn(world, "¿qué tengo pendiente?")
+            let ok = t.text.contains("Recordatorios:") && t.text.contains("banco") && t.text.contains("Metas:")
+                && t.text.contains("libros") && t.text.contains("Hoy en tu agenda:") && t.text.contains("Dentista")
+            Self.row("40 qué tengo pendiente", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    @Test func meetingWithPedroKeepsTheName() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "agéndame reunión con Pedro el próximo martes a las 3 pm")
+            let events = world.calendar.created.value
+            let ok = events.count == 1 && events.first?.0.contains("Pedro") == true
+                && events.first?.1 == Self.at(Self.next(3), 15)
+            Self.row("41 reunión con Pedro", run, t, ok)
+            #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1) })")
+        }
+    }
 }

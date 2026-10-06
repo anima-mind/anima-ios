@@ -291,7 +291,7 @@ public enum LocalToolAdapter {
             } else if LocalWhen.words(LocalWhen.fold(when.scheduleText)).contains("hoy"),
                       let fire = input["fire_at"]?.stringValue.flatMap(dates.parseISODateTime),
                       !dates.calendar.isDateInToday(fire) {
-                presented.content = result.content + " " + pastTodayNote(dates.time(fire))
+                presented.content = result.content + " " + pastTodayNote()
             } else {
                 return result
             }
@@ -321,9 +321,38 @@ public enum LocalToolAdapter {
         return "Eso no lo puedo cambiar desde aquí: hazlo en la tab \(tab). Lo que hay:\n"
     }
 
+    /// "¿qué tengo pendiente?", "¿qué tengo hoy?", "¿qué hay?": el resumen combina
+    /// recordatorios, metas activas y la agenda de hoy.
+    public static func asksForPending(_ ownerText: String) -> Bool {
+        let owner = LocalWhen.fold(ownerText)
+        return ["pendiente", "que tengo", "tengo hoy", "que hay"].contains(where: owner.contains)
+            && !LocalWhen.asksToChange(ownerText)
+    }
+
+    /// Secciones "Recordatorios:", "Metas:", "Hoy en tu agenda:" (las vacías se
+    /// omiten); todo vacío ⇒ "No tienes nada pendiente.".
+    public static func pendingSummary(reminders: String?, goals: String?, events: String?, now: Date,
+                                      dates: AnimaDateText = AnimaDateText()) -> String {
+        func items(_ text: String?) -> [String] {
+            (text ?? "").split(separator: "\n").filter { $0.hasPrefix("- ") }
+                .map { String($0).replacing(/^- \[[^\]]*\]\s*/, with: "- ") }
+        }
+        let todayEvents = (events ?? "").split(separator: "\n").filter { line in
+            guard let at = line.range(of: " @ ", options: .backwards),
+                  let date = ISO8601DateFormatter().date(from: String(line[at.upperBound...])) else { return false }
+            return dates.calendar.isDate(date, inSameDayAs: now)
+        }.joined(separator: "\n")
+        var sections: [String] = []
+        let r = items(reminders), g = items(goals.map(readableGoals)), e = items(readableEvents(todayEvents, dates: dates))
+        if !r.isEmpty { sections.append((["Recordatorios:"] + r).joined(separator: "\n")) }
+        if !g.isEmpty { sections.append((["Metas:"] + g).joined(separator: "\n")) }
+        if !e.isEmpty { sections.append((["Hoy en tu agenda:"] + e).joined(separator: "\n")) }
+        return sections.isEmpty ? "No tienes nada pendiente." : sections.joined(separator: "\n")
+    }
+
     /// "hoy a las 12" cuando ya pasaron.
-    public static func pastTodayNote(_ time: String) -> String {
-        "Ojo: esa hora de hoy ya pasó; te lo puse mañana a las \(time)."
+    public static func pastTodayNote() -> String {
+        "Ojo: esa hora de hoy ya pasó, así que te lo puse para mañana."
     }
 
     /// Lo que se le dice al dueño cuando pidió una repetición que la app no hace.
@@ -462,11 +491,12 @@ public enum LocalToolAdapter {
     }
 
     static func dictatedEvent(_ ownerText: String) -> String? {
-        let lower = ownerText.lowercased()
-        guard let key = lower.firstMatch(of: /ag[eé]nd(?:a|ame)\s+(?:una?\s+|la\s+|el\s+)?/) else { return nil }
-        var rest = String(lower[key.range.upperBound...])
-        let cut = try? Regex("\\s+(?:hoy|mañana|pasado mañana|el (?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
-            + "|este |esta |a las? \\d|de \\d{1,2} a|en \\S+ (?:horas?|minutos?)|para el|para mañana).*$")
+        // Se corta sobre el texto original (con sus mayúsculas: "con Pedro").
+        guard let key = ownerText.firstMatch(of: /(?i)ag[eé]nd(?:a|ame)\s+(?:una?\s+|la\s+|el\s+)?/) else { return nil }
+        var rest = String(ownerText[key.range.upperBound...])
+        let cut = try? Regex("(?i)\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
+            + "|la (?:próxima|proxima) semana|el (?:próximo|proximo) mes|este |esta |a las? \\d|de \\d{1,2} a"
+            + "|en \\S+ (?:horas?|minutos?)|para el|para mañana|para la).*$")
         if let cut, let match = rest.firstMatch(of: cut) { rest = String(rest[..<match.range.lowerBound]) }
         let text = rest.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return text.isEmpty ? nil : text

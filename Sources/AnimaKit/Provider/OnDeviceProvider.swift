@@ -435,7 +435,9 @@ public enum OnDevicePromptBuilder {
             if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
                 salient = [SalientGroup(["tab"])]
             }
-            if results.contains(where: { $0.contains("ya pasó; te lo puse mañana") }) { salient.append(SalientGroup(["pas"])) }
+            if results.contains(where: { $0.contains("ya pasó, así que te lo puse para mañana") }) {
+                salient.append(SalientGroup(["pas"]))
+            }
             // Una repetición no soportada se dice siempre ("aún no lo repito").
             if results.contains(where: { $0.contains("aún no lo repito") }) { salient.append(SalientGroup(["repit"])) }
             let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)

@@ -385,7 +385,8 @@ public actor AgentLoop {
                 if toolProfile == .onDevice, !localWrote, response.stopReason != .toolUse,
                    response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText),
                    !Self.plainText(content).contains(hint), !Self.plainText(content).lowercased().contains("tab ") {
-                    let addition = Self.plainText(content).isEmpty ? hint : "\n\n" + hint
+                    let body = Self.plainText(content).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let addition = body.isEmpty ? hint : (Self.plainText(content).hasSuffix("\n") ? "" : "\n") + hint
                     emit(.textDelta(addition))
                     content.append(.text(addition))
                 }
@@ -438,6 +439,10 @@ public actor AgentLoop {
                             result = toolProfile == .onDevice
                                 ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
                                 : executed
+                            if toolProfile == .onDevice, LocalToolAdapter.listTools.contains(call.name), !executed.isError,
+                               LocalToolAdapter.asksForPending(userText) {
+                                result = await pendingSummary(now: clock?() ?? Date())
+                            }
                             parameterError = LocalToolAdapter.isParameterError(executed.content)
                         case .invalid(let tool, let message):
                             realName = tool
@@ -610,6 +615,21 @@ public actor AgentLoop {
                 throw error
             }
         }
+    }
+
+    /// "¿Qué tengo pendiente?" con el modelo local: recordatorios + metas activas
+    /// + agenda de hoy en un solo listado (las tools que no estén, se omiten).
+    private func pendingSummary(now: Date) async -> ToolResult {
+        func read(_ tool: String, _ input: JSONValue) async -> String? {
+            guard await sensorimotor.has(tool) else { return nil }
+            let result = await sensorimotor.execute(name: tool, input: input)
+            return result.isError ? nil : result.content
+        }
+        let reminders = await read("anima_reminders", .object(["action": .string("list")]))
+        let goals = await read("goals", .object(["action": .string("list")]))
+        let events = await read("calendar", .object(["action": .string("list"), "days_ahead": .int(1)]))
+        return ToolResult(content: LocalToolAdapter.pendingSummary(reminders: reminders, goals: goals, events: events,
+                                                                   now: now))
     }
 
     /// Evict al Brain (§4.9, relieve local): el texto desalojado del contexto se

@@ -252,7 +252,7 @@ import Testing
     @Test func aToolLessTurnAboutAChangeSaysWhere() async throws {
         let r = try await LocalLoopHarness.run([LocalLoopHarness.text("¡Felicidades por cumplir tu meta!")], tools: [],
                                                router: try OnDeviceTestConfig.router(), text: "ya cumplí mi meta de leer")
-        #expect(r.text == "¡Felicidades por cumplir tu meta!\n\nMárcala como lograda en la tab Metas.")
+        #expect(r.text == "¡Felicidades por cumplir tu meta!\nMárcala como lograda en la tab Metas.")
         #expect(try r.lastAssistantText().hasSuffix("Márcala como lograda en la tab Metas."))
     }
 
@@ -379,5 +379,66 @@ import Testing
         let response = try await provider.completeCollecting(ctx, tools: [], opts: try OnDeviceTestConfig.opts())
         #expect(response.content == [.text("- correr una maratón — te pregunto cada domingo a las 20:00")])
         #expect(session.requests.value.isEmpty)
+    }
+}
+
+@Suite struct LocalPendingTests {
+    static let now = LocalToolAdapterTests.now
+    static var dates: AnimaDateText { AnimaDateText(calendar: LocalToolAdapterTests.calendar) }
+
+    @Test(arguments: [("¿qué tengo pendiente?", true), ("qué tengo hoy", true), ("¿qué hay para hoy?", true),
+                      ("¿qué recordatorios tengo?", false), ("¿qué metas tengo?", false),
+                      ("elimina lo pendiente", false)])
+    func pendingQuestions(owner: String, expected: Bool) {
+        #expect(LocalToolAdapter.asksForPending(owner) == expected)
+    }
+
+    @Test func theSummaryCombinesSectionsAndSkipsEmptyOnes() {
+        let summary = LocalToolAdapter.pendingSummary(
+            reminders: "Programados:\n- [R-1] llamar al banco — miércoles 7 de octubre a las 09:00",
+            goals: "- [G-1] leer 12 libros (stated, x); check-in cada domingo a las 20:00",
+            events: "- [E:1] Dentista @ 2026-10-06T20:00:00Z\n- [E:2] Otro día @ 2026-10-08T20:00:00Z",
+            now: Self.now, dates: Self.dates)
+        #expect(summary == """
+            Recordatorios:
+            - llamar al banco — miércoles 7 de octubre a las 09:00
+            Metas:
+            - leer 12 libros — te pregunto cada domingo a las 20:00
+            Hoy en tu agenda:
+            - Dentista — martes 6 de octubre a las 15:00
+            """)
+        #expect(LocalToolAdapter.pendingSummary(reminders: "No tienes recordatorios de Anima.",
+                                                goals: "El dueño no tiene metas activas.", events: nil,
+                                                now: Self.now, dates: Self.dates) == "No tienes nada pendiente.")
+        #expect(LocalToolAdapter.pendingSummary(reminders: nil, goals: "- [G] correr (s, x)", events: "No hay eventos.",
+                                                now: Self.now, dates: Self.dates) == "Metas:\n- correr")
+    }
+
+    @Test func thePendingTurnListsEverything() async throws {
+        let w = try ProactiveFixtures.world()
+        _ = try await w.reminders.create(text: "llamar al banco", fireAt: Date().addingTimeInterval(86_400 * 400))
+        _ = await w.other.ingestStated(statement: "leer 12 libros", desiredState: .progressCheckIn(everyDays: 8),
+                                       evidence: "test")
+        let model = OnDeviceProvider.modelName
+        let r = try await LocalLoopHarness.run([
+            LocalLoopHarness.toolUse("a", "list_reminders", "{}", model: model),
+            LocalLoopHarness.text("ignorado"),
+        ], tools: [AnimaRemindersTool(store: w.reminders), GoalsTool(otherModel: w.other)],
+           router: try OnDeviceTestConfig.router(), text: "¿qué tengo pendiente?")
+        let window = try r.store.window(sessionId: r.sid)
+        let result = window.flatMap(\.content).compactMap { block -> String? in
+            if case .toolResult(_, let content, false) = block { return content } else { return nil }
+        }.first ?? ""
+        #expect(result.contains("Recordatorios:\n- llamar al banco"))
+        #expect(result.contains("Metas:\n- leer 12 libros"))
+        #expect(!result.contains("Hoy en tu agenda"))
+    }
+
+    @Test func notesAndTitles() {
+        #expect(LocalToolAdapter.pastTodayNote() == "Ojo: esa hora de hoy ya pasó, así que te lo puse para mañana.")
+        #expect(LocalToolAdapter.dictatedEvent("Agéndame reunión con Pedro el próximo martes a las 3") == "reunión con Pedro")
+        #expect(LocalToolAdapter.dictatedEvent("agéndame revisión con Ana la próxima semana") == "revisión con Ana")
+        #expect(LocalToolAdapter.eventTitle(model: "Reunión de equipo", ownerText: "agéndame reunión con Pedro el jueves")
+                == "Reunión con Pedro")
     }
 }

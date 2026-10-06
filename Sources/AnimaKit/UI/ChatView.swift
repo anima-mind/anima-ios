@@ -37,6 +37,8 @@ public final class ChatViewModel: ObservableObject {
         public var imageData: Data?
         /// Solo-teléfono: la foto viajó como descripción de texto (FIX G).
         public var photoSentAsText: Bool = false
+        /// Cuándo se dijo: hora al pie y separador de día (como WhatsApp).
+        public var sentAt = Date()
 
         /// Tipo de card proactiva (nil si es un mensaje normal).
         public var proactiveKind: ProactiveMessage.Kind? {
@@ -71,6 +73,28 @@ public final class ChatViewModel: ObservableObject {
                                    now: now(), dates: dates)
     }
 
+    /// "8:30 p. m." al pie de cada mensaje.
+    public func timeLabel(_ message: DisplayMessage) -> String {
+        dates.time(message.sentAt)
+    }
+
+    /// Separadores de día ("Hoy", "Ayer", "lunes 5 de octubre") antes del primer
+    /// mensaje de cada día; el separador de sesión no cuenta como mensaje.
+    public func dayHeaders() -> [UUID: String] {
+        Self.dayHeaders(messages, now: now(), dates: dates)
+    }
+
+    public static func dayHeaders(_ messages: [DisplayMessage], now: Date, dates: AnimaDateText) -> [UUID: String] {
+        var out: [UUID: String] = [:]
+        var lastDay: Date?
+        for message in messages where !message.isSessionDivider {
+            let day = dates.calendar.startOfDay(for: message.sentAt)
+            if day != lastDay { out[message.id] = dates.dayHeader(message.sentAt, now: now) }
+            lastDay = day
+        }
+        return out
+    }
+
     public func cardFollowUp(_ message: DisplayMessage) -> String? {
         guard let kind = message.proactiveKind else { return nil }
         return ProactiveCard.followUp(kind, at: message.proactiveAt, now: now())
@@ -93,10 +117,14 @@ public final class ChatViewModel: ObservableObject {
         func message(_ turn: VisibleTurn) -> DisplayMessage {
             if turn.role == .assistant, let tag = turn.proactive,
                let proactive = ProactiveMessage(tag: tag, text: turn.text) {
-                return .proactive(proactive)
+                var card = DisplayMessage.proactive(proactive)
+                if let createdAt = turn.createdAt { card.sentAt = createdAt }
+                return card
             }
-            return DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
-                                  imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                                         imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            if let createdAt = turn.createdAt { message.sentAt = createdAt }
+            return message
         }
         var out = previous.map(message)
         if !out.isEmpty {
@@ -469,9 +497,16 @@ public struct ChatView: View {
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
+                        let headers = model.dayHeaders()
                         LazyVStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
                             ForEach(model.messages) { message in
-                                bubble(message).id(message.id)
+                                VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                                    if let header = headers[message.id] {
+                                        DaySeparator(text: header)
+                                    }
+                                    bubble(message)
+                                }
+                                .id(message.id)
                             }
                         }
                         .padding(Theme.Space.screenInset)
@@ -631,8 +666,10 @@ public struct ChatView: View {
                     Text(message.text)
                         .font(Theme.Type_.body)
                         .foregroundStyle(Theme.Colors.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("chat.userMessage")
                 }
+                MessageTime(text: model.timeLabel(message))
             }
                 .padding(Theme.Space.cardPad)
                 .background(
@@ -669,6 +706,9 @@ public struct ChatView: View {
                     } else {
                         streamedText(message)
                     }
+                }
+                if !message.isStreaming, !message.text.isEmpty {
+                    MessageTime(text: model.timeLabel(message))
                 }
             }
         }
@@ -926,32 +966,46 @@ public struct ChatView: View {
         }
     }
 
-    /// Adjunto PENDIENTE dentro del contenedor del composer (FIX G): misma card
-    /// que el campo, encima del input, con etiqueta "Adjunta · lista para enviar"
-    /// y la X. Jamás flota en el historial (parecía mensaje ya enviado).
+    /// Adjunto PENDIENTE dentro del contenedor del composer, encima del campo
+    /// (como Mensajes): thumb con anillo accent, X arriba a la derecha y un check
+    /// abajo que dice "listo para enviar" sin texto. Jamás flota en el historial.
     @ViewBuilder
     private var pendingAttachment: some View {
         if let image = model.pendingImage {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .top, spacing: Theme.Space.stack) {
+                ZStack(alignment: .topTrailing) {
                     Button { viewerImage = ViewerImage(data: image.thumb) } label: {
-                        PhotoThumb(data: image.thumb, width: 72, height: 52)
+                        PhotoThumb(data: image.thumb, width: 72, height: 72, ring: Theme.Colors.accent,
+                                   ringWidth: Theme.Stroke.icon)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Ver foto adjunta")
                     .accessibilityIdentifier("chat.attachment.thumb")
-                    HStack(spacing: 4) {
-                        Image(systemName: "paperclip")
-                            .font(.system(size: 11, weight: .light))
-                        Text("Adjunta · lista para enviar")
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Theme.Colors.accent)
+                            .background(Circle().fill(Theme.Colors.surface).padding(1))
+                            .offset(x: 5, y: 5)
+                            .accessibilityHidden(true)
                     }
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(Theme.Colors.textMuted)
-                    .padding(.top, 4)
-                    Spacer(minLength: 0)
-                    NavCloseButton("attachment") { model.removePhoto() }
-                        .frame(width: 32, height: 32)
+                    Button { model.removePhoto() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.Colors.bg)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Theme.Colors.textMuted))
+                            .overlay(Circle().strokeBorder(Theme.Colors.surface, lineWidth: Theme.Stroke.icon))
+                            .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 18, y: -18)
+                    .accessibilityLabel("Quitar foto")
+                    .accessibilityIdentifier("nav.close.attachment")
                 }
+                .padding(.top, 4)
+                .padding(.trailing, 8)
                 if let notice = model.pendingImageNotice {
                     Text(notice)
                         .font(Theme.Type_.meta)
@@ -962,10 +1016,9 @@ public struct ChatView: View {
             }
             .padding(.horizontal, Theme.Space.cardPad)
             .padding(.top, 10)
+            .transition(.scale(scale: 0.85, anchor: .bottomLeading).combined(with: .opacity))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat.attachment.pending")
-            Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
-                .padding(.horizontal, Theme.Space.cardPad)
         }
     }
 
@@ -1039,6 +1092,34 @@ public struct ChatView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.composer")
+    }
+}
+
+/// Separador de día centrado (como WhatsApp): "Hoy", "Ayer", "lunes 5 de octubre".
+struct DaySeparator: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Type_.meta)
+            .foregroundStyle(Theme.Colors.textMuted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("chat.dayHeader")
+    }
+}
+
+/// Hora pequeña y muted al pie de un mensaje.
+struct MessageTime: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(Theme.Type_.tabular(Theme.Type_.label))
+            .foregroundStyle(Theme.Colors.textFaint)
+            .accessibilityIdentifier("chat.messageTime")
     }
 }
 
@@ -1330,6 +1411,8 @@ struct PhotoThumb: View {
     let data: Data
     let width: CGFloat
     let height: CGFloat
+    var ring: Color = Theme.Colors.border
+    var ringWidth: CGFloat = Theme.Stroke.hairline
     @State private var image: CGImage?
     @State private var failed = false
 
@@ -1346,7 +1429,7 @@ struct PhotoThumb: View {
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
-            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            .strokeBorder(ring, lineWidth: ringWidth))
         .task(id: data) {
             image = await ImageLoader.load(data, maxPixel: ImageLoader.thumbMaxPixel)
             failed = image == nil

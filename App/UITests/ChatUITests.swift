@@ -26,6 +26,10 @@ final class ChatUITests: AnimaUITestCase {
         XCTAssertFalse(assistantMessage(app, value: "streaming").exists)
         XCTAssertTrue(userBubble.exists)
 
+        // Como WhatsApp: separador "Hoy" y la hora al pie de cada mensaje.
+        waitUntil(element(app, "chat.dayHeader"), "label == 'Hoy'")
+        XCTAssertGreaterThanOrEqual(app.descendants(matching: .any).matching(identifier: "chat.messageTime").count, 2)
+
         // El composer vuelve a estar listo para otro turno.
         XCTAssertTrue(app.textFields["chat.input"].isEnabled)
 

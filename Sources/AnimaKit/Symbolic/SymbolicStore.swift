@@ -128,22 +128,24 @@ public final class SymbolicStore: Sendable {
     /// la mente respondió, con sus marcas (voz, foto, superficie). Los
     /// tool_use/tool_result crudos y el razonamiento no se pintan.
     public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
-        let rows: [(String, String, String?, String?)] = try queue.read { db in
+        let rows: [(String, String, String?, String?, Double?)] = try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT role, content_json, surface, proactive_json FROM turn_event WHERE session_id=? ORDER BY seq ASC
+                SELECT role, content_json, surface, proactive_json, created_at FROM turn_event
+                WHERE session_id=? ORDER BY seq ASC
                 """, arguments: [sessionId])
                 .compactMap { row in
                     guard let role: String = row["role"], let json: String = row["content_json"] else { return nil }
-                    return (role, json, row["surface"], row["proactive_json"])
+                    return (role, json, row["surface"], row["proactive_json"], row["created_at"])
                 }
         }
-        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw in
+        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw, createdAt in
             guard let role = Message.Role(rawValue: role), role == .user || role == .assistant else { return nil }
             var turn = VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
                                    surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
             if let raw = proactiveRaw, let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
                 turn?.proactive = tag
             }
+            turn?.createdAt = createdAt.map(Date.init(timeIntervalSince1970:))
             return turn
         }
     }
@@ -210,15 +212,18 @@ public struct VisibleTurn: Sendable, Equatable {
     public var surface: SurfaceID?
     /// Turno proactivo (recordatorio entregado, check-in): se pinta como card.
     public var proactive: ProactiveTag?
+    /// Cuándo se escribió (hora y separador de día del chat).
+    public var createdAt: Date?
 
     public init(role: Message.Role, text: String, isVoice: Bool = false, imageBase64: String? = nil,
-                surface: SurfaceID? = nil, proactive: ProactiveTag? = nil) {
+                surface: SurfaceID? = nil, proactive: ProactiveTag? = nil, createdAt: Date? = nil) {
         self.role = role
         self.text = text
         self.isVoice = isVoice
         self.imageBase64 = imageBase64
         self.surface = surface
         self.proactive = proactive
+        self.createdAt = createdAt
     }
 
     /// nil si el evento no tiene nada que pintar (tool_result, tool_use puro).

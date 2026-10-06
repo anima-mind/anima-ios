@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 import Testing
 @testable import AnimaKit
 
@@ -76,17 +79,69 @@ import Testing
         #expect(local.systemTokens == 1000 + 100)
         #expect(local.memoryTokens == Int(Double(WorkingMemory.activatedMemoriesHeader.count + 324) / 3.6))
         #expect(local.conversationTokens == 1000)
-        #expect(local.level == .normal && (54...56).contains(local.percent))
+        #expect(local.roomTokens == 4096 - 1000 - 100)
+        #expect(local.level == .normal && (36...38).contains(local.percent))
         let claude = ContextGauge.measure(messages, systemBase: "", tools: [], model: "Claude Opus 4.8",
                                           budgetTokens: ContextProfile.claude.contextBudgetTokens)
         #expect(claude.percent == 1)
-        #expect(ContextGauge(model: "", budgetTokens: 100, systemTokens: 75, memoryTokens: 0, conversationTokens: 0).level == .high)
+        #expect(ContextGauge(model: "", budgetTokens: 100, systemTokens: 0, memoryTokens: 75, conversationTokens: 0).level == .high)
         #expect(ContextGauge(model: "", budgetTokens: 100, systemTokens: 95, memoryTokens: 0, conversationTokens: 50).level == .critical)
         #expect(ContextGauge(model: "", budgetTokens: 100, systemTokens: 95, memoryTokens: 0, conversationTokens: 50).fraction == 1)
         #expect(ContextGauge(model: "", budgetTokens: 0, systemTokens: 5, memoryTokens: 0, conversationTokens: 0).fraction == 0)
-        #expect(local.summary.hasSuffix("de 4.1k tokens"))
+        #expect(ContextGauge(model: "", budgetTokens: 100, systemTokens: 95, memoryTokens: 0, conversationTokens: 0).level == .normal)
+        #expect(local.summary == "1.1k de 3k tokens para conversar")
         #expect(ContextGauge.compact(999) == "999" && ContextGauge.compact(4000) == "4k")
         #expect(ContextGauge.toolChars([.client(name: "a", description: "bb", inputSchema: .object([:]))]) == 5)
+    }
+
+    @Test func toolCostIsMeasuredPerProvider() async throws {
+        let tools = try RealToolSet.specs()
+        let chars = ContextGauge.toolChars(tools)
+        #expect(ContextBudget.for(model: OnDeviceProvider.modelName) == .onDevice)
+        #expect(ContextBudget.for(model: "claude-opus-4-8") == .remote)
+        #expect(ContextBudget.remote.toolTokens(tools) == Int(Double(chars) / 4.2))
+        #expect(ContextBudget.onDevice.toolTokens(tools) == Int(Double(chars) / 2.5))
+        let server: ToolSpec = .server(type: "web_search_20260209", name: "web_search")
+        #expect(ContextBudget.remote.toolTokens(tools + [server]) > ContextBudget.remote.toolTokens(tools))
+        #expect(ContextBudget.onDevice.toolTokens(tools + [server]) == ContextBudget.onDevice.toolTokens(tools))
+        #expect(ContextBudget.remote.fixedTokens(systemBase: String(repeating: "s", count: 36), tools: []) == 10)
+    }
+
+    /// Medición real (Foundation Models, macOS 26.5, 2026-10-05): las 10 tools
+    /// cuestan 3797 tokens en la ventana de 4096 del modelo local — el schema
+    /// completo SÍ entra (como `GenerationSchema`, enums expandidos a anyOf). La
+    /// estimación de `ContextBudget.onDevice` queda a ±10 % de eso.
+    static let measuredOnDeviceToolTokens = 3797
+
+    @Test func onDeviceEstimateMatchesTheFrameworkTokenizer() async throws {
+        let tools = try RealToolSet.specs()
+        let estimate = ContextBudget.onDevice.toolTokens(tools)
+        #expect(abs(estimate - Self.measuredOnDeviceToolTokens) <= Self.measuredOnDeviceToolTokens / 10)
+        if let real = await RealToolSet.frameworkTokenCount(tools) {
+            #expect(abs(estimate - real) <= real / 10, "estimado \(estimate) vs real \(real)")
+        }
+    }
+
+    @Test func emptyChatDoesNotAlarmTheMeterWithTheRealTools() throws {
+        let tools = try RealToolSet.specs()
+        let system = [Message(role: .system, content: [.text("Ahora: lunes 5 de octubre, 8:30 p. m.")])]
+        let localRoute = try OnDeviceTestConfig.router().route(.interactive)
+        let local = ContextFit(profile: .onDevice, systemBase: AppGuide.systemBase("Eres Anima.", contextBudget: 4096),
+                               tools: tools, route: localRoute)
+        // Lo fijo ya excede la ventana local: el recorte se queda en el piso.
+        #expect(local.fixedTokens > 3000)
+        #expect(local.availableTokens == ContextFit.minAvailableTokens)
+        let empty = local.gauge(system)
+        #expect(empty.percent == 0 && empty.level == .normal)
+        #expect(empty.systemTokens >= local.fixedTokens)
+        let oneTurn = local.gauge(system + [.user("hola"), .assistant([.text("¡Hola! ¿Cómo vas?")])])
+        #expect(oneTurn.level == .normal && oneTurn.percent < 35)
+
+        let claudeRoute = ModelRoute(model: "claude-opus-4-8", effort: "medium", maxTokens: 16_000)
+        let claude = ContextFit(profile: .claude, systemBase: AppGuide.systemBase("Eres Anima."), tools: tools,
+                                route: claudeRoute)
+        #expect(claude.gauge(system).percent == 0)
+        #expect(claude.availableTokens == 180_000 - claude.fixedTokens - 16_000)
     }
 
     @Test func compactGuideForSmallWindows() {
@@ -228,5 +283,35 @@ import Testing
         await chat.compact()
         #expect(chat.messages.last?.text == "Conversación compactada")
         #expect(chat.contextGauge != nil)
+    }
+}
+
+/// Las 10 tools client-side que el shell registra (App/AnimaApp.swift).
+enum RealToolSet {
+    static func specs() throws -> [ToolSpec] {
+        let w = try ProactiveFixtures.world()
+        let tools: [any SensorimotorTool] = [
+            CalendarTool(), RemindersTool(), NotesTool(root: FileManager.default.temporaryDirectory),
+            PhoneContextTool(), CameraTool(), AudioTool(), GlassesShowTool(host: nil), GlassesCameraTool(host: nil),
+            AnimaRemindersTool(store: w.reminders), GoalsTool(otherModel: w.other),
+        ]
+        return tools.map(\.spec)
+    }
+
+    /// `SystemLanguageModel.tokenCount(for: [Tool])` cuando el SDK/OS lo tienen
+    /// (macOS 26.4+); nil si no se puede medir aquí.
+    static func frameworkTokenCount(_ specs: [ToolSpec]) async -> Int? {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.4, iOS 26.4, *) {
+            let tools: [InterceptingTool] = specs.compactMap { spec in
+                guard case .client(let name, let description, let schema) = spec,
+                      let generation = try? OnDeviceSchemaBridge.generationSchema(
+                        for: OnDeviceSchema.from(jsonSchema: schema, name: name)) else { return nil }
+                return InterceptingTool(name: name, description: description, parameters: generation)
+            }
+            return try? await SystemLanguageModel.default.tokenCount(for: tools)
+        }
+        #endif
+        return nil
     }
 }

@@ -81,7 +81,10 @@ public enum HardTrim {
     }
 }
 
-/// Qué tan lleno está el contexto del modelo activo (el medidor del chat).
+/// Qué tan lleno está el contexto del modelo activo (el medidor del chat). El %
+/// mide el espacio para conversar (lo que el recorte duro protege), no la
+/// ventana entera: instrucciones, herramientas y la respuesta reservada son un
+/// costo fijo que el dueño no controla; con el chat vacío marca 0 %.
 public struct ContextGauge: Sendable, Equatable {
     public enum Level: Sendable, Equatable {
         case normal, high, critical
@@ -93,20 +96,26 @@ public struct ContextGauge: Sendable, Equatable {
     public var systemTokens: Int
     public var memoryTokens: Int
     public var conversationTokens: Int
+    /// Lo que cabe de memorias + conversación antes del recorte duro.
+    public var roomTokens: Int
 
-    public init(model: String, budgetTokens: Int, systemTokens: Int, memoryTokens: Int, conversationTokens: Int) {
+    public init(model: String, budgetTokens: Int, systemTokens: Int, memoryTokens: Int, conversationTokens: Int,
+                roomTokens: Int? = nil) {
         self.model = model
         self.budgetTokens = budgetTokens
         self.systemTokens = systemTokens
         self.memoryTokens = memoryTokens
         self.conversationTokens = conversationTokens
+        self.roomTokens = roomTokens ?? max(0, budgetTokens - systemTokens)
     }
 
     public var usedTokens: Int { systemTokens + memoryTokens + conversationTokens }
 
+    public var conversationUsedTokens: Int { memoryTokens + conversationTokens }
+
     public var fraction: Double {
-        guard budgetTokens > 0 else { return 0 }
-        return min(1, Double(usedTokens) / Double(budgetTokens))
+        guard roomTokens > 0 else { return conversationUsedTokens > 0 ? 1 : 0 }
+        return min(1, Double(conversationUsedTokens) / Double(roomTokens))
     }
 
     public var percent: Int { Int((fraction * 100).rounded()) }
@@ -119,28 +128,29 @@ public struct ContextGauge: Sendable, Equatable {
         }
     }
 
-    /// "2.1k de 4.1k tokens".
-    public var summary: String { "\(Self.compact(usedTokens)) de \(Self.compact(budgetTokens)) tokens" }
+    /// "1.2k de 3.4k tokens para conversar".
+    public var summary: String {
+        "\(Self.compact(conversationUsedTokens)) de \(Self.compact(roomTokens)) tokens para conversar"
+    }
 
     public static func compact(_ tokens: Int) -> String {
         tokens < 1000 ? "\(tokens)" : String(format: "%.1fk", Double(tokens) / 1000).replacingOccurrences(of: ".0k", with: "k")
     }
 
     /// Mide un ensamblado: system (base + tools + role:system), memorias activadas
-    /// y el resto (la conversación).
+    /// y el resto (la conversación). `availableTokens` = lo que el recorte duro
+    /// deja a los mensajes (ver `ContextFit`); sin él, la ventana menos lo fijo.
     public static func measure(_ messages: [Message], systemBase: String, tools: [ToolSpec], model: String,
-                               budgetTokens: Int) -> ContextGauge {
-        let fixed = fixedTokens(systemBase: systemBase, tools: tools)
+                               budgetTokens: Int, cost: ContextBudget = .remote,
+                               availableTokens: Int? = nil) -> ContextGauge {
+        let fixed = cost.fixedTokens(systemBase: systemBase, tools: tools)
         let system = LocalRelief.estimateTokens(messages.filter { $0.role == .system })
         let memories = LocalRelief.estimateTokens(messages.filter(HardTrim.isActivatedContext))
         let conversation = LocalRelief.estimateTokens(messages.filter { $0.role != .system && !HardTrim.isActivatedContext($0) })
+        let available = availableTokens ?? (budgetTokens - fixed)
         return ContextGauge(model: model, budgetTokens: budgetTokens, systemTokens: fixed + system,
-                            memoryTokens: memories, conversationTokens: conversation)
-    }
-
-    /// System base (prosa, chars/3.6) + schemas de tools (JSON, chars/4.2).
-    public static func fixedTokens(systemBase: String, tools: [ToolSpec]) -> Int {
-        Int(Double(systemBase.count) / 3.6 + Double(toolChars(tools)) / 4.2)
+                            memoryTokens: memories, conversationTokens: conversation,
+                            roomTokens: max(0, available - system))
     }
 
     public static func toolChars(_ tools: [ToolSpec]) -> Int {
@@ -173,19 +183,22 @@ public struct ContextFit: Sendable {
 
     public var modelName: String { ModelNames.friendly(route.model) }
 
+    public var cost: ContextBudget { ContextBudget.for(model: route.model) }
+
+    public var fixedTokens: Int { cost.fixedTokens(systemBase: systemBase, tools: tools) }
+
     public var reservedTokens: Int {
-        ContextGauge.fixedTokens(systemBase: systemBase, tools: tools)
-            + min(route.maxTokens, profile.contextBudgetTokens / 4)
+        fixedTokens + min(route.maxTokens, profile.contextBudgetTokens / 4)
     }
 
     /// Piso: el turno del dueño y algo de history siempre caben en la estimación
-    /// (la heurística sobreestima los schemas; el overflow real lo cubre el loop).
+    /// (si lo fijo ya llena la ventana, el overflow real lo cubre el loop).
     public static let minAvailableTokens = 512
 
     public var availableTokens: Int { max(Self.minAvailableTokens, profile.contextBudgetTokens - reservedTokens) }
 
     public func gauge(_ messages: [Message]) -> ContextGauge {
         ContextGauge.measure(messages, systemBase: systemBase, tools: tools, model: modelName,
-                             budgetTokens: profile.contextBudgetTokens)
+                             budgetTokens: profile.contextBudgetTokens, cost: cost, availableTokens: availableTokens)
     }
 }

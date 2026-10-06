@@ -366,7 +366,7 @@ public struct GoalsView: View {
     private func checkInRow(_ goal: Goal) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(Theme.Colors.border)
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.Space.unit * 2) {
                 Text("Seguimiento")
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.textMuted)

@@ -138,12 +138,12 @@ public struct NotificationsSettingsSection: View {
                 divider
                 if let openList = model.openList {
                     Button(action: openList) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: Theme.Space.unit) {
                             Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
                                 .accessibilityIdentifier("settings.notifications.count")
                             Spacer(minLength: 0)
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .light))
+                                .font(Theme.Type_.meta.weight(.light))
                                 .foregroundStyle(Theme.Colors.textFaint)
                         }
                         .font(Theme.Type_.secondary)
@@ -183,7 +183,7 @@ public struct NotificationsSettingsSection: View {
                 Text(title)
                 Spacer(minLength: 0)
                 Image(systemName: glyph)
-                    .font(.system(size: 13, weight: .light))
+                    .font(Theme.Type_.secondary.weight(.light))
             }
             .font(Theme.Type_.secondary)
             .foregroundStyle(Theme.Colors.accentText)

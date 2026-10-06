@@ -178,7 +178,7 @@ public struct MemoryBrowserView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .light))
+                        .font(Theme.Type_.label.weight(.light))
                         .rotationEffect(.degrees(model.showInvalidated ? 90 : 0))
                     Text(model.showInvalidated ? "Ocultar invalidadas" : "Mostrar invalidadas (\(model.invalidated.count))")
                 }
@@ -198,7 +198,7 @@ public struct MemoryBrowserView: View {
                     .accessibilityIdentifier("memory.purge")
             }
         }
-        .padding(.top, 8)
+        .padding(.top, Theme.Space.unit * 2)
     }
 
     private var filterField: some View {
@@ -227,7 +227,7 @@ public struct MemoryBrowserView: View {
                     .font(Theme.Type_.meta)
                     .foregroundStyle(Theme.Colors.textFaint)
                     .accessibilityIdentifier("memory.origin")
-                HStack(spacing: 8) {
+                HStack(spacing: Theme.Space.unit * 2) {
                     tag(MemoryBrowserViewModel.kindLabel(item.kind))
                     tag(MemoryBrowserViewModel.confidenceLabel(item.confidence))
                     if !item.isValid { tag("invalidada") }
@@ -291,7 +291,7 @@ struct MemoryDetailSheet: View {
                             .kerning(0.66)
                             .foregroundStyle(Theme.Colors.textMuted)
                         ForEach(detail.chain) { record in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: Theme.Space.unit) {
                                 Text(record.content)
                                     .font(Theme.Type_.secondary)
                                     .foregroundStyle(record.isValid ? Theme.Colors.text : Theme.Colors.textFaint)

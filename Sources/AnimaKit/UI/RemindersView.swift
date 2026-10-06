@@ -152,7 +152,7 @@ public struct RemindersView: View {
     private var emptyState: some View {
         VStack(spacing: Theme.Space.stack) {
             Image(systemName: "bell")
-                .font(.system(size: 28, weight: .light))
+                .font(Theme.Type_.hero.weight(.light))
                 .foregroundStyle(Theme.Colors.accent)
             Text("Nada programado")
                 .font(Theme.Type_.body)
@@ -179,7 +179,7 @@ public struct RemindersView: View {
     private func reminderRow(_ item: RemindersViewModel.Item) -> some View {
         HStack(alignment: .top, spacing: Theme.Space.stack) {
             Image(systemName: "bell")
-                .font(.system(size: 15, weight: .light))
+                .font(Theme.Type_.body.weight(.light))
                 .foregroundStyle(Theme.Colors.accent)
                 .frame(width: 20)
                 .padding(.top, 2)
@@ -200,7 +200,7 @@ public struct RemindersView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Theme.Space.unit)
         .listRowBackground(Theme.Colors.surface)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) { Task { await model.cancel(item) } } label: {
@@ -229,7 +229,7 @@ public struct RemindersView: View {
         } label: {
             HStack(alignment: .top, spacing: Theme.Space.stack) {
                 Image(systemName: "target")
-                    .font(.system(size: 15, weight: .light))
+                    .font(Theme.Type_.body.weight(.light))
                     .foregroundStyle(Theme.Colors.accent)
                     .frame(width: 20)
                     .padding(.top, 2)
@@ -244,11 +244,11 @@ public struct RemindersView: View {
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .light))
+                    .font(Theme.Type_.meta.weight(.light))
                     .foregroundStyle(Theme.Colors.textFaint)
-                    .padding(.top, 4)
+                    .padding(.top, Theme.Space.unit)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, Theme.Space.unit)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -732,9 +732,9 @@ public struct ChatView: View {
     static let headerMarkSize: CGFloat = 30
 
     private var header: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Theme.Space.unit * 2) {
             HStack(alignment: .center, spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.Space.unit) {
                     Text(model.selfName)
                         .font(Theme.Type_.screenTitle)
                         .foregroundStyle(Theme.Colors.text)
@@ -891,7 +891,7 @@ public struct ChatView: View {
                         ThinkingIndicator(p: model.mind.p)
                     } else {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .light))
+                            .font(Theme.Type_.label.weight(.light))
                             .foregroundStyle(Theme.Colors.textFaint)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                             .animation(.easeOut(duration: 0.2), value: expanded)
@@ -1039,13 +1039,13 @@ public struct ChatView: View {
         let kind = message.proactiveKind
         HStack(alignment: .top, spacing: Theme.Space.stack) {
             Image(systemName: kind.map(ProactiveCard.symbol) ?? "sparkles")
-                .font(.system(size: 15, weight: .regular))
+                .font(Theme.Type_.body)
                 .foregroundStyle(Theme.Colors.accent)
                 .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 4)
                 .frame(width: 22, height: 22)
                 .padding(.top, 1)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Theme.Space.unit) {
                 Text(model.cardLabel(message))
                     .font(Theme.Type_.meta)
                     .foregroundStyle(Theme.Colors.accentText)
@@ -1069,7 +1069,7 @@ public struct ChatView: View {
                             .foregroundStyle(Theme.Colors.textFaint)
                             .accessibilityIdentifier("chat.proactive.outcome")
                     } else if !message.resolved {
-                        HStack(spacing: 8) {
+                        HStack(spacing: Theme.Space.unit * 2) {
                             Button { Task { await model.accept(message) } } label: {
                                 Text("Hagámoslo")
                                     .foregroundStyle(Theme.Colors.accentText)
@@ -1114,16 +1114,16 @@ public struct ChatView: View {
     /// Aviso discreto: hay cambios esperando su aprobación (→ Ajustes → Mente).
     private func approvalsBanner(_ count: Int) -> some View {
         Button { model.onOpenApprovals?() } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.Space.unit * 2) {
                 Image(systemName: "checkmark.seal")
-                    .font(.system(size: 13, weight: .light))
+                    .font(Theme.Type_.secondary.weight(.light))
                     .foregroundStyle(Theme.Colors.accent)
                 Text(ApprovalsInboxViewModel.bannerText(count))
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.accentText)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .light))
+                    .font(Theme.Type_.label.weight(.light))
                     .foregroundStyle(Theme.Colors.textFaint)
             }
             .padding(.horizontal, Theme.Space.cardPad)
@@ -1135,7 +1135,7 @@ public struct ChatView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, Theme.Space.screenInset)
-        .padding(.top, 8)
+        .padding(.top, Theme.Space.unit * 2)
         .accessibilityIdentifier("chat.approvalsBanner")
     }
 
@@ -1184,7 +1184,7 @@ public struct ChatView: View {
                     .accessibilityIdentifier("chat.attachment.thumb")
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 15))
+                            .font(Theme.Type_.body)
                             .foregroundStyle(Theme.Colors.accent)
                             .background(Circle().fill(Theme.Colors.surface).padding(1))
                             .offset(x: 5, y: 5)
@@ -1192,7 +1192,7 @@ public struct ChatView: View {
                     }
                     Button { model.removePhoto() } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(Theme.Type_.tab.weight(.semibold))
                             .foregroundStyle(Theme.Colors.bg)
                             .frame(width: 22, height: 22)
                             .background(Circle().fill(Theme.Colors.textMuted))
@@ -1205,8 +1205,8 @@ public struct ChatView: View {
                     .accessibilityLabel("Quitar foto")
                     .accessibilityIdentifier("nav.close.attachment")
                 }
-                .padding(.top, 4)
-                .padding(.trailing, 8)
+                .padding(.top, Theme.Space.unit)
+                .padding(.trailing, Theme.Space.unit * 2)
                 if let notice = model.pendingImageNotice {
                     Text(notice)
                         .font(Theme.Type_.meta)
@@ -1315,12 +1315,12 @@ struct OfflinePill: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "wifi.slash")
-                .font(.system(size: 11, weight: .light))
+                .font(Theme.Type_.label.weight(.light))
             Text(localAvailable ? "Sin conexión · modelo local disponible" : "Sin conexión")
         }
         .font(Theme.Type_.meta)
         .foregroundStyle(Theme.Colors.textMuted)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Theme.Space.stack)
         .padding(.vertical, 6)
         .background(Capsule().fill(Theme.Colors.surface))
         .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
@@ -1339,7 +1339,7 @@ struct DaySeparator: View {
             .font(Theme.Type_.meta)
             .foregroundStyle(Theme.Colors.textMuted)
             .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.vertical, Theme.Space.unit)
             .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
             .frame(maxWidth: .infinity)
             .accessibilityIdentifier("chat.dayHeader")

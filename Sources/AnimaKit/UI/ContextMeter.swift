@@ -13,7 +13,7 @@ struct ContextMeter: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 8) {
+            HStack(spacing: Theme.Space.unit * 2) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Theme.Colors.border)

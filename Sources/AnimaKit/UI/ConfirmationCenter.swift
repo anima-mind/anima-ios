@@ -73,12 +73,12 @@ public struct ConfirmationSheet: View {
                 .accessibilityIdentifier("confirm.summary")
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised")
-                    .font(.system(size: 11, weight: .light))
+                    .font(Theme.Type_.label.weight(.light))
                 Text(ToolNames.context(tool: request.tool, operation: request.operation))
             }
             .font(Theme.Type_.meta)
             .foregroundStyle(Theme.Colors.textFaint)
-            VStack(spacing: 8) {
+            VStack(spacing: Theme.Space.unit * 2) {
                 Button { onDecision(.once) } label: {
                     Text("Autorizar")
                         .font(Theme.Type_.body)
@@ -111,7 +111,7 @@ public struct ConfirmationSheet: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("confirm.cancel")
             }
-            .padding(.top, 4)
+            .padding(.top, Theme.Space.unit)
         }
         .padding(.horizontal, Theme.Space.screenInset)
         .padding(.top, Theme.Space.sectionGap + 4)
@@ -151,7 +151,7 @@ public struct AuthorizedActionsSection: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Theme.Space.unit * 2) {
             Text("Permisos")
                 .font(Theme.Type_.label)
                 .textCase(.uppercase)

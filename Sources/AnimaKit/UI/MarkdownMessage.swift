@@ -43,7 +43,7 @@ struct MarkdownBlockView: View {
         case .code(let code, _):
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(Theme.Type_.secondary.monospaced())
                     .foregroundStyle(Theme.Colors.text)
                     .textSelection(.enabled)
                     .padding(Theme.Space.cardPad)
@@ -60,7 +60,7 @@ struct MarkdownBlockView: View {
             .fixedSize(horizontal: false, vertical: true)
         case .rule:
             Rectangle().fill(Theme.Colors.border).frame(height: Theme.Stroke.hairline)
-                .padding(.vertical, 4)
+                .padding(.vertical, Theme.Space.unit)
         }
     }
 
@@ -81,7 +81,7 @@ struct MarkdownBlockView: View {
     }
 
     private func listItem(_ item: ChatMarkdown.ListItem, ordered: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.unit * 2) {
             Text(item.marker)
                 .font(ordered ? Theme.Type_.tabular(Theme.Type_.body) : Theme.Type_.body)
                 .foregroundStyle(ordered ? Theme.Colors.textMuted : Theme.Colors.accent)
@@ -98,8 +98,8 @@ struct MarkdownTable: View {
     let table: ChatMarkdown.Table
     static let minColumn: CGFloat = 64
     static let maxColumn: CGFloat = 220
-    static let cellPadH: CGFloat = 10
-    static let cellPadV: CGFloat = 8
+    static let cellPadH: CGFloat = Theme.Space.unit * 2.5
+    static let cellPadV: CGFloat = Theme.Space.unit * 2
     static let charWidth: CGFloat = 8.5
 
     var body: some View {

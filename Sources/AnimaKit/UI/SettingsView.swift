@@ -630,7 +630,7 @@ struct ModelSettingsContent: View {
                 .accessibilityIdentifier("settings.mode.hybrid")
             }
 
-            VStack(spacing: 8) {
+            VStack(spacing: Theme.Space.unit * 2) {
                 ForEach(SettingsViewModel.placement(for: model.mode), id: \.what) { row in
                     HStack {
                         Text(row.what)

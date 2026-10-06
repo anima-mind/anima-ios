@@ -73,6 +73,9 @@ final class AppModel: ObservableObject {
     /// Aprobaciones pendientes: badge de la tab Ajustes y aviso sobre el chat.
     @Published private(set) var pendingApprovals = 0
     private var approvalsWatch: AnyCancellable?
+    private let connectivity = ConnectivityMonitor()
+    /// Último estado de red (el chat se re-cablea: lo hereda al crearse).
+    private var offline = false
     let confirmation = ConfirmationCenter()
     /// "Autorizar siempre" (sheet de confirmación), revocable en Ajustes → Skills.
     private let authorized = AuthorizedActionsStore(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
@@ -127,6 +130,11 @@ final class AppModel: ObservableObject {
     init() {
         voiceInvocations = VoiceInvocationOrchestrator(port: Self.makeVoiceInvocationsPort())
         voiceInvocations.start()
+        connectivity.start { [weak self] offline in
+            guard let self else { return }
+            self.offline = offline
+            Task { await self.chatModel?.setOffline(offline) }
+        }
         let authorized = self.authorized
         confirmation.onAlwaysAllow = { request in
             authorized.allow(AllowlistEntry(tool: request.tool, operation: request.operation))
@@ -494,6 +502,9 @@ final class AppModel: ObservableObject {
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
         chat.pendingApprovals = pendingApprovals
+        chat.usesRemoteConversation = mode != .onDeviceOnly
+        chat.localModelAvailable = mode == .onDeviceOnly
+        await chat.setOffline(offline)
         chat.onOpenApprovals = { [weak self] in self?.openApprovals() }
         // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
         chat.photosAvailable = mode != .onDeviceOnly

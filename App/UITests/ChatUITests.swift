@@ -178,3 +178,19 @@ final class ContextUITests: AnimaUITestCase {
         XCTAssertFalse(app.staticTexts.matching(identifier: "chat.userMessage").firstMatch.exists)
     }
 }
+
+/// Batch 5b #7: sin red, pill "Sin conexión" y el turno a Claude se encola.
+final class OfflineUITests: AnimaUITestCase {
+    @MainActor
+    func testOfflinePillAndQueuedTurn() {
+        let app = makeApp(reset: true)
+        app.launchArguments.append("--uitest-offline")
+        app.launch()
+        onboard(app, provider: .anthropic(key: "sk-ant-api03-test"))
+        let pill = element(app, "chat.offline")
+        waitUntil(pill, "label CONTAINS 'Sin conexión'")
+        send(app, "hola")
+        waitFor(text(app, "Sin conexión: te lo envío apenas vuelva la red."))
+        XCTAssertFalse(assistantMessage(app).exists)
+    }
+}

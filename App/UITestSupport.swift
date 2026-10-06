@@ -33,6 +33,8 @@ enum UITestMode {
     static let isActive = arguments.contains(flag)
     static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
     static let seedsInferredGoal = isActive && arguments.contains(seedInferredGoalFlag)
+    /// Sin red forzado (pill "Sin conexión" + turno encolado).
+    static let forcesOffline = isActive && arguments.contains("--uitest-offline")
     static let shouldReset = isActive && arguments.contains(resetFlag)
     static let seedReminderSeconds: Int? = isActive
         ? arguments.lazy.compactMap { arg -> Int? in

@@ -338,7 +338,7 @@ public final class ChatViewModel: ObservableObject {
             }
         }
         if !text.isEmpty { content.append(.text(text)) }
-        await run(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
+        await dispatch(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
                   content: content)
     }
 
@@ -408,7 +408,7 @@ public final class ChatViewModel: ObservableObject {
         let text = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
         eventSink.yield(.voiceTranscript(text))
-        await run(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
+        await dispatch(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
     }
 
     /// "Reintentar" del error card: reintenta el último turno sin duplicar la
@@ -422,6 +422,39 @@ public final class ChatViewModel: ObservableObject {
                 kind: .trim, fromSeq: 0, model: contextGauge?.model, createdAt: now()).dividerText,
                 isSessionDivider: true))
         }
+        await run(nil, content: content)
+    }
+
+    // MARK: Conexión (5b #7)
+
+    @Published public private(set) var isOffline = false
+    /// La conversación va a un modelo remoto (Claude/OpenAI/Gemini): sin red, se encola.
+    public var usesRemoteConversation = false
+    /// Hay modelo local para seguir sin red (Solo teléfono / Híbrido).
+    public var localModelAvailable = false
+    private var queuedContent: [ContentBlock]?
+    public static let offlineQueuedNote = "Sin conexión: te lo envío apenas vuelva la red."
+
+    /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
+    /// (con aviso claro) en vez de fallar y pedir "Reintentar".
+    private func dispatch(_ bubble: DisplayMessage, content: [ContentBlock]) async {
+        guard isOffline, usesRemoteConversation else {
+            await run(bubble, content: content)
+            return
+        }
+        messages.append(bubble)
+        messages.append(DisplayMessage(role: .assistant, text: Self.offlineQueuedNote, isSessionDivider: true))
+        lastUserContent = content
+        queuedContent = content
+    }
+
+    public var hasQueuedTurn: Bool { queuedContent != nil }
+
+    public func setOffline(_ offline: Bool) async {
+        guard offline != isOffline else { return }
+        isOffline = offline
+        guard !offline, let content = queuedContent, !isStreaming else { return }
+        queuedContent = nil
         await run(nil, content: content)
     }
 
@@ -554,6 +587,9 @@ public struct ChatView: View {
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
     @State private var showContextSheet = false
+    /// ¿El dueño está al fondo del chat? (si subió a leer, no se le mueve).
+    @State private var followsBottom = true
+    static let followSlack: CGFloat = 80
     @State private var showPhotoMenu = false
     @State private var photoSource: PhotoSource?
     /// Visor fullscreen de una foto (thumb del composer o de una burbuja).
@@ -593,7 +629,9 @@ public struct ChatView: View {
                         }
                         .padding(Theme.Space.screenInset)
                     }
-                    .defaultScrollAnchor(.bottom)
+                    // Solo el offset INICIAL al fondo: anclar siempre al fondo peleaba
+                    // con el scrollTo por delta y el chat "bailaba" (5b #7).
+                    .followingBottom($followsBottom, slack: Self.followSlack)
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
@@ -602,14 +640,25 @@ public struct ChatView: View {
                         model.cancelVoice()   // tap fuera de la listening bar: descarta
                     })
                     .accessibilityIdentifier("chat.messages")
+                    // Auto-scroll solo si el dueño ya estaba al fondo, solo cuando
+                    // cambia el ÚLTIMO mensaje y sin animación (nada de loops).
                     .onChange(of: model.messages.last?.text) { _, _ in
-                        if let last = model.messages.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
+                        guard followsBottom, let last = model.messages.last else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                    // Un mensaje nuevo del dueño siempre baja (es su acción).
+                    .onChange(of: model.messages.count) { old, new in
+                        guard new > old, let last = model.messages.last,
+                              followsBottom || model.messages.dropLast().last?.role == .user else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
                     }
                     .onChange(of: model.focusedMessageId) { _, id in
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
+                }
+                if model.isOffline {
+                    OfflinePill(localAvailable: model.localModelAvailable)
+                        .padding(.top, 6)
                 }
                 if model.isListening {
                     ListeningBar(transcript: model.liveTranscript,
@@ -1233,6 +1282,46 @@ public struct ChatView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.composer")
+    }
+}
+
+extension View {
+    /// Ancla inicial al fondo + si el usuario sigue al fondo (iOS 18+). En
+    /// sistemas viejos: el ancla clásica y "siempre al fondo".
+    @ViewBuilder
+    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat) -> some View {
+        if #available(iOS 18, macOS 15, *) {
+            self.defaultScrollAnchor(.bottom, for: .initialOffset)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
+                } action: { _, value in
+                    atBottom.wrappedValue = value
+                }
+        } else {
+            self.defaultScrollAnchor(.bottom)
+        }
+    }
+}
+
+/// "Sin conexión" centrado sobre el composer (5b #7).
+struct OfflinePill: View {
+    let localAvailable: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 11, weight: .light))
+            Text(localAvailable ? "Sin conexión · modelo local disponible" : "Sin conexión")
+        }
+        .font(Theme.Type_.meta)
+        .foregroundStyle(Theme.Colors.textMuted)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(Theme.Colors.surface))
+        .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.offline")
     }
 }
 

@@ -369,29 +369,35 @@ public enum LocalToolAdapter {
     /// Con ella, el 3B no puede responder de memoria (medido: inventó "Almuerzo
     /// con Ana", el del ejemplo, para "qué hay esta semana").
     public static func queryTool(_ ownerText: String) -> String? {
-        let raw = ownerText.lowercased()
-        let owner = LocalWhen.fold(raw)
+        let owner = LocalWhen.fold(ownerText)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         guard !owner.isEmpty, !LocalWhen.opensWithCreation(ownerText), !LocalWhen.asksToChange(ownerText) else { return nil }
-        let asks = ["qué ", "cuál", "cuánt", "?", "¿"].contains(where: raw.contains)
-            || ["que ", "cuales ", "muestrame", "dime", "lista", "tengo algo"].contains(where: owner.hasPrefix)
-        let about = ["tengo", "hay", "pendiente", "agenda", "evento", "cita", "recordatorio", "meta", "calendario", "reunion"]
-            .contains(where: owner.contains)
-        guard asks, about else { return nil }
-        if owner.contains("meta") { return "list_goals" }
-        if owner.contains("recordatorio") { return "list_reminders" }
-        if ["evento", "cita", "agenda", "calendario", "reunion"].contains(where: owner.contains) { return "list_events" }
-        return "list_reminders"
+        // "¿qué tengo que hacer…?", "¿hay que…?", "¿qué es…?", "¿qué opinas…?" no son consultas de lo suyo.
+        if ["tengo que", "hay que", "que es", "que son", "que opinas", "que significa", "que piensas"]
+            .contains(where: owner.contains) { return nil }
+        // Categoría explícita: "mis metas", "qué recordatorios tengo", "qué citas hay el viernes".
+        let category = /\b(?:mis|tus) (recordatorios|metas|eventos|citas|reuniones|pendientes|agenda)\b|\bmi (agenda|calendario)\b|\b(?:que|cuales|cuantos|cuantas) (recordatorios|metas|eventos|citas|reuniones|pendientes) (?:tengo|hay)\b|\b(?:que tengo|que hay) en (?:mi|la) (agenda|calendario)\b/
+        if let m = owner.firstMatch(of: category) {
+            let word = String(m.1 ?? m.2 ?? m.3 ?? m.4 ?? "")
+            switch word {
+            case "metas": return "list_goals"
+            case "recordatorios", "pendientes": return "list_reminders"
+            default: return "list_events"
+            }
+        }
+        // El patrón corto: "qué tengo / qué hay" + (fin | hoy | un rango), el de asksForPending.
+        if asksForPending(ownerText) || LocalWhen.isShortAgendaQuestion(owner) { return "list_reminders" }
+        return nil
     }
 
     /// Una consulta general ("¿qué hay esta semana?", "¿qué tengo pendiente?"):
     /// se responde con el resumen combinado del rango.
     public static func asksForSummary(_ ownerText: String) -> Bool {
         if asksForPending(ownerText) { return true }
-        guard queryTool(ownerText) != nil else { return false }
-        let owner = LocalWhen.fold(ownerText)
         // Sin categoría ("¿qué tengo mañana?", "¿qué hay esta semana?"): todo lo
         // de ese rango; con categoría ("¿qué metas tengo?"), su listado.
-        return !["meta", "recordatorio", "evento", "cita", "agenda", "calendario", "reunion"].contains(where: owner.contains)
+        let owner = LocalWhen.fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return queryTool(ownerText) != nil && LocalWhen.isShortAgendaQuestion(owner)
     }
 
     /// Secciones "Recordatorios:", "Metas:" y "<rango> en tu agenda:" (las
@@ -573,11 +579,22 @@ public enum LocalToolAdapter {
     /// "Pagar el viernes a las 9" ⇒ "Pagar": la fecha y la hora ya van en el
     /// recordatorio. Lo que va al inicio ("Mañana es el examen") se conserva.
     static func withoutSchedule(_ text: String) -> String {
-        let cut = try? Regex("(?i)\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
-            + "|el \\d{1,2} de|a las? \\d|en \\d+ (?:horas?|minutos?)|dentro de \\d|todos los|cada (?:d[ií]a|semana|mes|\\d)"
-            + "|la (?:próxima|proxima) semana)\\b.*$")
-        guard let cut, let match = text.firstMatch(of: cut) else { return text }
-        let kept = String(text[..<match.range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        // Solo sale la expresión de fecha/hora; lo de antes y de después se queda.
+        // "de/por la mañana" sueltos son franja, no el día: se protegen.
+        var out = text.replacingOccurrences(of: "de la mañana", with: "\u{1}")
+            .replacingOccurrences(of: "por la mañana", with: "\u{2}")
+        let weekday = "(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?)"
+        let expression = try? Regex("(?i)\\s+(?:(?:para|de) )?(?:hoy|pasado mañana|mañana|el (?:próximo |proximo )?\(weekday)"
+            + "|el \\d{1,2} de [a-záéíóú]+|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: \u{1}| de la (?:tarde|noche))?"
+            + "|(?:en|dentro de) \\d+ (?:horas?|minutos?)|todos los (?:días|\(weekday))|cada (?:día|semana|mes|\(weekday))"
+            + "|la (?:próxima|proxima) semana)(?=[\\s,.;:!?]|$)")
+        while let expression, let match = out.firstMatch(of: expression), !match.range.isEmpty {
+            out.replaceSubrange(match.range, with: "")
+        }
+        out = out.replacingOccurrences(of: "\u{1}", with: "de la mañana").replacingOccurrences(of: "\u{2}", with: "por la mañana")
+        var words = out.split(separator: " ").map(String.init)
+        while let last = words.last, ["para", "de", "el", "la", "a", "y"].contains(last.lowercased()) { words.removeLast() }
+        let kept = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return kept.isEmpty ? text : kept
     }
 
@@ -1035,6 +1052,11 @@ struct LocalWhen {
         }
         return owner.contains("cumpl") || owner.contains("logr") || owner.contains("termin")
             ? "Márcala como lograda en la tab Metas." : "Para cambiarla o borrarla, hazlo en la tab Metas."
+    }
+
+    /// "qué tengo / qué hay / tengo algo" + (fin | hoy | un rango), plegado.
+    static func isShortAgendaQuestion(_ folded: String) -> Bool {
+        folded.firstMatch(of: /^(?:y )?(?:que tengo|que hay|tengo algo)(?: pendientes?)?(?: (?:para )?(?:hoy|manana|pasado manana|esta semana|la proxima semana|el (?:proximo )?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)|el \d{1,2} de [a-z]+))?$/) != nil
     }
 
     /// "recuérdame…" sin hablar de una meta.

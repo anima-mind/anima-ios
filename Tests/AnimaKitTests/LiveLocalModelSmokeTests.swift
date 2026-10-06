@@ -674,4 +674,22 @@ import Testing
             #expect(ok, "corrida \(run)")
         }
     }
+
+    // MARK: - Ronda 8 del review
+
+    @Test func ordinaryQuestionsAreAnsweredByTheModel() async throws {
+        guard Self.enabled else { return }
+        let prompts = ["¿qué tengo que hacer para sacar el pasaporte?", "¿qué es la metafísica?"]
+        for (index, prompt) in prompts.enumerated() {
+            for run in 1...Self.runs {
+                let world = try await World()
+                let t = await Self.turn(world, prompt)
+                let folded = LocalWhen.fold(t.text)
+                let ok = !folded.contains("no tienes nada pendiente") && !folded.contains("no tienes metas")
+                    && !folded.contains("no tienes recordatorios") && t.text.count > 20 && t.notice == nil
+                Self.row("\(49 + index) \(prompt.prefix(30))", run, t, ok)
+                #expect(ok, "\(prompt) corrida \(run)")
+            }
+        }
+    }
 }

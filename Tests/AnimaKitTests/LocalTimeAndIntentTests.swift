@@ -592,3 +592,40 @@ import Testing
         #expect(input["fire_at"] == .string("2026-10-06T11:15:00"))
     }
 }
+
+@Suite struct LocalQueryToolNegativeTests {
+    @Test(arguments: ["¿qué tengo que hacer para sacar el pasaporte?", "¿qué es la metafísica?", "¿qué hay de nuevo?",
+                      "¿cuánto tengo que pagar de impuestos?", "¿hay que llevar paraguas?", "¿cómo estás? tengo hambre",
+                      "¿me ayudas a felicitar a mi mamá?", "¿qué opinas de la reunión de ayer?"])
+    func notAQueryAboutTheOwnersThings(owner: String) {
+        #expect(LocalToolAdapter.queryTool(owner) == nil)
+        #expect(!LocalToolAdapter.asksForSummary(owner))
+    }
+
+    @Test(arguments: [("¿qué tengo?", "list_reminders"), ("¿qué tengo mañana?", "list_reminders"),
+                      ("¿qué hay esta semana?", "list_reminders"), ("¿cuáles son mis metas?", "list_goals"),
+                      ("¿qué citas tengo el viernes?", "list_events"), ("muéstrame mis recordatorios", "list_reminders"),
+                      ("¿qué tengo en mi agenda?", "list_events")])
+    func queriesAboutTheOwnersThings(owner: String, tool: String) {
+        #expect(LocalToolAdapter.queryTool(owner) == tool)
+    }
+
+    @Test func aLegitAnswerIsKept() async throws {
+        let session = MockOnDeviceSession([[.snapshot("Necesitas tu cédula y una foto.")]])
+        let provider = OnDeviceProvider(session: session, availability: { .available })
+        let response = try await provider.completeCollecting(
+            AssembledContext(messages: [.user("¿qué tengo que hacer para sacar el pasaporte?")]),
+            tools: try RealToolSet.specs(), opts: try OnDeviceTestConfig.opts())
+        #expect(response.stopReason == .endTurn)
+        #expect(response.content == [.text("Necesitas tu cédula y una foto.")])
+    }
+
+    @Test(arguments: [("llamar mañana a Juan", "llamar a Juan"), ("comprar pan para mañana", "comprar pan"),
+                      ("reunión el lunes con el equipo de ventas", "reunión con el equipo de ventas"),
+                      ("tomar la pastilla a las 8 con comida", "tomar la pastilla con comida"),
+                      ("Pagar el viernes a las 9", "Pagar"), ("rutina de la mañana", "rutina de la mañana"),
+                      ("caminar a las 7 de la mañana por el parque", "caminar por el parque")])
+    func onlyTheScheduleIsRemoved(text: String, expected: String) {
+        #expect(LocalToolAdapter.withoutSchedule(text) == expected)
+    }
+}

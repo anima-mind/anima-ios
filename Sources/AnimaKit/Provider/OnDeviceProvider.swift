@@ -427,7 +427,12 @@ public enum OnDevicePromptBuilder {
                 listIsDeterministic = true
             }
             if onlyReads {
-                listIsDeterministic = round.allSatisfy { entry in
+                // Solo si el dueño preguntó por lo suyo: si el 3B listó para otra
+                // pregunta ("¿qué tengo que hacer para…?"), el modelo responde.
+                var ownerTurn = ""
+                if case .prompt(let owner)? = entries.last { ownerTurn = owner.components(separatedBy: "\n\n").last ?? owner }
+                let aboutTheirThings = LocalToolAdapter.queryTool(ownerTurn) != nil || LocalWhen.asksToChange(ownerTurn)
+                listIsDeterministic = aboutTheirThings && round.allSatisfy { entry in
                     if case .toolCall(_, let name, _) = entry { return LocalToolAdapter.listTools.contains(name) }
                     return true
                 }

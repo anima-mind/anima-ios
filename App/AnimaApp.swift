@@ -477,7 +477,11 @@ final class AppModel: ObservableObject {
                                  selfModel: selfModel)
         // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
         chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
-                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
+                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [],
+                         boundaries: (try? store.boundaries(sessionId: sessionId)) ?? [])
+        // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
+        chat.compactor = ConversationCompactor(selector: selector, store: store, telemetry: telemetry)
+        chat.onNewConversation = { [weak self] in self?.startNewConversation() }
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
         chat.pendingApprovals = pendingApprovals
@@ -489,6 +493,7 @@ final class AppModel: ObservableObject {
         // onboarding, cambio de modo) la vista conserva su identidad y su `.task`
         // no vuelve a correr — sin esto el header quedaba con el nombre semilla.
         await chat.loadMind()
+        await chat.refreshContext()
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
@@ -515,6 +520,18 @@ final class AppModel: ObservableObject {
         Task {
             await reconcileProactive()
             await approvalsModel?.refresh()
+        }
+    }
+
+    /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;
+    /// memoria, metas y recordatorios intactos. El chat arranca limpio.
+    func startNewConversation() {
+        guard let store, let fresh = try? store.beginNewConversation(after: activeSessionId) else { return }
+        activeSessionId = fresh
+        previousSessionId = nil
+        Task {
+            await buildIfPossible()
+            chatModel?.markNewConversation()
         }
     }
 

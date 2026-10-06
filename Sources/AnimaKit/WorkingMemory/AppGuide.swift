@@ -39,8 +39,21 @@ public enum AppGuide {
         Recordatorios", "Ajustes → Mente → Por aprobar").
         """
 
+    /// Versión corta para el modelo de Apple (~4k tokens de ventana): mismos
+    /// nombres, sin el detalle.
+    public static let compactBlock = """
+        TU APP. Tabs: Chat, Memoria, Metas (metas y su seguimiento), Recordatorios (lo programado; \
+        desliza para Hecho o Cancelar) y Ajustes: Cuenta, Modelo y costos (Solo este teléfono, Claude, \
+        Híbrido), Skills ("Enséñame algo"), Gafas, Mente ("Simular una noche" y "Por aprobar") y \
+        Notificaciones ("Avisos de Anima"). Si pregunta dónde ver algo, guíalo con estos nombres exactos.
+        """
+
+    /// Ventanas chicas (modelo local) llevan el mapa corto.
+    public static let compactBudgetThreshold = 16_000
+
     /// El system base del turno: el de Remote Config + el mapa de la app.
-    public static func systemBase(_ base: String) -> String {
-        base.isEmpty ? block : base + "\n\n" + block
+    public static func systemBase(_ base: String, contextBudget: Int = .max) -> String {
+        let guide = contextBudget < compactBudgetThreshold ? compactBlock : block
+        return base.isEmpty ? guide : base + "\n\n" + guide
     }
 }

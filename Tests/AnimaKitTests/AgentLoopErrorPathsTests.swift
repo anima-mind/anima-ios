@@ -45,11 +45,11 @@ final class FailingProvider: Provider, @unchecked Sendable {
         return events
     }
 
-    @Test func persistentContextOverflowGivesUpAfterOneRelief() async throws {
+    @Test func persistentContextOverflowGivesUpAfterReliefAndHardTrim() async throws {
         let provider = FailingProvider(error: ClassifiedError.contextOverflow)
         let events = try await run(provider)
-        #expect(events.last == .error("Contexto excedido aún tras aliviar la presión."))
-        #expect(provider.calls.value == 2)  // original + un reintento tras aliviar
+        #expect(events.last == .error(AgentLoop.contextExceededMessage))
+        #expect(provider.calls.value == 3)  // original + tras aliviar + tras el recorte duro
     }
 
     @Test func fatalProviderErrorIsRegisteredInTheReal() async throws {

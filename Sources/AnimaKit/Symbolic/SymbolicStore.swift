@@ -98,12 +98,15 @@ public final class SymbolicStore: Sendable {
 
     /// Reconstruye la ventana de historial (Message[]) para el ensamblado del turno.
     /// Recorta los mensajes más viejos si excede el presupuesto de tokens (heurística chars/3.6).
+    /// Respeta la frontera de contexto vigente (recorte o compactación): lo de
+    /// antes sigue en el transcript, no en la ventana; el resumen la abre.
     public func window(sessionId: SessionID, budgetTokens: Int = Int.max) throws -> [Message] {
+        let boundary = try currentBoundary(sessionId: sessionId)
         let messages: [Message] = try queue.read { db in
             let rows = try Row.fetchAll(
                 db,
-                sql: "SELECT role, content_json FROM turn_event WHERE session_id=? ORDER BY seq ASC",
-                arguments: [sessionId])
+                sql: "SELECT role, content_json FROM turn_event WHERE session_id=? AND seq >= ? ORDER BY seq ASC",
+                arguments: [sessionId, boundary?.fromSeq ?? 0])
             return try rows.compactMap { row -> Message? in
                 guard let roleRaw: String = row["role"],
                       let role = Message.Role(rawValue: roleRaw),
@@ -112,7 +115,9 @@ public final class SymbolicStore: Sendable {
                 return Message(role: role, content: blocks)
             }
         }
-        return Self.trim(messages, budgetTokens: budgetTokens)
+        let trimmed = Self.trim(messages, budgetTokens: budgetTokens)
+        guard let summary = boundary?.summary, !summary.isEmpty else { return trimmed }
+        return [.user(ContextBoundary.summaryHeader + "\n" + summary)] + trimmed
     }
 
     /// La superficie de cada evento del transcript, en orden (nil = sin marca).
@@ -128,17 +133,17 @@ public final class SymbolicStore: Sendable {
     /// la mente respondió, con sus marcas (voz, foto, superficie). Los
     /// tool_use/tool_result crudos y el razonamiento no se pintan.
     public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
-        let rows: [(String, String, String?, String?, Double?)] = try queue.read { db in
+        let rows: [(String, String, String?, String?, Double?, Int)] = try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT role, content_json, surface, proactive_json, created_at FROM turn_event
+                SELECT role, content_json, surface, proactive_json, created_at, seq FROM turn_event
                 WHERE session_id=? ORDER BY seq ASC
                 """, arguments: [sessionId])
                 .compactMap { row in
                     guard let role: String = row["role"], let json: String = row["content_json"] else { return nil }
-                    return (role, json, row["surface"], row["proactive_json"], row["created_at"])
+                    return (role, json, row["surface"], row["proactive_json"], row["created_at"], row["seq"])
                 }
         }
-        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw, createdAt in
+        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw, createdAt, seq in
             guard let role = Message.Role(rawValue: role), role == .user || role == .assistant else { return nil }
             var turn = VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
                                    surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
@@ -146,6 +151,7 @@ public final class SymbolicStore: Sendable {
                 turn?.proactive = tag
             }
             turn?.createdAt = createdAt.map(Date.init(timeIntervalSince1970:))
+            turn?.seq = seq
             return turn
         }
     }
@@ -214,6 +220,8 @@ public struct VisibleTurn: Sendable, Equatable {
     public var proactive: ProactiveTag?
     /// Cuándo se escribió (hora y separador de día del chat).
     public var createdAt: Date?
+    /// Posición en el transcript (las fronteras de contexto se ubican por seq).
+    public var seq: Int?
 
     public init(role: Message.Role, text: String, isVoice: Bool = false, imageBase64: String? = nil,
                 surface: SurfaceID? = nil, proactive: ProactiveTag? = nil, createdAt: Date? = nil) {

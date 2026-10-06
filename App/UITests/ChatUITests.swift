@@ -157,3 +157,24 @@ final class ChatUITests: AnimaUITestCase {
         waitUntil(viewer, "exists == false")
     }
 }
+
+/// Batch 5b #4/#5: el medidor de contexto abre su sheet; "Nueva conversación"
+/// deja el chat limpio con su separador (la memoria no se toca).
+final class ContextUITests: AnimaUITestCase {
+    @MainActor
+    func testContextMeterOpensSheetAndStartsANewConversation() {
+        let app = launch()
+        onboard(app)
+        send(app, "hola")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+
+        let meter = element(app, "chat.contextMeter")
+        waitUntil(meter, "label CONTAINS 'por ciento'")
+        tap(meter, until: element(app, "context.sheet"))
+        waitFor(element(app, "context.percent"))
+        tap(element(app, "context.newConversation"))
+        waitUntil(element(app, "context.sheet"), "exists == false")
+        waitFor(text(app, "— nueva conversación —"))
+        XCTAssertFalse(app.staticTexts.matching(identifier: "chat.userMessage").firstMatch.exists)
+    }
+}

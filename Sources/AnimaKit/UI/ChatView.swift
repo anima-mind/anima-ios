@@ -113,7 +113,8 @@ public final class ChatViewModel: ObservableObject {
     /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
     /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
     /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
-    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = []) -> [DisplayMessage] {
+    public static func history(current: [VisibleTurn], previous: [VisibleTurn] = [],
+                               boundaries: [ContextBoundary] = []) -> [DisplayMessage] {
         func message(_ turn: VisibleTurn) -> DisplayMessage {
             if turn.role == .assistant, let tag = turn.proactive,
                let proactive = ProactiveMessage(tag: tag, text: turn.text) {
@@ -130,13 +131,21 @@ public final class ChatViewModel: ObservableObject {
         if !out.isEmpty {
             out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
         }
-        out += current.map(message)
+        var pending = boundaries.sorted { $0.fromSeq < $1.fromSeq }
+        for turn in current {
+            while let next = pending.first, let seq = turn.seq, seq >= next.fromSeq {
+                out.append(DisplayMessage(role: .assistant, text: next.dividerText, isSessionDivider: true))
+                pending.removeFirst()
+            }
+            out.append(message(turn))
+        }
+        out += pending.map { DisplayMessage(role: .assistant, text: $0.dividerText, isSessionDivider: true) }
         return out
     }
 
     /// Carga el historial al cablearse (antes de cualquier turno nuevo).
-    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = []) {
-        let restored = Self.history(current: current, previous: previous)
+    public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = [], boundaries: [ContextBoundary] = []) {
+        let restored = Self.history(current: current, previous: previous, boundaries: boundaries)
         guard !restored.isEmpty else { return }
         messages = restored + messages
     }
@@ -174,6 +183,8 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var mind = MindState()
     /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
     @Published public private(set) var selfName: String = Birth.seed.name
+    /// Cuánto del contexto del modelo activo ocupa la conversación (medidor).
+    @Published public private(set) var contextGauge: ContextGauge?
     /// Cambios de identidad / metas inferidas esperando al dueño: aviso sobre el chat.
     @Published public var pendingApprovals = 0
     /// Tap al aviso → Ajustes → Mente (lo cablea el shell).
@@ -391,11 +402,55 @@ public final class ChatViewModel: ObservableObject {
         await run(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
     }
 
-    /// "Try again" del error card: reintenta el último turno sin duplicar la
-    /// burbuja del usuario — el mensaje nunca se pierde.
+    /// "Reintentar" del error card: reintenta el último turno sin duplicar la
+    /// burbuja del usuario — el mensaje nunca se pierde. Si fue por contexto
+    /// excedido, primero recorta la conversación (si no, reintentar repetía el error).
     public func retry() async {
         guard let content = lastUserContent, !isStreaming else { return }
+        if messages.last?.isError == true, messages.last?.text == AgentLoop.contextExceededMessage {
+            try? await loop.trimHistory(sessionId: sessionId)
+            messages.append(DisplayMessage(role: .assistant, text: ContextBoundary(
+                kind: .trim, fromSeq: 0, model: contextGauge?.model, createdAt: now()).dividerText,
+                isSessionDivider: true))
+        }
         await run(nil, content: content)
+    }
+
+    // MARK: Contexto (medidor, compactar, nueva conversación)
+
+    /// Lo cablea el shell: resume la sesión con el córtex de ciclo.
+    public var compactor: ConversationCompactor?
+    /// Lo cablea el shell: cierra la sesión y abre una nueva (memoria intacta).
+    public var onNewConversation: (() -> Void)?
+    @Published public private(set) var isCompacting = false
+
+    public func refreshContext() async {
+        contextGauge = await loop.contextGauge(sessionId: sessionId)
+    }
+
+    public func compact() async {
+        guard let compactor, !isStreaming, !isCompacting else { return }
+        isCompacting = true
+        defer { isCompacting = false }
+        let outcome = (try? await compactor.compact(sessionId: sessionId)) ?? .nothingToDo
+        let divider: String?
+        switch outcome {
+        case .compacted: divider = ContextBoundary(kind: .compaction, fromSeq: 0, createdAt: now()).dividerText
+        case .trimmed: divider = ContextBoundary(kind: .trim, fromSeq: 0, model: contextGauge?.model,
+                                                 createdAt: now()).dividerText
+        case .nothingToDo: divider = nil
+        }
+        if let divider {
+            messages.append(DisplayMessage(role: .assistant, text: divider, isSessionDivider: true))
+        }
+        await refreshContext()
+    }
+
+    public static let newConversationText = "— nueva conversación —"
+
+    /// El chat recién abierto por "Nueva conversación": solo el separador.
+    public func markNewConversation() {
+        messages = [DisplayMessage(role: .assistant, text: Self.newConversationText, isSessionDivider: true)]
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
@@ -407,7 +462,7 @@ public final class ChatViewModel: ObservableObject {
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
         messages.append(assistant)
-        let index = messages.count - 1
+        var index = messages.count - 1
         isStreaming = true
 
         for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
@@ -428,6 +483,15 @@ public final class ChatViewModel: ObservableObject {
                 errorText = "Turno detenido: \(stop)"
             case .skillAutomated(let summary):
                 assistant.automation = summary
+            case .contextTrimmed(let model):
+                // El separador va antes del turno que lo provocó.
+                let at = bubble == nil ? index : max(0, index - 1)
+                messages.insert(DisplayMessage(role: .assistant, text: ContextBoundary(
+                    kind: .trim, fromSeq: 0, model: model, createdAt: now()).dividerText, isSessionDivider: true),
+                    at: at)
+                index += 1
+            case .context(let gauge):
+                contextGauge = gauge
             case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
                 break
             }
@@ -439,6 +503,7 @@ public final class ChatViewModel: ObservableObject {
         if messages.indices.contains(index) { messages[index] = assistant }
         isStreaming = false
         await loadMind()
+        await refreshContext()
     }
 }
 
@@ -479,6 +544,7 @@ public struct ChatView: View {
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showMindSheet = false
+    @State private var showContextSheet = false
     @State private var showPhotoMenu = false
     @State private var photoSource: PhotoSource?
     /// Visor fullscreen de una foto (thumb del composer o de una burbuja).
@@ -548,6 +614,13 @@ public struct ChatView: View {
         .task {
             await model.loadMind()
             await model.loadProactiveIntentions()
+            await model.refreshContext()
+        }
+        .sheet(isPresented: $showContextSheet) {
+            ContextSheet(model: model)
+                .presentationDetents([.height(ContextSheet.height)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.Colors.surface)
         }
         .sheet(isPresented: $showMindSheet) {
             MindSheet(mind: model.mind, glasses: model.glasses)
@@ -616,9 +689,7 @@ public struct ChatView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .accessibilityIdentifier("chat.plasticityBadge")
             }
-            LinearGradient(colors: [Theme.Colors.border.opacity(0), Theme.Colors.border, Theme.Colors.border.opacity(0)],
-                           startPoint: .leading, endPoint: .trailing)
-                .frame(height: Theme.Stroke.hairline)
+            ContextMeter(gauge: model.contextGauge) { showContextSheet = true }
         }
         .padding(.horizontal, Theme.Space.screenInset)
         .padding(.top, Theme.Space.stack)

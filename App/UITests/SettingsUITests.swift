@@ -118,7 +118,7 @@ final class SettingsUITests: AnimaUITestCase {
         XCTAssertFalse(element(app, "workshop.screen").exists)
     }
 
-    /// Campo batch 6: Ajustes → Gafas con botones de verdad (sin gafas en
+    /// Ajustes → Gafas con botones de verdad (sin gafas en
     /// `--uitest`: runtime nulo), selector de iconos y diagnóstico copiable.
     @MainActor
     func testGlassesSettingsActionsAndDiagnostics() {

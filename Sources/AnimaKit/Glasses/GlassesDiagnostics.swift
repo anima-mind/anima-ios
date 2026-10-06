@@ -1,4 +1,4 @@
-// GlassesDiagnostics.swift — bitácora de campo de las gafas (batch 6): los
+// GlassesDiagnostics.swift — bitácora de campo de las gafas: los
 // últimos N eventos del cuerpo (link/compat/sesión/display/fallos), de la ruta
 // de audio (settle HFP ms y resultado, formato del input) y de la foto (estados
 // con timestamp, errores mapeados). Sin hardware en CI, esto es lo que el dueño

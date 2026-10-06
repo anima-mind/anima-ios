@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Campo batch 6: sin hardware en CI, la bitácora de Ajustes → Gafas →
+// Sin hardware en CI, la bitácora de Ajustes → Gafas →
 // Diagnóstico es lo que el dueño pega cuando algo falla en las gafas.
 
 @Suite("Campo — diagnóstico copiable de las gafas")

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Campo batch 6: "los iconos no se ven, solo phone y eye". El mapeo HUDIcon →
+// En hardware solo `phone` y `eye` del catálogo se ven. El mapeo HUDIcon →
 // IconName es 1:1 (este test lo fija contra el catálogo del .swiftinterface
 // 1.0.0); el sol lo pinta el DAT de las gafas. Política: verificados nativos,
 // el resto como glifo propio (imagen) o texto; botones sin icono no verificado.

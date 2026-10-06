@@ -14,8 +14,8 @@ public enum VoiceRoute: String, Sendable, Equatable {
     case phoneMic
 }
 
-/// Por qué no se pudo escuchar (campo batch 6: "le doy en Hablar y no
-/// funciona"): antes todo esto volvía `nil` en silencio.
+/// Por qué no se pudo escuchar: `message` va al HUD (texto fijo por causa),
+/// `description` al diagnóstico (con el detalle crudo).
 public enum VoiceCaptureFailure: Error, Sendable, Equatable, CustomStringConvertible {
     case speechPermissionDenied
     case microphonePermissionDenied

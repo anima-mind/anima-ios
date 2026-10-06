@@ -2,8 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Campo batch 6: "dice 'Tomando la foto…' pero nunca pasa nada… luego la app
-// falló y se cerró". La pantalla SIEMPRE sale (éxito, error claro o cancelar),
+// "Tomando la foto…" SIEMPRE sale (éxito, error claro o cancelar),
 // la continuation se resuelve EXACTAMENTE una vez y nunca hay dos capturas en
 // el hardware a la vez.
 

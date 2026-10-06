@@ -1,8 +1,7 @@
 // GlassesConcurrency.swift — primitivas para puentear los callbacks del DAT SDK
 // (listeners en cualquier hilo, que pueden repetirse) a async/await SIN las dos
 // formas de crash de una continuation: resumirla dos veces (trap) o no
-// resumirla nunca (la tarea queda colgada para siempre). Campo batch 6: "dice
-// 'Tomando la foto…' y nunca pasa nada… luego la app se cerró".
+// resumirla nunca (la tarea queda colgada para siempre).
 
 import Foundation
 

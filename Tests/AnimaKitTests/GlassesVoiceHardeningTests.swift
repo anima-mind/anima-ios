@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Campo batch 6: "le doy en Hablar y no funciona y se cierra el app en las
-// gafas". El tap con 0 Hz / 0 canales es una NSException (crash); los permisos
-// y el reconocedor fallaban en silencio. Ahora: guard de formato ANTES del tap,
-// causa visible en el HUD, interrupciones limpias y teardown en orden.
+// El tap con 0 Hz / 0 canales es una NSException (crash, no `throws`): guard
+// de formato ANTES del tap, causa visible en el HUD, interrupciones limpias y
+// teardown en orden.
 
 @Suite("Campo — voz desde las gafas: guard de formato, causas y teardown")
 struct GlassesVoiceHardeningTests {

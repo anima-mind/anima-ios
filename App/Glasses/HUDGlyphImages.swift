@@ -1,4 +1,4 @@
-// HUDGlyphImages.swift — glifos propios del HUD (campo batch 6): el DAT de las
+// HUDGlyphImages.swift — glifos propios del HUD: el DAT de las
 // gafas pinta el placeholder "sol" para casi todo el catálogo IconName, así que
 // los iconos sueltos viajan como imagen: SF Symbol en blanco sobre transparente,
 // 48×48 px a escala 1 (el display es 600×600; más grande solo añade latencia BT).

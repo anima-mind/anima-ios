@@ -1,4 +1,4 @@
-// HUDIconPolicy.swift — CÓMO se pinta cada HUDIcon en las gafas (campo batch 6).
+// HUDIconPolicy.swift — CÓMO se pinta cada HUDIcon en las gafas.
 // Hecho verificado: el mapeo HUDIcon → IconName del SDK 1.0.0 es 1:1 (116 = 116,
 // test de catálogo), pero en hardware TODOS los glifos del catálogo salían como
 // el placeholder "sol" salvo `phone` y `eye`: el DAT de las gafas no conoce esos
@@ -36,7 +36,7 @@ public enum HUDIconMode: String, Sendable, Equatable, CaseIterable {
 public enum HUDIconPolicy {
     public static let modeKey = "glasses.iconMode"
 
-    /// Glifos del catálogo que SÍ se ven en las gafas (video de campo, batch 6).
+    /// Glifos del catálogo que SÍ se ven en las gafas (verificados en hardware).
     public static let verifiedNative: Set<HUDIcon> = [.phone, .eye]
 
     private static let lock = NSLock()

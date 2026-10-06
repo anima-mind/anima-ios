@@ -21,7 +21,7 @@ public final class GlassesViewModel: ObservableObject {
     @Published public private(set) var iconProbeIndex = 0
     /// "Despertar al ponértelas" (don-wake, DAT 1.0). Persistido; default sí.
     @Published public private(set) var donWake: Bool
-    /// Cómo se pintan los iconos en las gafas (campo batch 6). Persistido; default auto.
+    /// Cómo se pintan los iconos en las gafas. Persistido; default auto.
     @Published public private(set) var iconMode: HUDIconMode
 
     public static let donWakeKey = "glasses.donWake"

@@ -1347,43 +1347,6 @@ public struct MindSheet: View {
     }
 }
 
-/// El texto del asistente con markdown: prosa inline + bloques de código en
-/// vista monoespaciada sobre surface (accent jamás de relleno). Re-parsea el
-/// mensaje completo en cada delta (ChatMarkdown): sin parpadeos por fragmento.
-struct MarkdownMessage: View {
-    let text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(ChatMarkdown.segments(text).enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case .text(let attributed):
-                    Text(attributed)
-                        .font(Theme.Type_.body)
-                        .foregroundStyle(Theme.Colors.text)
-                        .tint(Theme.Colors.accentText)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .code(let code, _):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(code)
-                            .font(.system(size: 13, design: .monospaced))
-                            .foregroundStyle(Theme.Colors.text)
-                            .textSelection(.enabled)
-                            .padding(Theme.Space.cardPad)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card)
-                            .fill(Theme.Colors.surface))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card)
-                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                }
-            }
-        }
-    }
-}
-
 /// Listening bar (components.md): borde accent, 5 barras de onda escalonadas,
 /// "Escuchando…" + transcript en vivo, acción de texto "Listo" y X para descartar.
 struct ListeningBar: View {

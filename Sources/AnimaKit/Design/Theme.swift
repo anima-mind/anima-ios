@@ -45,6 +45,10 @@ public enum Theme {
         /// Uppercase, tracking 0.06em — aplicar `.textCase(.uppercase)` + `.kerning(0.66)`.
         public static let label = Font.system(size: 11, weight: .regular)
         public static let tab = Font.system(size: 10, weight: .regular)
+        /// Encabezados del markdown del chat (#, ##, ###): jerarquía dentro de un mensaje.
+        public static let heading1 = Font.system(size: 20, weight: .medium)
+        public static let heading2 = Font.system(size: 17, weight: .medium)
+        public static let heading3 = Font.system(size: 15, weight: .medium)
 
         /// Donde aparezca plasticidad o dinero: `.monospacedDigit()`.
         public static func tabular(_ font: Font) -> Font { font.monospacedDigit() }

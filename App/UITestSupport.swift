@@ -169,6 +169,32 @@ struct UITestScriptedProvider: Provider {
         ¿Algo más o lo cambio?
         """
 
+    /// Markdown de bloques (encabezados, tabla, listas): el mensaje real del dueño.
+    static let markdownReply = """
+        ## 📅 Plan mensual de ahorro
+
+        Para llegar a **10 millones** en un año:
+
+        | Mes | Aporte | Acumulado |
+        |-----|-------:|----------:|
+        | Octubre | $850.000 | $850.000 |
+        | Noviembre | $850.000 | $1.700.000 |
+        | Diciembre | $1.000.000 | $2.700.000 |
+
+        ### Para aterrizarlo…
+        - Programa una **transferencia automática** el día 1.
+        - Revisa gastos hormiga:
+          - domicilios
+          - suscripciones
+        1. Abre el CDT en noviembre.
+        2. Revisa el avance cada mes.
+
+        > Lo que no se mide no se mejora.
+
+        ---
+        ¿Te lo dejo como recordatorio?
+        """
+
     static func plan(for ctx: AssembledContext) -> Plan {
         let inWorkshop = ctx.messages.contains { message in
             message.role == .system && message.content.contains { block in
@@ -187,6 +213,7 @@ struct UITestScriptedProvider: Provider {
             if case .text(let t) = block { return t }
             return nil
         }.joined(separator: " ")
+        if text.lowercased().contains("markdown") { return .text(markdownReply) }
         return text.lowercased().contains("calendario") ? .calendarTool : .text(fixedReply)
     }
 
@@ -202,7 +229,8 @@ struct UITestScriptedProvider: Provider {
                     // Resumen de razonamiento: la thought line queda en pantalla
                     // (expandible) para ejercitar su tap con el teclado abierto.
                     continuation.yield(.thinkingDelta(Self.thought))
-                    let delay: Duration = reply == Self.skillReply ? .milliseconds(40) : Self.chunkDelay
+                    let delay: Duration = reply == Self.skillReply || reply == Self.markdownReply
+                        ? .milliseconds(40) : Self.chunkDelay
                     for chunk in Self.chunks(reply) {
                         try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }

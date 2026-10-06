@@ -217,6 +217,13 @@ final class AppModel: ObservableObject {
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
+            let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
+            remindersList.onChange = { [weak notificationsModel] in
+                await proactive?.sync()
+                await notificationsModel?.refresh()
+            }
+            goalsModel?.reminders = remindersList
+            notificationsModel.list = remindersList
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
             if let seconds = UITestMode.seedReminderSeconds {
                 await UITestMode.seedReminder(reminderStore, seconds: seconds)

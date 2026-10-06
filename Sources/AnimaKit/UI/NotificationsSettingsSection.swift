@@ -14,6 +14,8 @@ public final class NotificationsSettingsModel: ObservableObject {
     private let reminders: AnimaReminderStore?
     /// El shell abre los ajustes de notificaciones de iOS (UIApplication).
     public var openSystemSettings: (() -> Void)?
+    /// La lista de lo programado (la misma de la tab Metas).
+    public var list: RemindersViewModel?
 
     public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?) {
         self.scheduler = scheduler
@@ -75,10 +77,28 @@ public struct NotificationsSettingsSection: View {
                         .foregroundStyle(model.status == .denied ? Theme.Colors.accentText : Theme.Colors.textMuted)
                         .accessibilityIdentifier("settings.notifications.status")
                 }
-                Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
-                    .font(Theme.Type_.meta)
-                    .foregroundStyle(Theme.Colors.textFaint)
-                    .accessibilityIdentifier("settings.notifications.count")
+                if let list = model.list {
+                    NavigationLink {
+                        RemindersScreen(model: list)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
+                                .accessibilityIdentifier("settings.notifications.count")
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .light))
+                        }
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.accentText)
+                        .frame(minHeight: Theme.minHitTarget, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.notifications.list")
+                } else {
+                    Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .accessibilityIdentifier("settings.notifications.count")
+                }
                 switch model.status {
                 case .denied:
                     Button("Abrir Ajustes de iOS") { model.openSystemSettings?() }

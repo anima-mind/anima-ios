@@ -20,6 +20,8 @@ public final class GoalsViewModel: ObservableObject {
     private let otherModel: OtherModel
     /// Re-sincroniza las notificaciones locales tras cambiar cadencia/estado.
     public var onCheckInChanged: (@Sendable () async -> Void)?
+    /// Sección "Recordatorios" arriba de las metas (la inyecta el shell).
+    public var reminders: RemindersViewModel?
 
     public init(otherModel: OtherModel) {
         self.otherModel = otherModel
@@ -34,6 +36,7 @@ public final class GoalsViewModel: ObservableObject {
         }
         goals = all
         progress = next
+        await reminders?.refresh()
     }
 
     public func confirm(_ goal: Goal) async {
@@ -125,16 +128,32 @@ public struct GoalsView: View {
 
     public var body: some View {
         NavigationStack {
-            Group {
-                if model.goals.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        VStack(spacing: Theme.Space.stack) {
-                            ForEach(model.goals) { goal in card(goal) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                        if let reminders = model.reminders {
+                            RemindersSection(model: reminders) { goalId in
+                                withAnimation { proxy.scrollTo(goalId, anchor: .top) }
+                            }
                         }
-                        .padding(Theme.Space.screenInset)
+                        VStack(alignment: .leading, spacing: 8) {
+                            if model.reminders != nil {
+                                Text("Metas")
+                                    .font(Theme.Type_.label)
+                                    .textCase(.uppercase)
+                                    .kerning(0.66)
+                                    .foregroundStyle(Theme.Colors.textMuted)
+                            }
+                            if model.goals.isEmpty {
+                                emptyState
+                            } else {
+                                VStack(spacing: Theme.Space.stack) {
+                                    ForEach(model.goals) { goal in card(goal).id(goal.id) }
+                                }
+                            }
+                        }
                     }
+                    .padding(Theme.Space.screenInset)
                 }
             }
             .background(Theme.Colors.bg)
@@ -155,8 +174,7 @@ public struct GoalsView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(Theme.Space.screenInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Colors.bg)
+        .frame(maxWidth: .infinity)
     }
 
     private func card(_ goal: Goal) -> some View {

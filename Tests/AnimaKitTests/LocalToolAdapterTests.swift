@@ -397,7 +397,7 @@ import Testing
         let event = LocalToolAdapter.present(ToolResult(content: "Evento 'x' creado (id 1)."), local: "add_calendar_event",
                                              input: .object(["title": .string("Reunión con Pedro"),
                                                              "start": .string("2026-10-08T15:00:00")]))
-        #expect(event.content == "Evento 'Reunión con Pedro' agendado el jue 8 oct, 3:00 p. m.")
+        #expect(event.content == "agendé «Reunión con Pedro» el jueves 8 de octubre a las 15:00.")
         let goals = LocalToolAdapter.present(ToolResult(content: "El dueño no tiene metas activas."), local: "list_goals",
                                              input: .object([:]))
         #expect(goals.content == "No tienes metas activas.")

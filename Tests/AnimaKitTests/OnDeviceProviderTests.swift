@@ -199,7 +199,7 @@ enum OnDeviceTestConfig {
         #expect(request.prompt == OnDevicePromptBuilder.quotedOwner("recuérdame mañana a las 9 llamar al banco") + "\n"
                 + OnDevicePromptBuilder.successPrompt(results: ["Listo: te recuerdo 'llamar al banco' mañana. Id AB-12."]))
         #expect(request.tools.isEmpty)
-        #expect(request.fallbackText == "Listo: te recuerdo 'llamar al banco' mañana.")
+        #expect(request.fallbackText == "Listo, te recuerdo 'llamar al banco' mañana.")
     }
 
     @Test func readToolRoundAnswersWithWhatItRead() throws {

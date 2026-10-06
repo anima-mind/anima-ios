@@ -594,4 +594,69 @@ import Testing
             #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1) })")
         }
     }
+
+    // MARK: - Ronda 6 del review
+
+    @Test func agendaQuestionsKeepTheirRange() async throws {
+        guard Self.enabled else { return }
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        let friday = Self.next(6)
+        let cases: [(String, Date, String)] = [
+            ("¿qué tengo mañana?", tomorrow, "Dentista"),
+            ("qué hay esta semana", tomorrow, "Dentista"),
+            ("qué tengo el viernes", friday, "Fútbol"),
+        ]
+        for (index, (prompt, day, title)) in cases.enumerated() {
+            for run in 1...Self.runs {
+                let world = try await World()
+                world.calendar.records = [CalendarEventRecord(id: "EK:1", title: title, notes: nil, start: Self.at(day, 15))]
+                let t = await Self.turn(world, prompt)
+                let ok = t.text.contains(title) && !t.text.contains("nada pendiente") && t.notice == nil
+                Self.row("\(42 + index) \(prompt)", run, t, ok)
+                #expect(ok, "\(prompt) corrida \(run)")
+            }
+        }
+    }
+
+    @Test func creationWithAQuestionWordStillCreates() async throws {
+        guard Self.enabled else { return }
+        let tomorrow = Self.calendar.date(byAdding: .day, value: 1, to: Self.today)!
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "recuérdame qué tengo que comprar mañana a las 6")
+            let created = await world.reminders.list()
+            let ok = created.count == 1 && created.first.map { Self.calendar.isDate($0.fireAt, inSameDayAs: tomorrow) } == true
+                && !t.text.contains("nada pendiente")
+            Self.row("45 recuérdame qué tengo que comprar", run, t, ok)
+            #expect(ok, "corrida \(run): \(created.map(\.fireAt))")
+
+            let notes = try await World()
+            defer { try? FileManager.default.removeItem(at: notes.notesRoot) }
+            let n = await Self.turn(notes, "anota qué hay en la nevera: leche y huevos")
+            let files = (try? FileManager.default.contentsOfDirectory(at: notes.notesRoot, includingPropertiesForKeys: nil)) ?? []
+            let content = files.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.joined()
+            let noted = files.count == 1 && content.contains("leche") && !n.text.contains("nada pendiente")
+            Self.row("46 anota qué hay en la nevera", run, n, noted)
+            #expect(noted, "corrida \(run)")
+        }
+    }
+
+    @Test func dinnerNextWeekFriday() async throws {
+        guard Self.enabled else { return }
+        let thisFriday = Self.next(6)
+        let current = Self.calendar.component(.weekday, from: Self.today)
+        // Viernes de la semana siguiente (semana lunes-domingo).
+        let mondayOffset = (current + 5) % 7
+        let nextMonday = Self.calendar.date(byAdding: .day, value: 7 - mondayOffset, to: Self.today)!
+        let nextFriday = Self.calendar.date(byAdding: .day, value: 4, to: nextMonday)!
+        for run in 1...Self.runs {
+            let world = try await World()
+            let t = await Self.turn(world, "agéndame cena con Laura la próxima semana el viernes a las 8 de la noche")
+            let events = world.calendar.created.value
+            let ok = events.count == 1 && events.first?.1 == Self.at(nextFriday, 20) && events.first?.1 != Self.at(thisFriday, 20)
+                && t.text.hasPrefix("Listo, agendé «") && !LocalWhen.fold(t.text).contains("restaurante")
+            Self.row("47 cena la próxima semana", run, t, ok)
+            #expect(ok, "corrida \(run): \(events.map { ($0.0, $0.1) })")
+        }
+    }
 }

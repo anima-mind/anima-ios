@@ -199,7 +199,9 @@ public enum LocalToolAdapter {
             return .real(name: tool.realTool, input: .object(object))
 
         case "list_events":
-            let days = args.raw("days").flatMap { Int($0.prefix { $0.isNumber }) }.map { min(max($0, 1), 30) } ?? 7
+            var days = args.raw("days").flatMap { Int($0.prefix { $0.isNumber }) }.map { min(max($0, 1), 30) } ?? 7
+            // El rango que pidió el dueño: hasta el día que nombró o el fin de semana.
+            if let needed = when.listDaysAhead { days = max(days, needed) }
             return .real(name: tool.realTool, input: .object(["action": .string("list"), "days_ahead": .int(days)]))
 
         case "add_calendar_event":
@@ -296,14 +298,24 @@ public enum LocalToolAdapter {
                 return result
             }
         case "list_events":
-            presented.content = readableEvents(result.content, dates: dates)
+            let when = LocalWhen(now: Date(), calendar: dates.calendar, ownerText: ownerText)
+            presented.content = readableEvents(when.eventsInRequestedRange(result.content), dates: dates)
         case "write_note":
             guard let note = input["name"]?.stringValue, let content = input["content"]?.stringValue else { return result }
             presented.content = "Anotado en tu nota '\(note)': \(content)."
         case "add_calendar_event":
-            guard let title = input["title"]?.stringValue, let start = input["start"]?.stringValue else { return result }
-            let line = "Evento '\(title)' agendado el \(dates.readableISO(start))"
-            presented.content = line.hasSuffix(".") ? line : line + "."
+            guard let title = input["title"]?.stringValue,
+                  let start = input["start"]?.stringValue.flatMap(dates.parseISODateTime) else { return result }
+            let end = input["end"]?.stringValue.flatMap(dates.parseISODateTime)
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "es_CO")
+            df.timeZone = dates.calendar.timeZone
+            df.dateFormat = "EEEE d 'de' MMMM"
+            let hm = DateFormatter()
+            hm.timeZone = dates.calendar.timeZone
+            hm.dateFormat = "HH:mm"
+            let span = end.map { "de \(hm.string(from: start)) a \(hm.string(from: $0))" } ?? "a las \(hm.string(from: start))"
+            presented.content = "agendé «\(title)» el \(df.string(from: start)) \(span)."
         case "list_goals":
             presented.content = changeNote(ownerText, tab: "Metas") + readableGoals(result.content)
         case "list_reminders":
@@ -323,10 +335,15 @@ public enum LocalToolAdapter {
 
     /// "¿qué tengo pendiente?", "¿qué tengo hoy?", "¿qué hay?": el resumen combina
     /// recordatorios, metas activas y la agenda de hoy.
+    /// Solo "pendiente(s)" o "qué tengo/qué hay" a secas, "hoy" o "para hoy": con
+    /// otra referencia ("mañana", "esta semana", "el viernes") se queda el
+    /// listado que pidió; nunca si la frase abre con un imperativo de creación.
     public static func asksForPending(_ ownerText: String) -> Bool {
         let owner = LocalWhen.fold(ownerText)
-        return ["pendiente", "que tengo", "tengo hoy", "que hay"].contains(where: owner.contains)
-            && !LocalWhen.asksToChange(ownerText)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard !LocalWhen.opensWithCreation(ownerText), !LocalWhen.asksToChange(ownerText) else { return false }
+        if owner.firstMatch(of: /\bpendientes?\b/) != nil { return true }
+        return owner.firstMatch(of: /\b(?:que tengo|que hay)(?: (?:para )?hoy)?$/) != nil
     }
 
     /// Secciones "Recordatorios:", "Metas:", "Hoy en tu agenda:" (las vacías se
@@ -401,8 +418,10 @@ public enum LocalToolAdapter {
         let owner = LocalWhen.fold(raw)
         // Una consulta nunca se redirige, lleve o no "?" ("quiero ver mis metas",
         // "dime qué tengo", "cuáles son mis recordatorios").
-        let asks = ["qué ", "cuál", "cómo", "cuándo", "?", "¿"].contains(where: raw.contains)
-            || ["que ", "cuales ", "cual ", "muestrame", "dime", "lista", "lee ", "leeme"].contains(where: owner.hasPrefix)
+        // ("recuérdame qué tengo que comprar" abre con creación: no es consulta.)
+        let asks = !LocalWhen.opensWithCreation(ownerText)
+            && (["qué ", "cuál", "cómo", "cuándo", "?", "¿"].contains(where: raw.contains)
+                || ["que ", "cuales ", "cual ", "muestrame", "dime", "lista", "lee ", "leeme"].contains(where: owner.hasPrefix))
         // Borrar, cambiar o dar por logrado no es crear: sin tool local para eso,
         // la consulta se queda y el modelo responde (medido: "elimina mi meta" →
         // declaraba una meta inventada).
@@ -496,7 +515,7 @@ public enum LocalToolAdapter {
         var rest = String(ownerText[key.range.upperBound...])
         let cut = try? Regex("(?i)\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
             + "|la (?:próxima|proxima) semana|el (?:próximo|proximo) mes|este |esta |a las? \\d|de \\d{1,2} a"
-            + "|en \\S+ (?:horas?|minutos?)|para el|para mañana|para la).*$")
+            + "|en \\S+ (?:horas?|minutos?)|para el|para mañana|para la (?:próxima|proxima) semana).*$")
         if let cut, let match = rest.firstMatch(of: cut) { rest = String(rest[..<match.range.lowerBound]) }
         let text = rest.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return text.isEmpty ? nil : text
@@ -799,6 +818,31 @@ struct LocalWhen {
 
     var offsetMinutes: Double? { offset(scheduleText).map { $0 / 60 } }
 
+    /// Días a listar para lo que nombró el dueño ("mañana" ⇒ 2, "el viernes",
+    /// "esta semana" ⇒ hasta el domingo), o nil.
+    var listDaysAhead: Int? {
+        let owner = scheduleText
+        let today = calendar.startOfDay(for: now)
+        if owner.contains("esta semana") {
+            let weekday = calendar.component(.weekday, from: today)
+            return (8 - weekday) % 7 + 1
+        }
+        guard let day = day(owner) else { return nil }
+        return (calendar.dateComponents([.day], from: today, to: day).day ?? 0) + 1
+    }
+
+    /// Las líneas del listado de la agenda dentro de lo que pidió el dueño: el
+    /// día que nombró (mañana, el viernes) o todo si no nombró ninguno.
+    func eventsInRequestedRange(_ text: String) -> String {
+        guard let day = day(scheduleText), !scheduleText.contains("esta semana") else { return text }
+        let kept = text.split(separator: "\n").filter { line in
+            guard let at = line.range(of: " @ ", options: .backwards),
+                  let date = ISO8601DateFormatter().date(from: String(line[at.upperBound...])) else { return false }
+            return calendar.isDate(date, inSameDayAs: day)
+        }
+        return kept.isEmpty ? "No tienes nada en tu agenda ese día." : kept.joined(separator: "\n")
+    }
+
     /// La hora de un recordatorio cuando el dueño no dijo ninguna.
     static let defaultReminderHour = 9
 
@@ -839,14 +883,18 @@ struct LocalWhen {
             return true
         }
         // Un imperativo de creación como palabra, al inicio: es una creación.
-        if owner.firstMatch(of: /^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b/) != nil {
-            return false
-        }
+        if opensWithCreation(ownerText) { return false }
         let verb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
         let opening = try? Regex("^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(verb))")
         let object = try? Regex("\(verb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
         return (opening.map { owner.firstMatch(of: $0) != nil } ?? false)
             || (object.map { owner.firstMatch(of: $0) != nil } ?? false)
+    }
+
+    /// La frase abre con un imperativo de creación ("recuérdame…", "anota…").
+    static func opensWithCreation(_ ownerText: String) -> Bool {
+        let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return owner.firstMatch(of: /^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b/) != nil
     }
 
     /// La nota cuando el dueño pidió cambiar algo y el turno terminó sin tool
@@ -966,8 +1014,19 @@ struct LocalWhen {
         if has("hoy") { return today }
         if text.contains("pasado manana") { return calendar.date(byAdding: .day, value: 2, to: today) }
         if has("manana") { return calendar.date(byAdding: .day, value: 1, to: today) }
-        guard let weekday = words.lazy.compactMap(Self.weekday).first else { return nil }
+        let nextWeek = ["proxima semana", "otra semana", "semana que viene", "semana entrante"].contains(where: text.contains)
         let current = calendar.component(.weekday, from: today)
+        guard let weekday = words.lazy.compactMap(Self.weekday).first else {
+            // "la próxima semana" sin día: el lunes siguiente.
+            guard nextWeek else { return nil }
+            return calendar.date(byAdding: .day, value: (2 - current + 7) % 7 == 0 ? 7 : (2 - current + 7) % 7, to: today)
+        }
+        if nextWeek {
+            // El día pedido dentro de la semana siguiente (semana de lunes a domingo).
+            let mondayOffset = (current + 5) % 7          // días desde el lunes de esta semana
+            let nextMonday = calendar.date(byAdding: .day, value: 7 - mondayOffset, to: today) ?? today
+            return calendar.date(byAdding: .day, value: (weekday + 5) % 7, to: nextMonday)
+        }
         var ahead = (weekday - current + 7) % 7
         if ahead == 0 { ahead = 7 }
         return calendar.date(byAdding: .day, value: ahead, to: today)

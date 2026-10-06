@@ -160,7 +160,7 @@ import Testing
                                isError: false)]),
         ])
         let r = OnDevicePromptBuilder.request(ctx: ctx, tools: [], opts: try OnDeviceTestConfig.opts())
-        #expect(r.fallbackText == "Listo: te recuerdo 'tomar la pastilla' entre semana.")
+        #expect(r.fallbackText == "Listo, te recuerdo 'tomar la pastilla' entre semana.")
         #expect(!r.prompt.contains("ERROR"))
         #expect(!(r.fallbackText ?? "").contains("ERROR"))
         #expect(r.history.isEmpty)

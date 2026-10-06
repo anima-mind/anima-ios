@@ -310,7 +310,7 @@ import Testing
         #expect(!OnDevicePromptBuilder.agreesWithTheResult("Listo, hoy a las 5 te recuerdo el examen.",
                                                            fallback: saved, now: now, calendar: cal))
         #expect(OnDevicePromptBuilder.agreesWithTheResult("Listo.", fallback: "Anotado.", now: now, calendar: cal))
-        #expect(OnDevicePromptBuilder.confirmation(results: ["te diré: «Oye, x.»."]) == "Listo: te diré: «Oye, x».")
+        #expect(OnDevicePromptBuilder.confirmation(results: ["te diré: «Oye, x.»."]) == "Listo, te diré: «Oye, x».")
     }
 }
 
@@ -440,5 +440,78 @@ import Testing
         #expect(LocalToolAdapter.dictatedEvent("agéndame revisión con Ana la próxima semana") == "revisión con Ana")
         #expect(LocalToolAdapter.eventTitle(model: "Reunión de equipo", ownerText: "agéndame reunión con Pedro el jueves")
                 == "Reunión con Pedro")
+    }
+}
+
+@Suite struct LocalPendingScopeTests {
+    @Test(arguments: [("qué tengo mañana", false), ("¿qué hay esta semana?", false), ("qué tengo el viernes", false),
+                      ("¿qué tengo?", true), ("¿qué tengo para hoy?", true), ("¿qué hay hoy?", true),
+                      ("¿tengo algo pendiente?", true),
+                      ("recuérdame qué tengo que comprar mañana a las 6", false),
+                      ("anota qué hay en la nevera: leche y huevos", false)])
+    func pendingOnlyForTodayOrBare(owner: String, expected: Bool) {
+        #expect(LocalToolAdapter.asksForPending(owner) == expected)
+    }
+
+    @Test func aCreationOpeningIsNeverAQuery() {
+        #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: "recuérdame qué tengo que comprar mañana a las 6")
+                == "remind_me")
+        #expect(LocalToolAdapter.intended(name: "read_note", ownerText: "anota qué hay en la nevera: leche y huevos")
+                == "write_note")
+    }
+
+    @Test func eventListsRespectTheRequestedDay() {
+        let when = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
+                             ownerText: "¿qué tengo mañana?")
+        #expect(when.listDaysAhead == 2)
+        let raw = "- [E:1] Hoy @ 2026-10-06T20:00:00Z\n- [E:2] Dentista @ 2026-10-07T15:00:00Z"
+        #expect(when.eventsInRequestedRange(raw) == "- [E:2] Dentista @ 2026-10-07T15:00:00Z")
+        let week = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
+                             ownerText: "qué hay esta semana")
+        #expect(week.listDaysAhead == 6)
+        #expect(week.eventsInRequestedRange(raw) == raw)
+        let friday = LocalWhen(now: LocalToolAdapterTests.now, calendar: LocalToolAdapterTests.calendar,
+                               ownerText: "qué tengo el viernes")
+        #expect(friday.listDaysAhead == 4)
+        #expect(friday.eventsInRequestedRange(raw) == "No tienes nada en tu agenda ese día.")
+        let input = LocalOwnerRepairTests.real("list_events", ["days": .int(1)], owner: "qué hay esta semana")
+        #expect(input?["days_ahead"] == .int(6))
+    }
+
+    @Test(arguments: [
+        ("agéndame cena con Laura la próxima semana el viernes a las 8 de la noche", "2026-10-16T20:00:00"),
+        ("agéndame cena con Laura el viernes de la otra semana a las 8 de la noche", "2026-10-16T20:00:00"),
+        ("agéndame revisión la semana que viene el lunes a las 9 am", "2026-10-12T09:00:00"),
+    ])
+    func nextWeekPlusDay(owner: String, expected: String) throws {
+        let input = try #require(LocalOwnerRepairTests.real("add_calendar_event", [
+            "title": .string("x"), "start": .string("2026-10-09 20:00"), "end": .string("2026-10-09 21:00")], owner: owner))
+        #expect(input["start"] == .string(expected))
+    }
+
+    @Test func nextWeekWithoutADayIsMonday() throws {
+        let input = try #require(LocalOwnerRepairTests.real("remind_me", [
+            "text": .string("x"), "when": .string("2026-10-07 18:00"), "repeat": .string("none")],
+            owner: "recuérdame la próxima semana pagar el seguro"))
+        #expect(input["fire_at"] == .string("2026-10-12T09:00:00"))
+    }
+
+    @Test func eventTitleCutsOnlyOnTheNextWeek() {
+        #expect(LocalToolAdapter.dictatedEvent("agéndame regalo para la mamá el viernes") == "regalo para la mamá")
+        #expect(LocalToolAdapter.dictatedEvent("agéndame cena con Laura para la próxima semana") == "cena con Laura")
+    }
+
+    @Test func aScheduledEventIsConfirmedWithWhatWasSaved() async throws {
+        let ctx = AssembledContext(messages: [
+            .user("agéndame cena con Laura"),
+            .assistant([.toolUse(id: "t1", name: "add_calendar_event", input: .object(["title": .string("cena con Laura")]))]),
+            .user([.toolResult(toolUseId: "t1", content: "agendé «Cena con Laura» el viernes 16 de octubre de 20:00 a 21:00.",
+                               isError: false)]),
+        ])
+        let session = MockOnDeviceSession([[.snapshot("Listo, agendé la cena con Laura en el restaurante La Terraza.")]])
+        let provider = OnDeviceProvider(session: session, availability: { .available })
+        let response = try await provider.completeCollecting(ctx, tools: [], opts: try OnDeviceTestConfig.opts())
+        #expect(response.content == [.text("Listo, agendé «Cena con Laura» el viernes 16 de octubre de 20:00 a 21:00.")])
+        #expect(session.requests.value.isEmpty)
     }
 }

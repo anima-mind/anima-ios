@@ -144,7 +144,7 @@ enum LocalLoopHarness {
 
     @Test func confirmationStripsInternalIds() {
         #expect(OnDevicePromptBuilder.confirmation(results: ["Listo: te recuerdo 'x' mañana. Id AB-12."])
-                == "Listo: te recuerdo 'x' mañana.")
+                == "Listo, te recuerdo 'x' mañana.")
         #expect(OnDevicePromptBuilder.confirmation(results: ["Anotado en tu nota 'c': pan."]) == "Listo: Anotado en tu nota 'c': pan.")
     }
 }

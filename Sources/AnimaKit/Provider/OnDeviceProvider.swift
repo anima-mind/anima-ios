@@ -417,6 +417,11 @@ public enum OnDevicePromptBuilder {
                     break
                 }
             }
+            // Un evento agendado se confirma con lo guardado (medido: el 3B inventaba
+            // "en el restaurante La Terraza").
+            if round.contains(where: { if case .toolCall(let id, "add_calendar_event", _) = $0 { !failedIds.contains(id) } else { false } }) {
+                listIsDeterministic = true
+            }
             if onlyReads {
                 listIsDeterministic = round.allSatisfy { entry in
                     if case .toolCall(_, let name, _) = entry { return LocalToolAdapter.listTools.contains(name) }
@@ -608,7 +613,7 @@ public enum OnDevicePromptBuilder {
         }
         let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")
         let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
-        return "Listo: " + trimmed
+        return (trimmed.first?.isLowercase == true ? "Listo, " : "Listo: ") + trimmed
     }
 
     /// ¿El contexto termina en resultados de tool con algún error?

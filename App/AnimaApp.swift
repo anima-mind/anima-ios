@@ -788,9 +788,7 @@ final class AppModel: ObservableObject {
 }
 
 /// Tabs del shell (selección programática para el deep link del handoff).
-enum AppTab: Hashable {
-    case chat, memory, goals, approvals, settings
-}
+typealias AppTab = ShellTab
 
 /// Enrutado del shell (handoff): splash → (landing → onboarding) | chat.
 /// El TabView existente es el destino post-onboarding.
@@ -837,28 +835,28 @@ struct RootView: View {
             if let chat = app.chatModel {
                 ChatView(model: chat)
                     .confirmationOverlay(app.confirmation)
-                    .tabItem { Label("Chat", systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
+                    .tabItem { Label(AppTab.chat.title, systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
                     .tag(AppTab.chat)
             }
             if let memory = app.memoryModel {
                 MemoryBrowserView(model: memory)
-                    .tabItem { Label("Memoria", systemImage: "brain").accessibilityIdentifier("tab.memory") }
+                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
                     .tag(AppTab.memory)
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
-                    .tabItem { Label("Metas", systemImage: "target").accessibilityIdentifier("tab.goals") }
+                    .tabItem { Label(AppTab.goals.title, systemImage: "target").accessibilityIdentifier("tab.goals") }
                     .tag(AppTab.goals)
             }
             if let approvals = app.approvalsModel {
                 ApprovalsInboxView(model: approvals)
-                    .tabItem { Label("Aprobaciones", systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
+                    .tabItem { Label(AppTab.approvals.title, systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
                     .tag(AppTab.approvals)
                     .badge(approvals.badgeCount)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
-                    .tabItem { Label("Ajustes", systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
+                    .tabItem { Label(AppTab.settings.title, systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
                     .tag(AppTab.settings)
             }
         }

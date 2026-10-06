@@ -609,8 +609,9 @@ enum CompatTestConfig {
 
         let second = try CompatTestConfig.body(try #require(scenario.requests.value.last))
         let messages = try #require(second["messages"].flatMap { if case .array(let a) = $0 { a } else { nil } })
-        #expect(messages.first?["content"] == .string("BASE"))
-        #expect(messages.contains { $0["role"] == .string("system") && $0["content"] != .string("BASE") })  // SelfView
+        let base = AppGuide.systemBase("BASE")
+        #expect(messages.first?["content"] == .string(base))
+        #expect(messages.contains { $0["role"] == .string("system") && $0["content"] != .string(base) })  // SelfView
         let toolMsg = try #require(messages.first { $0["role"] == .string("tool") })
         #expect(toolMsg["tool_call_id"] == .string("call_1"))
         #expect(second["tools"]?[0]?.at("function", "name") == .string("notes"))   // web_search filtrada

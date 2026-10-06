@@ -281,7 +281,9 @@ public actor AgentLoop {
                 // Controles de gestión de contexto para este request (escalera por
                 // presión). En on-device siempre vacíos: jamás betas de Anthropic.
                 let controls = await workingMemory.consumeRelief()
-                let opts = binding.callOpts(route: route, relief: controls)
+                let opts = binding.callOpts(route: route,
+                                            systemPromptBase: AppGuide.systemBase(binding.router.systemPromptBase),
+                                            relief: controls)
 
                 let response: ProviderResponse
                 do {

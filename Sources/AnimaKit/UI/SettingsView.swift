@@ -348,6 +348,18 @@ public final class SettingsViewModel: ObservableObject {
 /// lista compacta de filas con resumen vivo que pushean sub-pantallas.
 public enum SettingsRoute: String, Hashable, CaseIterable, Sendable {
     case account, model, skills, glasses, mind, notifications
+
+    /// Nombre visible de la fila del hub (el mismo que usa AppGuide).
+    public var title: String {
+        switch self {
+        case .account: return "Cuenta"
+        case .model: return "Modelo y costos"
+        case .skills: return "Skills"
+        case .glasses: return "Gafas"
+        case .mind: return "Mente"
+        case .notifications: return "Notificaciones"
+        }
+    }
 }
 
 public struct SettingsView: View {
@@ -368,7 +380,7 @@ public struct SettingsView: View {
                             AccountHubRow(account: account)
                             hubDivider
                         }
-                        hubRow(.model, title: "Modelo y costos", subtitle: model.modelSummary, glyph: "cpu")
+                        hubRow(.model, title: SettingsRoute.model.title, subtitle: model.modelSummary, glyph: "cpu")
                         if let skills = model.skills {
                             hubDivider
                             SkillsHubRow(skills: skills)
@@ -378,7 +390,7 @@ public struct SettingsView: View {
                             GlassesHubRow(glasses: glasses)
                         }
                         hubDivider
-                        hubRow(.mind, title: "Mente", subtitle: model.mindSummary, glyph: "moon")
+                        hubRow(.mind, title: SettingsRoute.mind.title, subtitle: model.mindSummary, glyph: "moon")
                         if let notifications = model.notifications {
                             hubDivider
                             NotificationsHubRow(notifications: notifications)
@@ -421,23 +433,23 @@ public struct SettingsView: View {
         switch route {
         case .account:
             if let account = model.account {
-                SettingsSubScreen(title: "Cuenta") { AccountSettingsSection(account: account) }
+                SettingsSubScreen(title: route.title) { AccountSettingsSection(account: account) }
             }
         case .model:
-            SettingsSubScreen(title: "Modelo y costos") {
+            SettingsSubScreen(title: route.title) {
                 ModelSettingsContent(model: model)
             }
         case .skills:
             if let skills = model.skills { SkillsSettingsScreen(model: skills) }
         case .glasses:
             if let glasses = model.glasses {
-                SettingsSubScreen(title: "Gafas") { GlassesSettingsSection(model: glasses) }
+                SettingsSubScreen(title: route.title) { GlassesSettingsSection(model: glasses) }
             }
         case .mind:
-            SettingsSubScreen(title: "Mente") { MindSettingsContent(model: model) }
+            SettingsSubScreen(title: route.title) { MindSettingsContent(model: model) }
         case .notifications:
             if let notifications = model.notifications {
-                SettingsSubScreen(title: "Notificaciones") { NotificationsSettingsSection(model: notifications) }
+                SettingsSubScreen(title: route.title) { NotificationsSettingsSection(model: notifications) }
             }
         }
     }
@@ -482,7 +494,7 @@ private struct AccountHubRow: View {
     @ObservedObject var account: AccountViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.account) {
-            SettingsHubRowLabel(title: "Cuenta", subtitle: subtitle, glyph: "person.crop.circle")
+            SettingsHubRowLabel(title: SettingsRoute.account.title, subtitle: subtitle, glyph: "person.crop.circle")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.account")
@@ -499,7 +511,7 @@ private struct SkillsHubRow: View {
     @ObservedObject var skills: SkillsViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.skills) {
-            SettingsHubRowLabel(title: "Skills", subtitle: skills.summaryLine, glyph: "book")
+            SettingsHubRowLabel(title: SettingsRoute.skills.title, subtitle: skills.summaryLine, glyph: "book")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.skills")
@@ -510,7 +522,7 @@ private struct GlassesHubRow: View {
     @ObservedObject var glasses: GlassesViewModel
     var body: some View {
         NavigationLink(value: SettingsRoute.glasses) {
-            SettingsHubRowLabel(title: "Gafas", subtitle: glasses.hubSummary, glyph: "eyeglasses")
+            SettingsHubRowLabel(title: SettingsRoute.glasses.title, subtitle: glasses.hubSummary, glyph: "eyeglasses")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.glasses")
@@ -521,7 +533,7 @@ private struct NotificationsHubRow: View {
     @ObservedObject var notifications: NotificationsSettingsModel
     var body: some View {
         NavigationLink(value: SettingsRoute.notifications) {
-            SettingsHubRowLabel(title: "Notificaciones", subtitle: notifications.hubSummary, glyph: "bell")
+            SettingsHubRowLabel(title: SettingsRoute.notifications.title, subtitle: notifications.hubSummary, glyph: "bell")
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.notifications")

@@ -10,7 +10,7 @@ struct MarkdownMessage: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Theme.Space.unit * 2.5) {
             ForEach(Array(ChatMarkdown.blocks(text).enumerated()), id: \.offset) { _, block in
                 MarkdownBlockView(block: block)
             }
@@ -27,14 +27,14 @@ struct MarkdownBlockView: View {
             prose(text, font: Theme.Type_.body)
         case .heading(let level, let text):
             prose(text, font: Self.font(heading: level))
-                .padding(.top, level <= 2 ? 6 : 2)
+                .padding(.top, level <= 2 ? Theme.Space.unit * 1.5 : Theme.Space.unit / 2)
                 .accessibilityAddTraits(.isHeader)
         case .list(let ordered, let items):
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Theme.Space.unit * 1.5) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     listItem(item, ordered: ordered)
                     ForEach(Array(item.children.enumerated()), id: \.offset) { _, child in
-                        listItem(child, ordered: child.marker != "•").padding(.leading, 20)
+                        listItem(child, ordered: child.marker != "•").padding(.leading, Theme.Space.unit * 5)
                     }
                 }
             }
@@ -53,7 +53,7 @@ struct MarkdownBlockView: View {
             .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
         case .quote(let text):
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: Theme.Space.unit * 2.5) {
                 Rectangle().fill(Theme.Colors.accent).frame(width: 2)
                 prose(text, font: Theme.Type_.body, color: Theme.Colors.textMuted)
             }

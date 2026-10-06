@@ -182,7 +182,7 @@ public struct RemindersView: View {
                 .font(Theme.Type_.body.weight(.light))
                 .foregroundStyle(Theme.Colors.accent)
                 .frame(width: 20)
-                .padding(.top, 2)
+                .padding(.top, Theme.Space.unit / 2)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
                     .font(Theme.Type_.body)
@@ -232,7 +232,7 @@ public struct RemindersView: View {
                     .font(Theme.Type_.body.weight(.light))
                     .foregroundStyle(Theme.Colors.accent)
                     .frame(width: 20)
-                    .padding(.top, 2)
+                    .padding(.top, Theme.Space.unit / 2)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
                         .font(Theme.Type_.body)

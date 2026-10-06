@@ -102,7 +102,7 @@ public struct NotificationsSettingsSection: View {
                 .foregroundStyle(Theme.Colors.textMuted)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center, spacing: Theme.Space.stack) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
                         Text("Avisos de Anima")
                             .font(Theme.Type_.body)
                             .foregroundStyle(Theme.Colors.text)
@@ -121,7 +121,7 @@ public struct NotificationsSettingsSection: View {
                         .disabled(!model.toggleIsEnabled)
                         .accessibilityIdentifier("settings.notifications.toggle")
                 }
-                .padding(.vertical, 10)
+                .padding(.vertical, Theme.Space.unit * 2.5)
                 switch model.status {
                 case .denied:
                     divider

@@ -176,7 +176,7 @@ public struct MemoryBrowserView: View {
             Button {
                 withAnimation(.easeOut(duration: 0.2)) { model.showInvalidated.toggle() }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Theme.Space.unit * 1.5) {
                     Image(systemName: "chevron.right")
                         .font(Theme.Type_.label.weight(.light))
                         .rotationEffect(.degrees(model.showInvalidated ? 90 : 0))
@@ -274,7 +274,7 @@ struct MemoryDetailSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Theme.Space.unit * 1.5) {
                     Text(detail.content)
                         .font(Theme.Type_.cardTitle)
                         .foregroundStyle(Theme.Colors.text)

@@ -667,7 +667,7 @@ public struct ChatView: View {
                 }
                 if model.isOffline {
                     OfflinePill(localAvailable: model.localModelAvailable)
-                        .padding(.top, 6)
+                        .padding(.top, Theme.Space.unit * 1.5)
                 }
                 if model.isListening {
                     ListeningBar(transcript: model.liveTranscript,
@@ -1043,7 +1043,7 @@ public struct ChatView: View {
                 .foregroundStyle(Theme.Colors.accent)
                 .shadow(color: Theme.Colors.accent.opacity(0.6), radius: 4)
                 .frame(width: 22, height: 22)
-                .padding(.top, 1)
+                .padding(.top, Theme.Space.unit / 4)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Theme.Space.unit) {
                 Text(model.cardLabel(message))
@@ -1093,7 +1093,7 @@ public struct ChatView: View {
                             .accessibilityIdentifier("chat.proactive.dismiss")
                         }
                         .font(Theme.Type_.secondary)
-                        .padding(.top, 6)
+                        .padding(.top, Theme.Space.unit * 1.5)
                     }
                 }
             }
@@ -1313,7 +1313,7 @@ struct OfflinePill: View {
     let localAvailable: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Theme.Space.unit * 1.5) {
             Image(systemName: "wifi.slash")
                 .font(Theme.Type_.label.weight(.light))
             Text(localAvailable ? "Sin conexión · modelo local disponible" : "Sin conexión")
@@ -1321,7 +1321,7 @@ struct OfflinePill: View {
         .font(Theme.Type_.meta)
         .foregroundStyle(Theme.Colors.textMuted)
         .padding(.horizontal, Theme.Space.stack)
-        .padding(.vertical, 6)
+        .padding(.vertical, Theme.Space.unit * 1.5)
         .background(Capsule().fill(Theme.Colors.surface))
         .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
         .frame(maxWidth: .infinity)
@@ -1338,7 +1338,7 @@ struct DaySeparator: View {
         Text(text)
             .font(Theme.Type_.meta)
             .foregroundStyle(Theme.Colors.textMuted)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, Theme.Space.unit * 2.5)
             .padding(.vertical, Theme.Space.unit)
             .overlay(Capsule().strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
             .frame(maxWidth: .infinity)
@@ -1432,7 +1432,7 @@ struct ThinkingIndicator: View {
     var p: Double = 1
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Theme.Space.unit * 1.5) {
             BreathMark(size: Self.markSize, p: p, phase: .breathing)
                 .accessibilityHidden(true)
             Text("Pensando…")

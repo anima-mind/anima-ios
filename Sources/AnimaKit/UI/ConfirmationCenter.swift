@@ -71,7 +71,7 @@ public struct ConfirmationSheet: View {
                 .foregroundStyle(Theme.Colors.text)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("confirm.summary")
-            HStack(spacing: 6) {
+            HStack(spacing: Theme.Space.unit * 1.5) {
                 Image(systemName: "hand.raised")
                     .font(Theme.Type_.label.weight(.light))
                 Text(ToolNames.context(tool: request.tool, operation: request.operation))

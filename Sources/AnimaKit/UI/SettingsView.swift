@@ -734,7 +734,7 @@ struct ModelSettingsContent: View {
             } else {
                 ForEach(model.modelCosts) { row in
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
                             Text(row.displayName).font(Theme.Type_.secondary).foregroundStyle(Theme.Colors.text)
                             Text(row.breakdown)
                                 .font(Theme.Type_.meta).foregroundStyle(Theme.Colors.textFaint)

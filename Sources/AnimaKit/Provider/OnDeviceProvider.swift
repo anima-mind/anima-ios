@@ -127,13 +127,12 @@ public struct OnDeviceRequest: Sendable, Equatable {
     /// modelo no logra redactar (guardrails, error). Con ella el texto no se
     /// streamea a medias: se entrega completo o se usa este fallback.
     public var fallbackText: String?
-    /// Lo que la redacción debe nombrar para no perder el dato (un grupo por
-    /// ítem: basta una de sus palabras). Ver `acceptsConfirmation`.
-    public var salientWords: [[String]]
+    /// Lo que la redacción debe nombrar para no perder el dato. Ver `acceptsConfirmation`.
+    public var salientWords: [SalientGroup]
 
     public init(instructions: String, history: [OnDeviceTranscriptEntry], prompt: String,
                 tools: [OnDeviceToolDefinition], maxResponseTokens: Int, fallbackText: String? = nil,
-                salientWords: [[String]] = []) {
+                salientWords: [SalientGroup] = []) {
         self.instructions = instructions
         self.history = history
         self.prompt = prompt
@@ -142,6 +141,22 @@ public struct OnDeviceRequest: Sendable, Equatable {
         self.fallbackText = fallbackText
         self.salientWords = salientWords
     }
+}
+
+/// Raíces que una confirmación debe nombrar: al menos `minimum` de `stems`.
+public struct SalientGroup: Sendable, Equatable {
+    public var stems: [String]
+    public var minimum: Int
+
+    public init(_ stems: [String], minimum: Int = 1) {
+        self.stems = stems
+        self.minimum = min(minimum, stems.count)
+    }
+
+    /// El sujeto de lo hecho: hasta 2 de sus raíces ("llamar al banco" ⇒ llam + banc).
+    public static func subject(_ stems: [String]) -> SalientGroup { SalientGroup(stems, minimum: 2) }
+
+    func isMet(by folded: String) -> Bool { stems.filter { folded.contains($0) }.count >= minimum }
 }
 
 /// Lo que emite la sesión: snapshots acumulados del texto (semántica del
@@ -361,31 +376,48 @@ public enum OnDevicePromptBuilder {
         //    output, el cue de continuación.
         let prompt: String
         var fallbackText: String?
-        var salient: [[String]] = []
+        var salient: [SalientGroup] = []
         let toolsSucceeded = endsInSuccessfulToolResults(ctx.messages)
         if toolsSucceeded {
             // Éxito: la ronda de tools se pliega a texto ("Ya quedó hecho: …")
             // sobre el turno del dueño; sin estructura de tool el 3B redacta prosa.
+            // Los pares fallidos de la ronda (redirect, reintento) no se cuentan:
+            // "Listo: ERROR: …" llegaba al dueño.
+            var round: [OnDeviceTranscriptEntry] = []
+            while let last = entries.last {
+                guard case .toolOutput = last else {
+                    guard case .toolCall = last else { break }
+                    round.insert(entries.removeLast(), at: 0)
+                    continue
+                }
+                round.insert(entries.removeLast(), at: 0)
+            }
+            let failedIds = Set(round.compactMap { entry -> String? in
+                if case .toolOutput(let id, _, let content) = entry, content.hasPrefix("ERROR: ") { return id }
+                return nil
+            })
             var results: [String] = []
             var onlyReads = true
-            while let last = entries.last {
-                if case .toolOutput(_, _, let content) = last {
-                    results.insert(content, at: 0)
-                } else if case .toolCall(_, let name, let json) = last {
+            for entry in round {
+                switch entry {
+                case .toolOutput(let id, _, let content) where !failedIds.contains(id):
+                    results.append(content)
+                case .toolCall(let id, let name, let json) where !failedIds.contains(id):
                     if !LocalToolAdapter.readOnlyTools.contains(name) {
                         onlyReads = false
                         let args = normalizeArguments(json)
                         let subject = ["text", "statement", "title", "content"].compactMap { args[$0]?.stringValue }.first
-                        if let subject, !salientStems(subject).isEmpty { salient.append(salientStems(subject)) }
+                        if let subject, !salientStems(subject).isEmpty { salient.append(.subject(salientStems(subject))) }
+                        if let action = Self.actionStems[name] { salient.append(SalientGroup(action)) }
                     }
-                } else {
+                default:
                     break
                 }
-                entries.removeLast()
             }
             if onlyReads {
                 results = results.map(withoutListIds)
-                salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems).filter { !$0.isEmpty }
+                salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems)
+                    .filter { !$0.isEmpty }.map { SalientGroup($0) }
             }
             let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)
             fallbackText = onlyReads ? results.joined(separator: "\n") : confirmation(results: results)
@@ -430,12 +462,58 @@ public enum OnDevicePromptBuilder {
     /// va la confirmación determinista.
     /// Además: de tú (sin "el dueño" ni placeholders) y nombrando lo hecho o
     /// leído (medido: "El recordatorio está programado para mañana" sin decir cuál).
-    public static func acceptsConfirmation(_ text: String, salient: [[String]] = []) -> Bool {
+    /// Y debe decir la acción de Anima (recordar, anotar, agendar, registrar) sin
+    /// afirmar que la tarea del dueño ya se hizo (medido: "Listo, sacué la basura",
+    /// "Listo, revisé el horno", "me acordé de llamar al banco").
+    public static func acceptsConfirmation(_ text: String, salient: [SalientGroup] = []) -> Bool {
         guard !text.isEmpty, text.count <= 240, let last = text.last, ".!?»)\"'".contains(last) else { return false }
         let folded = fold(text)
-        if folded.contains("dueno") || text.contains("[") { return false }
-        return salient.allSatisfy { group in group.contains { folded.contains($0) } }
+        if folded.contains("dueno") || text.contains("[") || claimsTheOwnersTask(text) || speaksAsTheOwner(folded) {
+            return false
+        }
+        return salient.allSatisfy { $0.isMet(by: folded) }
     }
+
+    /// Las cosas del dueño dichas como propias ("No tengo metas activas", "mis
+    /// recordatorios"): medido en las lecturas vacías.
+    static func speaksAsTheOwner(_ folded: String) -> Bool {
+        let words = Set(folded.components(separatedBy: CharacterSet.letters.inverted))
+        return words.contains("tengo") || words.contains("mis")
+    }
+
+    /// Lo que cada tool local hizo, como raíz: la confirmación debe nombrarlo.
+    static let actionStems: [String: [String]] = [
+        "remind_me": ["recuerd", "record", "avis", "program"],
+        "declare_goal": ["meta", "regist", "pregunt", "segui", "recuerd"],
+        "add_calendar_event": ["agend", "event", "calend", "cita", "reuni"],
+        "write_note": ["anot", "nota", "guard", "apunt"],
+    ]
+
+    /// Pretérito en 1ª persona que no es de Anima ("saqué", "llamé") o en 2ª
+    /// ("compraste"): afirma que la tarea del dueño ya ocurrió.
+    /// También el perfecto que da por ocurrido el aviso ("ya te he recordado"),
+    /// el reflexivo ("me he registrado") y el futuro de la tarea ("llevaré el carro").
+    static func claimsTheOwnersTask(_ text: String) -> Bool {
+        let all = text.lowercased().components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+        for (index, word) in all.enumerated() {
+            if word == "he", index + 1 < all.count {
+                let next = all[index + 1]
+                let participle = next.hasSuffix("ado") || next.hasSuffix("ido")
+                if participle && (!ownParticiples.contains(next) || (index > 0 && all[index - 1] == "me")) { return true }
+            }
+            if ["hice", "fui", "puse", "traje"].contains(word) { return true }
+            guard word.count > 3 else { continue }
+            if word.hasSuffix("é") && !ownActions.contains(word) { return true }
+            if word.hasSuffix("aste") || word.hasSuffix("iste") { return true }
+        }
+        return false
+    }
+
+    static let ownActions: Set<String> = ["anoté", "agendé", "registré", "guardé", "programé", "apunté", "dejé",
+                                          "creé", "quedé", "recordaré", "avisaré", "preguntaré", "diré", "escribiré",
+                                          "enviaré", "mandaré", "haré"]
+    static let ownParticiples: Set<String> = ["anotado", "agendado", "registrado", "guardado", "programado",
+                                              "apuntado", "creado", "dejado"]
 
     static func fold(_ text: String) -> String {
         text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))

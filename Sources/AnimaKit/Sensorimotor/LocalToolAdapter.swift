@@ -136,9 +136,10 @@ public enum LocalToolAdapter {
                 return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
             guard let modelCadence = args.cadence("repeat") else { return invalid(cadenceHelp("repeat")) }
-            // La repetición la decide lo que dijo el dueño ("todos los días"): sin
-            // esas palabras no se repite (medido: el 3B ponía daily a "mañana a las 9").
-            let cadence = ownerText.isEmpty ? modelCadence : (when.ownerCadence ?? .none)
+            // La repetición que dijo el dueño gana; si fijó un único momento
+            // ("mañana a las 9") no se repite (medido: el 3B ponía daily); si no
+            // dijo nada, la del modelo.
+            let cadence = when.ownerCadence ?? (when.ownerSaysOnce ? .none : modelCadence)
             return reminder(text: text, at: parsedWhen, cadence: cadence, now: now, when: when, calendar: calendar)
 
         case "list_reminders", "list_goals":
@@ -154,7 +155,7 @@ public enum LocalToolAdapter {
             // no una meta (regla de la app: "recuérdame…" ⇒ recordatorio).
             if when.ownerAsksForAReminder {
                 let clock = when.ownerExplicitTime ?? (args.hour("hour").map { ($0, 0) } ?? (CheckInCadence.defaultHour, 0))
-                let day = when.day(LocalWhen.fold(ownerText)) ?? calendar.startOfDay(for: now)
+                let day = when.ownerDay ?? calendar.startOfDay(for: now)
                 guard let at = calendar.date(bySettingHour: clock.0, minute: clock.1, second: 0, of: day) else {
                     return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
                 }
@@ -170,7 +171,10 @@ public enum LocalToolAdapter {
                 // Sin hora dicha por el dueño, la del modelo es invento: la default.
                 if !when.ownerMentionsTime { hour = CheckInCadence.defaultHour }
                 if let owner = when.ownerExplicitTime { hour = owner.hour }
-                object["checkin"] = .object(["cadence": .string(cadence.rawValue), "hour": .int(hour)])
+                var checkin: [String: JSONValue] = ["cadence": .string(cadence.rawValue), "hour": .int(hour)]
+                // "cada domingo": sin el día, GoalsTool pondría lunes y el texto mentiría.
+                if cadence == .weekly, let weekday = when.ownerWeekday { checkin["weekday"] = .int(weekday) }
+                object["checkin"] = .object(checkin)
             }
             return .real(name: tool.realTool, input: .object(object))
 
@@ -183,8 +187,7 @@ public enum LocalToolAdapter {
             guard let start = args.raw("start").flatMap({ when.parse($0) }) else {
                 return invalid(missing("start", "formato 'YYYY-MM-DD HH:MM', hora local"))
             }
-            let parsedEnd = args.raw("end").flatMap { when.parse($0, repair: false) }
-            let end = parsedEnd.flatMap { $0 > start ? $0 : nil } ?? start.addingTimeInterval(3600)
+            let end = when.eventEnd(start: start, modelEnd: args.raw("end").flatMap { when.parse($0, repair: false) })
             return .real(name: tool.realTool, input: .object([
                 "action": .string("create"), "title": .string(title),
                 "start": .string(when.isoLocal(start)), "end": .string(when.isoLocal(end)),
@@ -197,8 +200,13 @@ public enum LocalToolAdapter {
             if content == nil || content?.lowercased() == args.text("name")?.lowercased() {
                 content = dictatedNote(ownerText) ?? content
             }
-            guard let content else { return invalid(missing("content", "el texto de la nota")) }
-            let noteName = args.text("name") ?? defaultNoteName(content)
+            guard var content else { return invalid(missing("content", "el texto de la nota")) }
+            var noteName = args.text("name") ?? defaultNoteName(content)
+            // Medido: a veces invierte los campos ({name:'la clave del wifi es casa123',
+            // content:'wifi'}): el texto largo es el contenido y el nombre, 1-3 palabras.
+            if LocalWhen.words(noteName).count > 3, LocalWhen.words(content).count <= 3, noteName.count > content.count {
+                swap(&noteName, &content)
+            }
             // append: nunca pisa una nota existente (crear también, si no existe).
             return .real(name: tool.realTool, input: .object([
                 "action": .string("append"), "name": .string(noteName), "content": .string(content),
@@ -245,29 +253,67 @@ public enum LocalToolAdapter {
             let line = "Evento '\(title)' agendado el \(dates.readableISO(start))"
             presented.content = line.hasSuffix(".") ? line : line + "."
         case "list_goals":
-            presented.content = result.content.replacingOccurrences(of: "El dueño no tiene", with: "No tienes")
+            presented.content = readableGoals(result.content)
         default:
             return result
         }
         return presented
     }
 
+    /// "- [G1] leer (stated, reportar avance cada 8 días); check-in cada domingo a
+    /// las 20:00; racha 2 días" ⇒ "- leer — te pregunto cada domingo a las 20:00; racha 2 días".
+    static func readableGoals(_ text: String) -> String {
+        if text.hasPrefix("El dueño no tiene") { return "No tienes metas activas." }
+        return text.split(separator: "\n").map { line -> String in
+            guard line.hasPrefix("- ") else { return String(line) }
+            var parts = line.dropFirst(2).components(separatedBy: "; ")
+            var head = parts.removeFirst().replacing(/^\[[^\]]*\]\s*/, with: "")
+            if let paren = head.range(of: " (", options: .backwards), head.hasSuffix(")") {
+                head = String(head[..<paren.lowerBound])
+            }
+            let rest = parts.map { $0.hasPrefix("check-in ") ? "te pregunto " + $0.dropFirst(9) : $0 }
+            return "- " + ([head] + rest).joined(separator: " — ")
+        }.joined(separator: "\n")
+    }
+
     /// La tool que corresponde a lo que pidió el dueño cuando el modelo eligió
     /// una de consulta para un pedido de creación; si no, `name`.
     public static func intended(name: String, ownerText: String) -> String {
         guard readOnlyTools.contains(name) else { return name }
-        let owner = LocalWhen.fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !owner.isEmpty, !owner.contains("?"),
-              !["que ", "cuales ", "cual ", "muestrame", "dime ", "lista", "lee "].contains(where: owner.hasPrefix) else {
-            return name
-        }
+        let raw = ownerText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let owner = LocalWhen.fold(raw)
+        // Una consulta nunca se redirige, lleve o no "?" ("quiero ver mis metas",
+        // "dime qué tengo", "cuáles son mis recordatorios").
+        let asks = ["qué ", "cuál", "cómo", "cuándo", "?", "¿"].contains(where: raw.contains)
+            || ["que ", "cuales ", "cual ", "muestrame", "dime", "lista", "lee ", "leeme"].contains(where: owner.hasPrefix)
+        guard !owner.isEmpty, !asks else { return name }
         let targets: [(String, [String])] = [
             ("remind_me", ["recuerdame", "recordarme", "recuerdeme"]),
             ("add_calendar_event", ["agendame", "agenda una", "agenda la", "agenda el"]),
             ("write_note", ["anota", "apunta", "toma nota"]),
-            ("declare_goal", ["quiero ", "mi meta", "mi objetivo"]),
+            ("declare_goal", ["mi meta", "mi objetivo", "me propongo"]),
         ]
-        return targets.first { $0.1.contains(where: owner.contains) }?.0 ?? name
+        if let target = targets.first(where: { $0.1.contains(where: owner.contains) }) { return target.0 }
+        // "quiero" solo es meta con un verbo de meta detrás ("quiero bajar 5 kilos").
+        let consults = ["ver ", "saber", "revisar", "consultar", "mirar", "mis "].contains(where: owner.contains)
+        if !consults, let match = owner.firstMatch(of: /\bquiero (\w+)/), Self.goalVerbs.contains(String(match.1)) {
+            return "declare_goal"
+        }
+        return name
+    }
+
+    static let goalVerbs: Set<String> = [
+        "bajar", "subir", "leer", "correr", "aprender", "ahorrar", "dejar", "empezar", "comenzar", "terminar",
+        "hacer", "ir", "dormir", "comer", "tomar", "estudiar", "escribir", "meditar", "caminar", "nadar",
+        "entrenar", "practicar", "llegar", "lograr", "mejorar", "reducir", "aumentar", "ganar", "perder",
+    ]
+
+    /// ¿El error de la tool real es de datos (reintentar con otros sirve) y no
+    /// del mundo (permiso, store)? "la fecha ya pasó", "falta 'x'", "debe ser…".
+    public static func isParameterError(_ content: String) -> Bool {
+        let folded = LocalWhen.fold(content)
+        return ["falta ", "debe ser", "ya paso", "invalido", "no existe una meta", "esta vacio", "no se entiende"]
+            .contains(where: folded.contains)
     }
 
     /// El error accionable que vuelve al modelo: qué falló + el ejemplo literal.
@@ -392,47 +438,96 @@ struct Args {
 /// `when`/`start` del modelo local → fecha en hora LOCAL. Acepta
 /// 'YYYY-MM-DD HH:MM' (con T, segundos, Z u offset: la zona se ignora) y, si el
 /// modelo manda palabras, "hoy|mañana|pasado mañana|<día> [a las] 9[:30] [am|pm]".
+///
+/// `ownerText` repara lo que el dueño dijo sin ambigüedad, en este orden: "en N
+/// horas/minutos" (relativo al reloj), fecha explícita ("15 de octubre",
+/// "15/10"), "hoy", "pasado mañana", "mañana" y por último el día de la semana;
+/// la hora solo si trae am/pm, "de la tarde/noche/mañana" o formato 24 h. Solo
+/// cuenta la parte que agenda ("… a las 6 de la tarde | que mañana es el examen").
 struct LocalWhen {
     let now: Date
     let calendar: Calendar
     var ownerText: String = ""
 
-    /// `repair: false` para el fin de un evento: la hora del dueño es la de inicio.
+    /// `repair: false` para el fin de un evento (ver `eventEnd`).
     func parse(_ raw: String, repair: Bool = true) -> Date? {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let parsed = absolute(text) ?? relative(text) else { return nil }
         return repair ? repaired(parsed) : parsed
     }
 
-    /// Lo que el dueño dijo sin ambigüedad pisa lo que calculó el modelo: el
-    /// día ("hoy|mañana|pasado mañana|<día de la semana>") y la hora si trae
-    /// am/pm, "de la tarde/noche" o formato 24 h (13-23).
+    /// Lo que el dueño dijo sin ambigüedad pisa lo que calculó el modelo.
     func repaired(_ date: Date) -> Date {
-        let owner = Self.fold(ownerText)
+        let owner = scheduleText
         guard !owner.isEmpty else { return date }
+        if let offset = offset(owner) { return now.addingTimeInterval(offset) }
         var parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
         if let day = day(owner) {
             let d = calendar.dateComponents([.year, .month, .day], from: day)
             parts.year = d.year; parts.month = d.month; parts.day = d.day
         }
-        if let clock = explicitTime(owner) {
+        if let clock = explicitTimes(owner).first {
             parts.hour = clock.hour; parts.minute = clock.minute
         }
         return calendar.date(from: parts) ?? date
+    }
+
+    /// Fin de un evento: "de 9 am a 11 am" ⇒ la última hora explícita del
+    /// dueño; si no, el fin del modelo cuando es posterior al inicio; si no, 1 h.
+    func eventEnd(start: Date, modelEnd: Date?) -> Date {
+        let times = explicitTimes(scheduleText)
+        if times.count >= 2, let last = times.last,
+           let end = calendar.date(bySettingHour: last.hour, minute: last.minute, second: 0, of: start), end > start {
+            return end
+        }
+        if let modelEnd, modelEnd > start, modelEnd.timeIntervalSince(start) <= 12 * 3600 { return modelEnd }
+        return start.addingTimeInterval(3600)
+    }
+
+    // MARK: Lo que dijo el dueño
+
+    /// La parte del turno que agenda: lo dictado tras " que " no fija el día
+    /// ("recuérdame hoy a las 6 que mañana es el examen" ⇒ hoy), salvo que
+    /// antes no haya nada de fecha u hora.
+    var scheduleText: String {
+        let owner = Self.fold(ownerText)
+        guard let cut = owner.range(of: " que ") else { return owner }
+        let head = String(owner[..<cut.lowerBound])
+        let says = day(head) != nil || offset(head) != nil || !times(head).isEmpty
+        return says ? head : owner
     }
 
     /// La repetición que dijo el dueño, o nil si no dijo ninguna.
     var ownerCadence: ProactiveCadence? {
         let owner = Self.fold(ownerText)
         guard !owner.isEmpty else { return nil }
-        if ["entre semana", "de lunes a viernes", "dias habiles", "dias laborales"].contains(where: owner.contains) {
-            return .weekdays
-        }
+        if ["entre semana", "de lunes a viernes", "dias habiles", "dias laborales", "dias laborables"]
+            .contains(where: owner.contains) { return .weekdays }
         if ["todos los dias", "cada dia", "diario", "diariamente", "a diario", "cada manana", "cada noche",
             "todas las mananas", "todas las noches"].contains(where: owner.contains) { return .daily }
-        if ["cada semana", "semanal", "todas las semanas", "cada lunes", "cada martes", "cada miercoles",
-            "cada jueves", "cada viernes", "cada sabado", "cada domingo"].contains(where: owner.contains) { return .weekly }
+        if ["cada semana", "semanal", "todas las semanas"].contains(where: owner.contains) || ownerWeekday != nil {
+            return .weekly
+        }
         return nil
+    }
+
+    /// "cada domingo", "todos los lunes", "los sábados" ⇒ 1=domingo … 7=sábado.
+    var ownerWeekday: Int? {
+        let words = Self.words(Self.fold(ownerText))
+        for (index, word) in words.enumerated() where index > 0 {
+            guard let weekday = Self.weekday(word) else { continue }
+            let previous = words[index - 1]
+            let plural = word == "sabados" || word == "domingos"
+            if previous == "cada" || previous == "los" || plural { return weekday }
+        }
+        return nil
+    }
+
+    /// El dueño fijó un único momento (hoy, mañana, una fecha, "en 2 horas",
+    /// "el jueves"): sin palabras de repetición, no se repite.
+    var ownerSaysOnce: Bool {
+        let owner = scheduleText
+        return ownerCadence == nil && (day(owner) != nil || offset(owner) != nil)
     }
 
     /// "recuérdame…" sin hablar de una meta.
@@ -441,12 +536,19 @@ struct LocalWhen {
         return ["recuerdame", "recordarme", "recuerdeme"].contains(where: owner.contains) && !owner.contains("meta")
     }
 
-    var ownerMentionsTime: Bool { time(Self.fold(ownerText)) != nil && Self.fold(ownerText).contains("las ") }
-    var ownerExplicitTime: (hour: Int, minute: Int)? { explicitTime(Self.fold(ownerText)) }
+    var ownerMentionsTime: Bool { times(scheduleText).contains { $0.explicit || $0.afterLas } }
+    var ownerExplicitTime: (hour: Int, minute: Int)? { explicitTimes(scheduleText).first }
+    var ownerDay: Date? { day(scheduleText) }
 
     static func fold(_ text: String) -> String {
         text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
     }
+
+    static func words(_ text: String) -> [String] {
+        text.components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+    }
+
+    // MARK: Piezas
 
     private func absolute(_ text: String) -> Date? {
         let regex = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ t]+(\d{1,2}):(\d{2}))?/
@@ -459,65 +561,115 @@ struct LocalWhen {
 
     private func relative(_ text: String) -> Date? {
         let folded = Self.fold(text)
-        guard let clock = time(folded)?.clock, let day = day(folded) else { return nil }
+        if let offset = offset(folded) { return now.addingTimeInterval(offset) }
+        guard let clock = times(folded).first?.clock, let day = day(folded) else { return nil }
         let parts = calendar.dateComponents([.year, .month, .day], from: day)
         return make(year: parts.year, month: parts.month, day: parts.day, hour: clock.hour, minute: clock.minute)
     }
 
-    /// El día que nombra el texto (ya plegado), o nil. "de/por la mañana" es
-    /// la franja, no el día siguiente.
+    /// "en 2 horas", "en 30 minutos", "en una hora", "en media hora" ⇒ segundos.
+    func offset(_ folded: String) -> TimeInterval? {
+        let regex = /\ben (\d{1,3}|un|una|media) (hora|horas|minuto|minutos|min)\b/
+        guard let match = folded.firstMatch(of: regex) else { return nil }
+        let amount: Double
+        switch match.1 {
+        case "un", "una": amount = 1
+        case "media": amount = 0.5
+        default: amount = Double(match.1) ?? 0
+        }
+        guard amount > 0 else { return nil }
+        return match.2.hasPrefix("hora") ? amount * 3600 : amount * 60
+    }
+
+    static let months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                         "septiembre", "octubre", "noviembre", "diciembre"]
+
+    /// "15 de octubre [de 2027]" o "15/10[/2027]"; sin año ⇒ la próxima vez que llega.
+    func explicitDate(_ folded: String) -> Date? {
+        var day: Int?, month: Int?, year: Int?
+        if let m = folded.firstMatch(of: /\b(\d{1,2}) de ([a-z]+)(?: de (\d{4}))?/),
+           let index = Self.months.firstIndex(of: String(m.2).replacingOccurrences(of: "setiembre", with: "septiembre")) {
+            day = Int(m.1); month = index + 1; year = m.3.flatMap { Int($0) }
+        } else if let m = folded.firstMatch(of: /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/) {
+            day = Int(m.1); month = Int(m.2)
+            year = m.3.flatMap { Int($0) }.map { $0 < 100 ? 2000 + $0 : $0 }
+        }
+        guard let day, let month else { return nil }
+        let today = calendar.startOfDay(for: now)
+        let thisYear = calendar.component(.year, from: today)
+        guard let date = make(year: year ?? thisYear, month: month, day: day, hour: 0, minute: 0) else { return nil }
+        if year == nil, date < today { return make(year: thisYear + 1, month: month, day: day, hour: 0, minute: 0) }
+        return date
+    }
+
+    /// El día que nombra el texto (ya plegado), o nil. La fecha explícita gana
+    /// al día de la semana; "hoy" gana a "mañana"; "de/por la mañana" es la
+    /// franja, no el día siguiente.
     func day(_ folded: String) -> Date? {
+        if let explicit = explicitDate(folded) { return explicit }
         let text = folded.replacingOccurrences(of: "de la manana", with: " ")
             .replacingOccurrences(of: "por la manana", with: " ")
-        let words = text.components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+        let words = Self.words(text)
         let today = calendar.startOfDay(for: now)
         func has(_ word: String) -> Bool { words.contains(word) }
+        if has("hoy") { return today }
         if text.contains("pasado manana") { return calendar.date(byAdding: .day, value: 2, to: today) }
         if has("manana") { return calendar.date(byAdding: .day, value: 1, to: today) }
-        if has("hoy") { return today }
-        guard let weekday = Self.weekdays.firstIndex(where: has) else { return nil }
+        guard let weekday = words.lazy.compactMap(Self.weekday).first else { return nil }
         let current = calendar.component(.weekday, from: today)
-        var ahead = (weekday + 1 - current + 7) % 7
+        var ahead = (weekday - current + 7) % 7
         if ahead == 0 { ahead = 7 }
         return calendar.date(byAdding: .day, value: ahead, to: today)
     }
 
-    /// La hora del dueño solo si no es ambigua (ver `repaired`).
-    func explicitTime(_ folded: String) -> (hour: Int, minute: Int)? {
-        guard let found = time(folded), found.explicit else { return nil }
-        return found.clock
-    }
-
     static let weekdays = ["domingo", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado"]
 
-    private func time(_ text: String) -> (clock: (hour: Int, minute: Int), explicit: Bool)? {
-        let regex = /(\d{1,2})(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?/
-        // La hora más explícita gana: con minutos o am/pm sobre un número suelto
-        // ("jueves 8 de octubre a las 3 pm" → 15:00, no 8:00).
-        var best: (hour: Int, minute: Int, score: Int, explicit: Bool)?
+    /// "lunes" / "sabados" ⇒ 1=domingo … 7=sábado.
+    static func weekday(_ word: String) -> Int? {
+        for (index, name) in weekdays.enumerated() where word == name || word == name + "s" { return index + 1 }
+        return nil
+    }
+
+    struct TimeMention {
+        var clock: (hour: Int, minute: Int)
+        var explicit: Bool
+        var afterLas: Bool
+    }
+
+    /// Las horas que nombra el texto, en orden. Explícita = am/pm, "de la
+    /// tarde/noche/mañana", o 13-23 con minutos o tras "a las" (no "el 20 de octubre").
+    func times(_ text: String) -> [TimeMention] {
+        let regex = /(\d{1,2})(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?!\s*\/)(?!\s*(?:hora|horas|minuto|minutos|min)\b)/
+        var out: [TimeMention] = []
         for match in text.matches(of: regex) {
+            let before = text[..<match.range.lowerBound]
+            if before.hasSuffix("/") || before.hasSuffix("en ") { continue }
             guard var hour = Int(match.1) else { continue }
             let minute = match.2.flatMap { Int($0) } ?? 0
             let raw = hour
+            let afterLas = before.hasSuffix("las ") || before.hasSuffix("la ")
             var explicit = false
             if let meridiem = match.3 {
                 explicit = true
                 if meridiem.hasPrefix("p") && hour < 12 { hour += 12 }
                 if meridiem.hasPrefix("a") && hour == 12 { hour = 0 }
-            } else if text.contains("tarde") || text.contains("noche"), hour < 12 {
+            } else if text.contains("de la tarde") || text.contains("de la noche"), hour < 12 {
                 explicit = true
                 hour += 12
             } else if text.contains("de la manana") {
                 explicit = true
-            } else if raw >= 13, match.2 != nil || text[..<match.range.lowerBound].hasSuffix("las ") {
-                explicit = true   // "15:30", "a las 15" (no "el 20 de octubre")
+            } else if raw >= 13, match.2 != nil || afterLas {
+                explicit = true
             }
             guard (0...23).contains(hour), (0...59).contains(minute) else { continue }
-            let score = (match.3 != nil ? 2 : 0) + (match.2 != nil ? 2 : 0)
-                + (text[..<match.range.lowerBound].hasSuffix("las ") ? 1 : 0)
-            if score >= (best?.score ?? -1) { best = (hour, minute, score, explicit) }
+            out.append(TimeMention(clock: (hour, minute), explicit: explicit, afterLas: afterLas || match.2 != nil))
         }
-        return best.map { (($0.hour, $0.minute), $0.explicit) }
+        return out
+    }
+
+    /// Las horas explícitas, en el orden en que el dueño las dijo.
+    func explicitTimes(_ text: String) -> [(hour: Int, minute: Int)] {
+        times(text).filter(\.explicit).map(\.clock)
     }
 
     private func make(year: Int?, month: Int?, day: Int?, hour: Int, minute: Int) -> Date? {

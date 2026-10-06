@@ -1,10 +1,11 @@
 import Foundation
+import GRDB
 import Testing
 @testable import AnimaKit
 
-// Batch 7 (B): con el modelo local, un fallo de tool vuelve con el error
-// accionable + el ejemplo literal UNA vez; si vuelve a fallar, el turno cierra
-// con el aviso "⚠️ No pude …" sin otra llamada al modelo.
+// Con el modelo local, un error de parámetros vuelve con el error accionable +
+// el ejemplo literal UNA vez; si vuelve a fallar (o falla el mundo: permiso,
+// store), el turno cierra con el aviso "⚠️ No pude …" sin otra llamada al modelo.
 
 extension LocalLoopHarness.Run {
     var notice: String? {
@@ -122,5 +123,27 @@ extension LocalLoopHarness.Run {
            policy: .app(ownerAllowlist: { [] }), text: "recuérdame el 2 de enero a las 9 x")
         #expect(r.notice == nil)
         #expect(await w.reminders.list().count == 1)
+    }
+}
+
+@Suite struct LocalWorldFailureTests {
+    /// Un fallo del mundo (store roto, sin permiso) no se reintenta ni lleva el
+    /// ejemplo: el turno cierra con el aviso tras UNA llamada.
+    @Test func aStoreFailureClosesTheTurnWithoutRetrying() async throws {
+        let w = try ProactiveFixtures.world()
+        try await w.queue.write { try $0.execute(sql: "DROP TABLE anima_reminder") }
+        let model = OnDeviceProvider.modelName
+        let r = try await LocalLoopHarness.run([
+            LocalLoopHarness.toolUse("a", "remind_me", #"{"text":"x","when":"2030-01-02 09:00","repeat":"none"}"#, model: model),
+            LocalLoopHarness.text("Listo, te recuerdo x."),
+        ], tools: [AnimaRemindersTool(store: w.reminders)], router: try OnDeviceTestConfig.router(),
+           policy: .app(ownerAllowlist: { [] }), text: "recuérdame el 2 de enero a las 9 x")
+        #expect(r.notice?.hasPrefix("⚠️ No pude crear el recordatorio: SQLite error") == true)
+        #expect(r.text == r.notice)
+        let window = try r.store.window(sessionId: r.sid)
+        let errors = window.flatMap(\.content).compactMap { block -> String? in
+            if case .toolResult(_, let content, true) = block { return content } else { return nil }
+        }
+        #expect(errors.count == 1 && !(errors.first ?? "").contains("Corrige y llama"))
     }
 }

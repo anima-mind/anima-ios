@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Batch 7 (A): el modelo local con el set del adapter, de punta a punta con
+// El modelo local con el set del adapter, de punta a punta con
 // providers guionados (sin el framework).
 
 /// Un turno del AgentLoop con un provider guionado.

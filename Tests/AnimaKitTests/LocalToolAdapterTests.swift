@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Batch 7: el modelo de Apple ve tools de UNA intención; el adapter las traduce
+// El modelo de Apple ve tools de UNA intención; el adapter las traduce
 // a las reales con validación tolerante y fechas en hora de pared local.
 
 @Suite struct LocalToolAdapterTests {
@@ -347,12 +347,14 @@ import Testing
 
 @Suite struct LocalConfirmationGateTests {
     @Test func theAnswerMustNameWhatWasDoneOrRead() {
-        let banco = OnDevicePromptBuilder.salientStems("llamar al banco")
-        #expect(banco == ["llam", "banc"])
-        #expect(OnDevicePromptBuilder.acceptsConfirmation("Listo, te recuerdo llamar al banco.", salient: [banco]))
-        #expect(!OnDevicePromptBuilder.acceptsConfirmation("El recordatorio está programado para mañana.", salient: [banco]))
-        #expect(!OnDevicePromptBuilder.acceptsConfirmation("El dueño tiene que llamar al banco.", salient: [banco]))
-        #expect(!OnDevicePromptBuilder.acceptsConfirmation("Hola [nombre], banco.", salient: [banco]))
+        #expect(OnDevicePromptBuilder.salientStems("llamar al banco") == ["llam", "banc"])
+        let banco: [SalientGroup] = [.subject(["llam", "banc"]), SalientGroup(["recuerd", "record", "avis", "program"])]
+        #expect(OnDevicePromptBuilder.acceptsConfirmation("Listo, te recuerdo llamar al banco.", salient: banco))
+        #expect(OnDevicePromptBuilder.acceptsConfirmation("Listo, mañana a las 9 te recordaré llamar al banco.", salient: banco))
+        #expect(!OnDevicePromptBuilder.acceptsConfirmation("El recordatorio está programado para mañana.", salient: banco))
+        #expect(!OnDevicePromptBuilder.acceptsConfirmation("El dueño tiene que llamar al banco.", salient: banco))
+        #expect(!OnDevicePromptBuilder.acceptsConfirmation("Hola [nombre], banco.", salient: banco))
+        #expect(!OnDevicePromptBuilder.acceptsConfirmation("Listo, me acordé de llamar al banco.", salient: banco))
         #expect(OnDevicePromptBuilder.listedItems("Programados:\n- llamar al banco — mañana\n- pan")
                 == ["llamar al banco", "pan"])
         #expect(OnDevicePromptBuilder.withoutListIds("- [9F2C-AB12-77] x") == "- x")
@@ -366,7 +368,7 @@ import Testing
                                isError: false)]),
         ])
         let r = OnDevicePromptBuilder.request(ctx: read, tools: [], opts: try OnDeviceTestConfig.opts())
-        #expect(r.salientWords == [["llam", "banc"]])
+        #expect(r.salientWords == [SalientGroup(["llam", "banc"])])
         #expect(r.fallbackText == "Programados:\n- llamar al banco — mañana")
         #expect(r.maxResponseTokens == OnDevicePromptBuilder.confirmationMaxTokens)
         let write = AssembledContext(messages: [
@@ -375,7 +377,7 @@ import Testing
             .user([.toolResult(toolUseId: "t1", content: "ok", isError: false)]),
         ])
         #expect(OnDevicePromptBuilder.request(ctx: write, tools: [], opts: try OnDeviceTestConfig.opts()).salientWords
-                == [["comp", "inte"]])
+                == [.subject(["comp", "inte"]), SalientGroup(["anot", "nota", "guard", "apunt"])])
     }
 
     @Test func aReadAnswerThatDropsTheItemFallsBackToTheList() async throws {

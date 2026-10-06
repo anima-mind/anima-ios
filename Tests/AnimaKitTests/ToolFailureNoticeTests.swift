@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Batch 7 (C): nunca mentir tras un error. Medido con el modelo de Apple: tras
+// Nunca mentir tras un error. Medido con el modelo de Apple: tras
 // un error de tool respondía "He programado un recordatorio…".
 
 @Suite struct ToolFailureNoticeTests {

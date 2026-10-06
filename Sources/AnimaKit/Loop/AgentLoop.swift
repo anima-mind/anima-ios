@@ -410,6 +410,7 @@ public actor AgentLoop {
                         let realInput: JSONValue
                         var result: ToolResult
                         let verb: String
+                        var parameterError = false
                         switch resolution {
                         case .real(let name, let input):
                             realName = name
@@ -420,6 +421,7 @@ public actor AgentLoop {
                             let executed = await sensorimotor.execute(name: name, input: input)
                             result = toolProfile == .onDevice
                                 ? LocalToolAdapter.present(executed, local: call.name, input: input) : executed
+                            parameterError = LocalToolAdapter.isParameterError(executed.content)
                         case .invalid(let tool, let message):
                             realName = tool
                             realInput = call.input
@@ -427,16 +429,23 @@ public actor AgentLoop {
                             emit(.toolStarted(name: tool))
                             toolCallCount += 1
                             result = ToolResult(content: message, isError: true)
+                            parameterError = true
                         }
                         failures.record(verb: verb, result: result)
                         if toolProfile == .onDevice, result.isError, !result.isRejection {
+                            // Solo los parámetros se corrigen reintentando; un fallo del
+                            // mundo (sin permiso, store roto) cierra el turno con el aviso.
                             let intended = LocalToolAdapter.intended(name: call.name, ownerText: userText)
-                            if intended != call.name, !localRedirected {
+                            if !parameterError {
+                                localToolErrors = 2
+                            } else if intended != call.name, !localRedirected {
                                 localRedirected = true
                             } else {
                                 localToolErrors += 1
                             }
-                            result.content = LocalToolAdapter.retryHint(tool: intended, message: result.content)
+                            if parameterError {
+                                result.content = LocalToolAdapter.retryHint(tool: intended, message: result.content)
+                            }
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
                         skillTurn.recordTool(realName, isError: result.isError && !result.isRejection, rejected: result.isRejection)

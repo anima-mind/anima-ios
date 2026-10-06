@@ -37,13 +37,16 @@ public enum ToolFailureNotice {
     }
 
     /// ¿El texto ya admite el fallo? (no se duplica la línea).
+    /// Solo admisiones en negativo: "sin errores" o "a prueba de fallos" no admiten nada.
     public static func admits(_ text: String) -> Bool {
         let folded = text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
         return admissions.contains { folded.contains($0) }
     }
 
-    static let admissions = ["no pude", "no logre", "fallo", "error", "no se pudo", "no fue posible",
-                             "no he podido", "no consegui", "no lo logre"]
+    static let admissions = ["no pude", "no logre", "no se pudo", "no fue posible", "no he podido", "no consegui",
+                             "hubo un error", "hubo error", "ocurrio un error", "dio error", "dio un error",
+                             "fallo al", "fallo el", "fallo la", "fallo porque", "fallo.", "fallo,",
+                             "no se creo", "no se guardo", "no se agendo", "no se registro"]
 
     /// El error de la tool, legible y corto ("la fecha ya pasó").
     public static func legible(_ error: String) -> String {

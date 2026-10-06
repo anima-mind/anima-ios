@@ -879,7 +879,7 @@ public struct ChatView: View {
     private func toolFailureCard(_ message: ChatViewModel.DisplayMessage) -> some View {
         var shown = message
         if shown.text.hasPrefix("⚠️ ") { shown.text = String(shown.text.dropFirst("⚠️ ".count)) }
-        return HStack(alignment: .top, spacing: 10) {
+        return HStack(alignment: .top, spacing: Theme.Space.stack) {
             Image(systemName: "exclamationmark.triangle")
                 .font(Theme.Type_.body)
                 .foregroundStyle(Theme.Colors.accent)

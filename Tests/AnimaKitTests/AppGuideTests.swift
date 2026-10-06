@@ -14,9 +14,14 @@ import Testing
             #expect(AppGuide.block.contains(route.title), "falta la fila \(route.title)")
         }
         for concept in ["Recordatorios", "Solo este teléfono", "Híbrido", "Enséñame algo", "Simular una noche",
-                        "Avisos de Anima", "Por aprobar", "noches de consolidación", "confirmación", "guíalo"] {
+                        "Avisos de Anima", "Por aprobar", "noches de consolidación", "confirmación", "guíalo",
+                        "Seguimiento", "Seguimientos", "Programados", "Autorizar siempre", "Permisos", "Compactar",
+                        "Nueva conversación", "Contexto", "Marcar lograda", "Eliminar", "Historial", "Hecho",
+                        "Cancelar"] {
             #expect(AppGuide.block.contains(concept), "falta \(concept)")
         }
+        #expect(!AppGuide.block.localizedCaseInsensitiveContains("check-in"), "la UI dice Seguimiento")
+        #expect(!AppGuide.compactBlock.localizedCaseInsensitiveContains("check-in"))
     }
 
     @Test func staysCompact() {

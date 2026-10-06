@@ -68,7 +68,7 @@ public final class ChatViewModel: ObservableObject {
     public var now: @Sendable () -> Date = { Date() }
     public var dates = AnimaDateText()
 
-    /// "Recordatorio · hoy 8:30 p. m." | "Check-in · <meta>" | "Propuesta".
+    /// "Recordatorio · hoy 8:30 p. m." | "Seguimiento · <meta>" | "Propuesta".
     public func cardLabel(_ message: DisplayMessage) -> String {
         guard let kind = message.proactiveKind else { return "" }
         return ProactiveCard.label(kind, at: message.proactiveAt, goalStatement: message.goalStatement,

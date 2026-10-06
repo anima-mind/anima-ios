@@ -113,7 +113,7 @@ import Testing
         #expect(r.tools.contains("anima_reminders"))
         let reminder = try #require(created.first)
         let calendar = Calendar.current
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date()))!
+        let tomorrow = try #require(calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())))
         #expect(calendar.isDate(reminder.fireAt, inSameDayAs: tomorrow))
         #expect(calendar.component(.hour, from: reminder.fireAt) == 9)
         #expect(reminder.text.lowercased().contains("banco"))

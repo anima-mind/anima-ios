@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import AnimaKit
 
-// Revisión batch 5: una acción "Hecho"/"En 1 hora" desde el push con red lenta
-// no puede quedar esperando el fetch de Remote Config (iOS mata el handler).
+// Una acción "Hecho"/"En 1 hora" desde el push con red lenta no puede quedar
+// esperando el fetch de Remote Config (iOS mata el handler).
 
 @Suite struct RemoteConfigFetchTests {
     /// El fetch no termina hasta que el test lo suelta: si `run` vuelve, fue por

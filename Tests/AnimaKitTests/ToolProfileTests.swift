@@ -44,6 +44,12 @@ import Testing
         #expect(request.tools.map(\.name) == ["calendar"])
     }
 
+    @Test func compactGuideSaysWhatTheLocalModelCannotDo() {
+        for missing in ["cámara", "fotos", "audio", "gafas", "contexto del teléfono"] {
+            #expect(AppGuide.compactBlock.contains(missing), "falta \(missing)")
+        }
+    }
+
     /// Documentación: cada tool del registro tiene decisión explícita en local.
     @Test func everyRegisteredToolHasALocalDecision() throws {
         for spec in try RealToolSet.specs() {

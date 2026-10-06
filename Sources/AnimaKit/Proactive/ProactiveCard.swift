@@ -1,6 +1,6 @@
 // ProactiveCard.swift — cómo se ve en el chat lo que ella dice sin que se lo
 // pidan: ícono por tipo, etiqueta ("Recordatorio · hoy 8:30 p. m.",
-// "Check-in · <meta>", "Propuesta") y el seguimiento "¿Cómo te fue?" solo
+// "Seguimiento · <meta>", "Propuesta") y el seguimiento "¿Cómo te fue?" solo
 // cuando el aviso ya quedó atrás.
 
 import Foundation

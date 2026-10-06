@@ -82,6 +82,8 @@ struct ChatMarkdownTests {
             .heading(level: 2, ChatMarkdown.inline("Plan de ahorro")),
             .heading(level: 3, ChatMarkdown.inline("Ñandú")),
         ])
+        #expect(ChatMarkdown.blocks("##📅 Plan mensual") == [.heading(level: 2, ChatMarkdown.inline("📅 Plan mensual"))])
+        #expect(ChatMarkdown.blocks("###¿Y ahora?") == [.heading(level: 3, ChatMarkdown.inline("¿Y ahora?"))])
         #expect(Self.paragraph(ChatMarkdown.blocks("##1 de 3").first).map(Self.plain) == "##1 de 3")
         #expect(Self.paragraph(ChatMarkdown.blocks("##").first) == nil)
         #expect(Self.paragraph(ChatMarkdown.blocks("#Colombia").first).map(Self.plain) == "#Colombia")

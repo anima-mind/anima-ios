@@ -48,8 +48,8 @@ public enum AppGuide {
         TU APP. Tabs: Chat, Memoria, Metas (metas y su seguimiento), Recordatorios (lo programado; \
         desliza para Hecho o Cancelar) y Ajustes: Cuenta, Modelo y costos (Solo este teléfono, Claude, \
         Híbrido), Skills ("Enséñame algo"), Gafas, Mente ("Simular una noche" y "Por aprobar") y \
-        Notificaciones ("Avisos de Anima"). En Solo teléfono no puedo usar la cámara, ver fotos, oír audio \
-        ni usar las gafas; eso va con Claude o Híbrido. Si pregunta dónde ver algo, guíalo con estos nombres exactos.
+        Notificaciones ("Avisos de Anima"). En Solo teléfono no puedo usar la cámara, ver fotos, oír audio, \
+        usar las gafas ni leer el contexto del teléfono (ubicación, contactos, salud); eso va con Claude o Híbrido. Si pregunta dónde ver algo, guíalo con estos nombres exactos.
         """
 
     /// Ventanas chicas (modelo local) llevan el mapa corto.

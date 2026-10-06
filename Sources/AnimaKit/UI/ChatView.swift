@@ -422,7 +422,7 @@ public final class ChatViewModel: ObservableObject {
                 kind: .trim, fromSeq: 0, model: contextGauge?.model, createdAt: now()).dividerText,
                 isSessionDivider: true))
         }
-        await run(nil, content: content)
+        await dispatch(nil, content: content)
     }
 
     // MARK: Conexión (5b #7)
@@ -437,12 +437,12 @@ public final class ChatViewModel: ObservableObject {
 
     /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
     /// (con aviso claro) en vez de fallar y pedir "Reintentar".
-    private func dispatch(_ bubble: DisplayMessage, content: [ContentBlock]) async {
+    private func dispatch(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
         guard isOffline, usesRemoteConversation else {
             await run(bubble, content: content)
             return
         }
-        messages.append(bubble)
+        if let bubble { messages.append(bubble) }
         messages.append(DisplayMessage(role: .assistant, text: Self.offlineQueuedNote, isSessionDivider: true))
         lastUserContent = content
         queuedContent = content
@@ -453,7 +453,13 @@ public final class ChatViewModel: ObservableObject {
     public func setOffline(_ offline: Bool) async {
         guard offline != isOffline else { return }
         isOffline = offline
-        guard !offline, let content = queuedContent, !isStreaming else { return }
+        await sendQueuedIfOnline()
+    }
+
+    /// El turno encolado sin red sale apenas hay red y nada en curso (si la red
+    /// volvió a mitad de un turno, sale al terminarlo).
+    private func sendQueuedIfOnline() async {
+        guard !isOffline, let content = queuedContent, !isStreaming else { return }
         queuedContent = nil
         await run(nil, content: content)
     }
@@ -546,6 +552,7 @@ public final class ChatViewModel: ObservableObject {
         isStreaming = false
         await loadMind()
         await refreshContext()
+        await sendQueuedIfOnline()
     }
 }
 

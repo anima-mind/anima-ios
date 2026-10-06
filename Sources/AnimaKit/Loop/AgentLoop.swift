@@ -554,9 +554,7 @@ public actor AgentLoop {
     /// "Reintentar" tras un contexto excedido: frontera de recorte que deja solo
     /// los últimos `keepTurns` turnos visibles en la ventana.
     public func trimHistory(sessionId: SessionID, keepTurns: Int = 2) throws {
-        let seqs = try store.visibleTurns(sessionId: sessionId).compactMap(\.seq)
-        let last = try store.lastSeq(sessionId: sessionId)
-        let from = seqs.suffix(keepTurns).first ?? last + 1
+        let from = try store.trimStart(sessionId: sessionId, keepTurns: keepTurns)
         let model = selector.binding(for: .interactive).map { ModelNames.friendly($0.router.route(.interactive).model) }
         try store.addBoundary(sessionId: sessionId, kind: .trim, fromSeq: from, model: model)
     }

@@ -54,6 +54,20 @@ public enum ContextSchema {
 }
 
 extension SymbolicStore {
+    /// Dónde arranca una frontera de recorte que conserva los últimos
+    /// `keepTurns` turnos visibles, alineada a un turno del dueño (los providers
+    /// rechazan una ventana que abre con assistant; misma regla que HardTrim):
+    /// avanza al primer turno del dueño dentro de esos turnos o, si no hay,
+    /// retrocede al último antes de ellos. Sin turnos del dueño: ventana vacía.
+    public func trimStart(sessionId: SessionID, keepTurns: Int) throws -> Int {
+        let turns = try visibleTurns(sessionId: sessionId).filter { $0.seq != nil }
+        let next = try lastSeq(sessionId: sessionId) + 1
+        let start = max(0, turns.count - max(0, keepTurns))
+        if let first = turns[start...].first(where: { $0.role == .user }), let seq = first.seq { return seq }
+        if let previous = turns[..<start].last(where: { $0.role == .user }), let seq = previous.seq { return seq }
+        return next
+    }
+
     /// Último seq de la sesión (0 si no hay eventos).
     public func lastSeq(sessionId: SessionID) throws -> Int {
         try database.read { db in

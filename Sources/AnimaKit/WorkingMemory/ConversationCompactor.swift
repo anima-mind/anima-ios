@@ -46,8 +46,7 @@ public struct ConversationCompactor: Sendable {
             try store.addBoundary(sessionId: sessionId, kind: .compaction, fromSeq: nextSeq, summary: summary)
             return .compacted(summary: summary)
         } catch {
-            let rows = try store.visibleTurns(sessionId: sessionId).compactMap(\.seq)
-            let from = rows.suffix(Self.fallbackKeepTurns).first ?? nextSeq
+            let from = try store.trimStart(sessionId: sessionId, keepTurns: Self.fallbackKeepTurns)
             try store.addBoundary(sessionId: sessionId, kind: .trim, fromSeq: from, summary: previous?.summary,
                                   model: selector.binding(for: .consolidation).map { ModelNames.friendly($0.router.route(.consolidation).model) })
             return .trimmed

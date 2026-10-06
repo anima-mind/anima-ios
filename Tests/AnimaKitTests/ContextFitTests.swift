@@ -228,6 +228,51 @@ import Testing
         #expect(ConversationCompactor.chunks("aaaaaa\n\nbbbbbb", size: 8) == ["aaaaaa", "bbbbbb"])
     }
 
+    @Test func trimBoundariesAlwaysOpenWithAnOwnerTurn() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let sid = try store.startSession()
+        try store.append(sessionId: sid, message: .user("hola"))
+        try store.append(sessionId: sid, message: .assistant([.text("¡hola!")]))
+        try store.append(sessionId: sid, message: .user("agéndame algo"))
+        try store.append(sessionId: sid, message: .assistant([.toolUse(id: "t1", name: "calendar", input: .null)]))
+        try store.append(sessionId: sid, message: Message(role: .user, content: [
+            .toolResult(toolUseId: "t1", content: "ok", isError: false)]))
+        try store.append(sessionId: sid, message: .assistant([.text("Listo, quedó.")]))
+        try store.append(sessionId: sid, message: .assistant([.text("Recordatorio: llamar a mamá")]))
+        let ownerTurn = try #require(try store.visibleTurns(sessionId: sid).first { $0.text == "agéndame algo" }?.seq)
+
+        // Los últimos 2 visibles son de Anima: retrocede al turno del dueño.
+        #expect(try store.trimStart(sessionId: sid, keepTurns: 2) == ownerTurn)
+        // Los últimos 4 abren con assistant: avanza al turno del dueño.
+        #expect(try store.trimStart(sessionId: sid, keepTurns: 4) == ownerTurn)
+        #expect(try store.trimStart(sessionId: sid, keepTurns: 0) == ownerTurn)
+
+        let loop = AgentLoop(selector: try Self.localSelector(CapturingProvider([])), store: store,
+                             telemetry: Telemetry(queue: queue), clientTools: [], sleep: { _ in })
+        try await loop.trimHistory(sessionId: sid)
+        let window = try store.window(sessionId: sid)
+        #expect(window.first == .user("agéndame algo"))
+
+        let onlyAnima = try store.startSession()
+        try store.append(sessionId: onlyAnima, message: .assistant([.text("Recordatorio: agua")]))
+        #expect(try store.trimStart(sessionId: onlyAnima, keepTurns: 2) == (try store.lastSeq(sessionId: onlyAnima)) + 1)
+    }
+
+    @Test func compactFallbackOpensWithAnOwnerTurn() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let sid = try Self.longSession(store)
+        try store.append(sessionId: sid, message: .assistant([.text("Recordatorio: llamar a mamá")]))
+        let compactor = ConversationCompactor(
+            selector: try Self.localSelector(FailingProvider(error: ClassifiedError.contextOverflow)), store: store)
+        #expect(try await compactor.compact(sessionId: sid) == .trimmed)
+        let window = try store.window(sessionId: sid)
+        // Los últimos 4 visibles abren con assistant: arranca en el turno del dueño (3 quedan).
+        #expect(window.first?.role == .user)
+        #expect(window.count == ConversationCompactor.fallbackKeepTurns - 1)
+    }
+
     @Test func newConversationKeepsMemoryAndStartsClean() async throws {
         let queue = try AnimaDatabase.temporary()
         let store = SymbolicStore(queue: queue)

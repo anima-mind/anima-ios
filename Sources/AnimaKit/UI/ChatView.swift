@@ -23,6 +23,8 @@ public final class ChatViewModel: ObservableObject {
         public var isProactive: Bool = false
         public var intentionId: String?
         public var resolved: Bool = false
+        /// Cómo respondió el dueño a la propuesta (estado visible tras responder).
+        public var outcome: Intention.Outcome?
         /// Capa proactiva: el recordatorio entregado o la meta del check-in.
         public var reminderId: String?
         public var goalId: String?
@@ -70,7 +72,7 @@ public final class ChatViewModel: ObservableObject {
     public func cardLabel(_ message: DisplayMessage) -> String {
         guard let kind = message.proactiveKind else { return "" }
         return ProactiveCard.label(kind, at: message.proactiveAt, goalStatement: message.goalStatement,
-                                   now: now(), dates: dates)
+                                   now: now(), dates: dates, selfName: selfName)
     }
 
     /// "8:30 p. m." al pie de cada mensaje.
@@ -294,9 +296,15 @@ public final class ChatViewModel: ObservableObject {
         focusedMessageId = match?.id ?? messages.last?.id
     }
 
+    /// "Hagámoslo": la propuesta queda aceptada Y el dueño se lo dice a ella,
+    /// para que la EJECUTE (cree el recordatorio, el bloque…) y responda.
     public func accept(_ message: DisplayMessage) async {
         await resolve(message, outcome: .accepted)
+        let text = Self.acceptText(message.text)
+        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
     }
+
+    public static func acceptText(_ proposal: String) -> String { "Acepto: \(proposal)" }
 
     public func dismiss(_ message: DisplayMessage) async {
         await resolve(message, outcome: .dismissed)
@@ -307,6 +315,7 @@ public final class ChatViewModel: ObservableObject {
         await desireEngine?.recordOutcome(id: id, outcome: outcome)
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             messages[index].resolved = true
+            messages[index].outcome = outcome
         }
     }
 
@@ -992,16 +1001,40 @@ public struct ChatView: View {
                         .foregroundStyle(Theme.Colors.textMuted)
                         .accessibilityIdentifier("chat.proactive.followUp")
                 }
-                if message.intentionId != nil, !message.resolved {
-                    HStack(spacing: Theme.Space.stack) {
-                        Button("Descartar") { Task { await model.dismiss(message) } }
-                            .foregroundStyle(Theme.Colors.textMuted)
-                        Spacer()
-                        Button("Aceptar") { Task { await model.accept(message) } }
-                            .foregroundStyle(Theme.Colors.accentText)
+                if message.intentionId != nil {
+                    if let outcome = message.outcome {
+                        Label(outcome == .accepted ? "Aceptada" : "Descartada",
+                              systemImage: outcome == .accepted ? "checkmark" : "xmark")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .accessibilityIdentifier("chat.proactive.outcome")
+                    } else if !message.resolved {
+                        HStack(spacing: 8) {
+                            Button { Task { await model.accept(message) } } label: {
+                                Text("Hagámoslo")
+                                    .foregroundStyle(Theme.Colors.accentText)
+                                    .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+                                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                        .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.isStreaming)
+                            .accessibilityIdentifier("chat.proactive.accept")
+                            Button { Task { await model.dismiss(message) } } label: {
+                                Text("Ahora no")
+                                    .foregroundStyle(Theme.Colors.textMuted)
+                                    .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+                                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                        .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("chat.proactive.dismiss")
+                        }
+                        .font(Theme.Type_.secondary)
+                        .padding(.top, 6)
                     }
-                    .font(Theme.Type_.secondary)
-                    .padding(.top, 4)
                 }
             }
         }
@@ -1013,6 +1046,7 @@ public struct ChatView: View {
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
+        .opacity(message.outcome == .dismissed ? 0.55 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.proactive.\(kind?.slug ?? "intention")")
     }

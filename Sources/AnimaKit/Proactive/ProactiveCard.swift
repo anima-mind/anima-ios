@@ -20,14 +20,14 @@ public enum ProactiveCard {
     }
 
     public static func label(_ kind: ProactiveMessage.Kind, at: Date?, goalStatement: String?, now: Date,
-                             dates: AnimaDateText) -> String {
+                             dates: AnimaDateText, selfName: String? = nil) -> String {
         switch kind {
         case .reminder:
             return at.map { "Recordatorio · \(dates.moment($0, now: now))" } ?? "Recordatorio"
         case .checkIn:
             return goalStatement.map { "Check-in · \($0)" } ?? "Check-in"
         case .intention:
-            return "Propuesta"
+            return selfName.map { "Propuesta de \($0)" } ?? "Propuesta"
         }
     }
 

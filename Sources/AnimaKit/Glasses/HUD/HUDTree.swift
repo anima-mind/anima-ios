@@ -34,7 +34,8 @@ public enum HUDButtonGroupAlignment: String, Sendable, Equatable, CaseIterable {
 
 /// Catálogo `IconName` del SDK 1.0.0 — CERRADO (116 glyphs, idéntico a 0.9.0; diff del .swiftinterface). No hay `mic`,
 /// `inbox` ni `github`; "warning" es `exclamationTriangle`. rawValue = el nombre
-/// del case del SDK (el adapter hace `IconName(rawValue:)`).
+/// del case del SDK; el adapter mapea con un `switch` exhaustivo (sin fallback).
+/// Cómo se PINTA cada uno en las gafas lo decide `HUDIconPolicy`.
 public enum HUDIcon: String, Sendable, Equatable, CaseIterable {
     case airplane, arrowDownShallowU, arrowLeft, arrowRight, arrowULeft, arrowUpShallowU, avatar, avatarOff
     case bedSide, bell, bellDiagonalRightDot, bellOff, bikeShare, bug, bullhorn, bus
@@ -72,9 +73,12 @@ public struct HUDText: Sendable, Equatable {
 public struct HUDIconNode: Sendable, Equatable {
     public var name: HUDIcon
     public var style: HUDIconStyle
-    public init(_ name: HUDIcon, style: HUDIconStyle = .outline) {
+    /// Camino de render forzado (card de diagnóstico). nil = `HUDIconPolicy.mode`.
+    public var path: HUDIconPath?
+    public init(_ name: HUDIcon, style: HUDIconStyle = .outline, path: HUDIconPath? = nil) {
         self.name = name
         self.style = style
+        self.path = path
     }
 }
 

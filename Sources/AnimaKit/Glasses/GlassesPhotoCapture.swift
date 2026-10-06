@@ -25,12 +25,70 @@ public enum GlassesPhotoError: Error, Equatable, CustomStringConvertible {
     case unsupported(String)
     /// Fallo real de captura: se propaga (sin fallback).
     case failed(String)
+    /// Meta AI no concedió el permiso de cámara (o no respondió).
+    case permissionDenied(String?)
+    /// La cámara arrancó pero la foto no llegó a tiempo.
+    case timeout
+    /// Ya hay una captura en vuelo (máximo una: los resultados no traen id).
+    case busy
+    /// No hay cámara (sin sesión, `addCamera` nil).
+    case unavailable(String)
 
     public var description: String {
         switch self {
         case .setupFailed(let why): return "la cámara de las gafas no arrancó (\(why))"
         case .unsupported(let why): return "foto directa no soportada (\(why))"
         case .failed(let why): return "la foto falló (\(why))"
+        case .permissionDenied(let why): return "permiso de cámara denegado en Meta AI" + (why.map { " (\($0))" } ?? "")
+        case .timeout: return "la foto no llegó a tiempo"
+        case .busy: return "ya hay una foto en curso"
+        case .unavailable(let why): return "la cámara de las gafas no está disponible (\(why))"
+        }
+    }
+}
+
+/// En qué va la foto, para la pantalla del HUD.
+public enum GlassesPhotoPhase: Sendable, Equatable {
+    /// Meta AI está pidiendo el permiso de cámara (el dueño debe aprobar y volver).
+    case awaitingPermission
+    /// Permiso resuelto: la cámara está tomando la foto.
+    case capturing
+}
+
+/// Qué hacer cuando la `Camera.photo` standalone vuelve a `.stopped`. La doc
+/// DAT no garantiza que el photo child siga `.started` hasta entregar
+/// `photoDataPublisher`: tras pedir la captura, `.stopped` abre una ventana de
+/// gracia en vez de fallar en seco.
+public enum GlassesStandaloneStop {
+    public enum Decision: Sendable, Equatable {
+        /// Se detuvo arrancando: setup fallido ya (reintento / fallback).
+        case setupFailed
+        /// Se detuvo tras `capturePhoto`: esperar los datos `stoppedGrace` y luego fallar.
+        case graceThenFail
+        /// `.stopped` inicial: nada que resolver.
+        case ignore
+    }
+
+    public static let stoppedGrace: TimeInterval = 3
+    public static let stoppedAfterCapture = "cámara detenida tras capturePhoto sin entregar datos"
+    public static let graceLog = "standalone stopped tras capturePhoto: esperando datos ≤3 s"
+
+    /// - starting: ya pasó por `.starting`.
+    /// - requested: ya se llamó `capturePhoto` (solo tras el primer `.started`).
+    public static func decision(starting: Bool, requested: Bool) -> Decision {
+        if requested { return .graceThenFail }
+        if starting { return .setupFailed }
+        return .ignore
+    }
+
+    /// Arma la gracia: si `once` no se resolvió (datos, error, tope) al vencer,
+    /// falla con `stoppedAfterCapture`. La tarea se cancela en el teardown.
+    public static func armGrace(_ once: GlassesOnce<Result<Data, Error>>,
+                                grace: TimeInterval = stoppedGrace) -> Task<Void, Never> {
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, grace) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            once.fire(.failure(GlassesPhotoError.failed(stoppedAfterCapture)))
         }
     }
 }

@@ -156,11 +156,20 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             listenTask?.cancel()
             let voice = self.voice
             listenTask = Task { [weak self] in
-                let transcript = await voice.capture { route in
+                let failure = GlassesBox<VoiceCaptureFailure?>(nil)
+                let transcript = await voice.capture(onRoute: { route in
                     Task { @MainActor in await self?.handle(.listeningRoute(viaPhone: route == .phoneMic)) }
-                }
+                }, onPartial: { _ in }, onFailure: { reason in
+                    failure.value = reason
+                })
                 guard !Task.isCancelled else { return }
-                await self?.handle(.transcript(transcript))
+                // El fallo se entrega DESPUÉS de la captura (orden garantizado):
+                // un transcript nil antes lo habría mandado al Home sin aviso.
+                if let reason = failure.value {
+                    await self?.handle(.voiceFailed(reason.message))
+                } else {
+                    await self?.handle(.transcript(transcript))
+                }
             }
         case .stopListening:
             voice.cancel()
@@ -178,14 +187,18 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             captureTask = Task { [weak self] in
                 let event: HUDEvent
                 do {
-                    let data = try await body.capturePhoto()
+                    let data = try await body.capturePhoto(onPhase: { [weak self] phase in
+                        Task { @MainActor in await self?.handle(.photoPhase(phase)) }
+                    })
                     if let image = ImageDownscaler.imageBlock(from: data) {
                         event = .photoCaptured(image)
                     } else {
-                        event = .photoFailed(HUDPhoto.failure)
+                        body.diagnostics.record(.photo, "imagen ilegible (\(data.count) bytes)")
+                        event = .photoFailed("La foto llegó dañada. Reintenta.")
                     }
                 } catch {
-                    event = .photoFailed(HUDPhoto.failure)
+                    guard let message = HUDPhoto.message(for: error) else { return }
+                    event = .photoFailed(message)
                 }
                 guard !Task.isCancelled else { return }
                 await self?.handle(event)

@@ -110,6 +110,11 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
         try await wearables.openDATGlassesAppUpdate()
     }
 
+    func openFirmwareUpdate() async throws {
+        guard let wearables else { throw AbsentGlassesRuntime.Unavailable() }
+        try await wearables.openFirmwareUpdate()
+    }
+
     func makeSession() throws -> any GlassesSessionPort {
         guard let wearables, let selector else { throw AbsentGlassesRuntime.Unavailable() }
         let session = try wearables.createSession(deviceSelector: selector)
@@ -138,6 +143,31 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
         }
     }
 
+    static func map(_ type: DeviceType) -> GlassesModel {
+        switch type {
+        case .rayBanMeta: return .rayBanMeta
+        case .oakleyMetaHSTN: return .oakleyMetaHSTN
+        case .oakleyMetaVanguard: return .oakleyMetaVanguard
+        case .metaRayBanDisplay: return .metaRayBanDisplay
+        case .rayBanMetaOptics: return .rayBanMetaOptics
+        case .metaGlasses: return .metaGlasses
+        default: return .unknown
+        }
+    }
+
+    static func map(_ level: ThermalLevel) -> GlassesThermal {
+        switch level {
+        case .unknown: return .unknown
+        case .none: return .normal
+        case .light: return .light
+        case .moderate: return .moderate
+        case .severe: return .severe
+        case .critical: return .critical
+        case .emergency: return .emergency
+        case .shutdown: return .shutdown
+        }
+    }
+
     static func snapshots(_ wearables: any WearablesInterface, _ ids: [DeviceIdentifier]) -> [GlassesDeviceSnapshot] {
         ids.compactMap { id in
             guard let device = wearables.deviceForIdentifier(id) else { return nil }
@@ -160,7 +190,9 @@ final class DATGlassesRuntime: GlassesRuntime, @unchecked Sendable {
                                          compatibility: compatibility,
                                          supportsDisplay: device.supportsDisplay(),
                                          batteryPercent: device.batteryLevel,
-                                         donState: don)
+                                         donState: don,
+                                         deviceType: map(device.deviceType()),
+                                         thermal: map(device.thermalLevel))
         }
     }
 }
@@ -239,31 +271,51 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     }
 
     // MARK: Cámara POV (MWDATCamera 1.0.0, re-verificado contra el .swiftinterface)
-    // Política (reintento + fallback) en GlassesPhotoCapture (AnimaKit, testeada):
-    //   1. `Camera.photo` standalone (experimental 1.0): listeners ANTES de
-    //      `photo.start()`, captura en el primer `.started` con
-    //      `capturePhoto(resolution: .large, quality: .high)` → PhotoCaptureData;
-    //   2. fallback: el flujo viejo por stream (stream.start → .streaming →
-    //      capturePhoto(format: .jpeg) → photoDataPublisher).
-    // Cada intento usa una cámara NUEVA (addCamera): una detenida queda inválida.
-    // ⚠️ Pendiente de device: latencia/calidad reales de la standalone.
+    // Política (reintento + fallback) en GlassesPhotoCapture; permiso ANTES del
+    // tope, tope global, una captura en vuelo y cancelación en GlassesBody
+    // (AnimaKit, testeadas). Aquí:
+    //   0. la sesión debe estar `.started` (pausada = transportes suspendidos);
+    //   1. permiso de cámara (Meta AI, ida y vuelta) con tope + re-chequeo, en
+    //      `ensureCameraPermission`, fuera del tope de la foto;
+    //   2. `Camera.photo` standalone: listeners ANTES de `photo.start()`, captura
+    //      en el primer `.started` FUERA del callback del listener (en el main
+    //      actor, como el sample oficial), `.stopped` = GlassesStandaloneStop;
+    //   3. fallback: el stream (stream.start → .streaming → capturePhoto(.jpeg)).
+    // Cada intento: cámara NUEVA (una detenida queda inválida), continuation
+    // NO lanzante resuelta UNA vez (GlassesOnce: éxito, error, tope o cancelación)
+    // y teardown en orden fijo y una sola vez: tokens → photo/stream.stop() →
+    // camera.stop(). Ningún listener toca la cámara tras resolverse el intento.
+    func ensureCameraPermission(onPrompt: @escaping @Sendable () -> Void) async throws {
+        #if canImport(MWDATCamera)
+        let diag = GlassesDiagnostics.shared
+        let wearables = self.wearables
+        try await GlassesCameraPermission.ensure(
+            check: { try await wearables.checkPermissionStatus(.camera) == .granted },
+            request: { try await wearables.requestPermission(.camera) == .granted },
+            timeout: Self.permissionTimeout,
+            onPrompt: onPrompt,
+            log: { diag.record(.photo, $0) })
+        #else
+        throw GlassesPhotoError.unavailable("build sin MWDATCamera")
+        #endif
+    }
+
     func capturePhoto() async throws -> Data {
         #if canImport(MWDATCamera)
-        let status = try await wearables.checkPermissionStatus(.camera)
-        if status != .granted {
-            guard try await wearables.requestPermission(.camera) == .granted else {
-                throw DATCameraError.permissionDenied
-            }
+        let diag = GlassesDiagnostics.shared
+        guard session.state == .started else {
+            diag.record(.photo, "sesión \(session.state) — sin captura")
+            throw GlassesPhotoError.failed("la sesión de las gafas no está activa (\(session.state))")
         }
         let session = self.session
         return try await GlassesPhotoCapture.capture(
             standalone: { try await Self.standalonePhoto(session) },
             stream: { try await Self.streamPhoto(session) },
             onPath: { path, why in
-                NSLog("[Anima] glasses photo via %@%@", path.rawValue, why.map { " (\($0))" } ?? "")
+                diag.record(.photo, "entregada por \(path.rawValue)\(why.map { " (\($0))" } ?? "")")
             })
         #else
-        throw DATCameraError.unavailable
+        throw GlassesPhotoError.unavailable("build sin MWDATCamera")
         #endif
     }
 
@@ -273,130 +325,161 @@ final class DATSession: GlassesSessionPort, @unchecked Sendable {
     /// (ImageDownscaler), así que pagaría latencia de transferencia por nada.
     static let photoResolution: PhotoResolution = .large
     static let photoQuality: PhotoQuality = .high
-    static let photoStartTimeout: UInt64 = 6_000_000_000
-    static let photoTimeout: UInt64 = 25_000_000_000
+    static let permissionTimeout: TimeInterval = 90
+    static let photoStartTimeout: TimeInterval = 6
+    static let photoTimeout: TimeInterval = 25
+    static let streamTimeout: TimeInterval = 15
 
+    @MainActor
     static func standalonePhoto(_ session: DeviceSession) async throws -> Data {
-        guard let camera = try session.addCamera(config: StreamConfiguration()) else {
-            throw DATCameraError.unavailable
+        let diag = GlassesDiagnostics.shared
+        let added: Camera?
+        do { added = try session.addCamera(config: StreamConfiguration()) } catch {
+            diag.record(.photo, "addCamera: \(error)")
+            throw GlassesPhotoError.unsupported("addCamera: \(error)")
         }
-        defer { camera.stop() }
+        guard let camera = added else { throw GlassesPhotoError.unsupported("addCamera nil") }
         let photo = camera.photo
-        let once = DATOnce<Result<Data, Error>>()
-        let requested = DATFlag()
-        let starting = DATFlag()
-        var tokens: [any AnyListenerToken] = []
-        let data: Data = try await withCheckedThrowingContinuation { continuation in
-            once.set { continuation.resume(with: $0) }
-            // Registrar TODO antes de start(): los publishers no re-emiten.
-            tokens.append(photo.photoDataPublisher.listen { capture in
-                // El shutter físico publica en el mismo canal: solo vale tras pedirla.
-                if requested.isSet { once.fire(.success(capture.imageData)) }
-            })
-            tokens.append(photo.errorPublisher.listen { error in once.fire(.failure(map(error))) })
-            tokens.append(photo.statePublisher.listen { state in
-                switch state {
-                case .starting:
-                    starting.set()
-                case .started:
-                    // `.started` puede repetirse: capturar solo en el primero.
-                    if requested.setOnce() { photo.capturePhoto(resolution: photoResolution, quality: photoQuality) }
-                case .stopped:
-                    if starting.isSet, !requested.isSet {
-                        once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+        let bag = ListenerTokenBag()
+        let once = GlassesOnce<Result<Data, Error>>()
+        let requested = GlassesFlag()
+        let starting = GlassesFlag()
+        let firstBytes = GlassesFlag()
+        let graceArmed = GlassesFlag()
+        let grace = GlassesBox<Task<Void, Never>?>(nil)
+        let started = Date()
+        let ms: @Sendable () -> Int = { Int(Date().timeIntervalSince(started) * 1000) }
+        var timers: [Task<Void, Never>] = []
+        let result: Result<Data, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Result<Data, Error>, Never>) in
+                once.set { continuation.resume(returning: $0) }
+                // Registrar TODO antes de start(): los publishers no re-emiten.
+                photo.photoDataPublisher.listen { capture in
+                    // El shutter físico publica en el mismo canal: solo vale tras pedirla.
+                    if requested.isSet { once.fire(.success(capture.imageData)) }
+                }.store(in: bag)
+                photo.transferProgressPublisher.listen { progress in
+                    if firstBytes.setOnce() { diag.record(.photo, "standalone transfiriendo (\(progress.totalBytes) bytes)") }
+                }.store(in: bag)
+                photo.errorPublisher.listen { error in
+                    diag.record(.photo, "standalone error: \(error)")
+                    once.fire(.failure(map(error)))
+                }.store(in: bag)
+                photo.statePublisher.listen { state in
+                    diag.record(.photo, "standalone \(state) (\(ms()) ms)")
+                    switch state {
+                    case .starting:
+                        starting.set()
+                    case .started:
+                        // `.started` puede repetirse: capturar solo en el primero, y
+                        // fuera del callback del SDK (sample oficial: hop al main).
+                        guard !once.isResolved, requested.setOnce() else { return }
+                        Task { @MainActor in
+                            guard !once.isResolved else { return }
+                            photo.capturePhoto(resolution: photoResolution, quality: photoQuality)
+                        }
+                    case .stopped:
+                        guard !once.isResolved else { return }
+                        switch GlassesStandaloneStop.decision(starting: starting.isSet, requested: requested.isSet) {
+                        case .setupFailed:
+                            once.fire(.failure(GlassesPhotoError.setupFailed("stopped")))
+                        case .graceThenFail:
+                            guard graceArmed.setOnce() else { return }
+                            diag.record(.photo, GlassesStandaloneStop.graceLog)
+                            grace.value = GlassesStandaloneStop.armGrace(once)
+                        case .ignore:
+                            break
+                        }
+                    default:
+                        break
                     }
-                default:
-                    break
-                }
-            })
-            photo.start()
-            Task {
-                try? await Task.sleep(nanoseconds: photoStartTimeout)
-                if !requested.isSet { once.fire(.failure(GlassesPhotoError.setupFailed("timeout"))) }
+                }.store(in: bag)
+                photo.start()
+                timers.append(Task {
+                    try? await Task.sleep(nanoseconds: UInt64(photoStartTimeout * 1_000_000_000))
+                    if !requested.isSet { once.fire(.failure(GlassesPhotoError.setupFailed("timeout"))) }
+                })
+                timers.append(Task {
+                    try? await Task.sleep(nanoseconds: UInt64(photoTimeout * 1_000_000_000))
+                    once.fire(.failure(GlassesPhotoError.timeout))
+                })
             }
-            Task {
-                try? await Task.sleep(nanoseconds: photoTimeout)
-                once.fire(.failure(DATCameraError.timeout))
-            }
+        } onCancel: {
+            once.fire(.failure(CancellationError()))
         }
-        for token in tokens { await token.cancel() }
+        timers.forEach { $0.cancel() }
+        grace.value?.cancel()
+        await bag.cancelAll()
         photo.stop()
-        return data
+        camera.stop()
+        diag.record(.photo, "standalone teardown (\(ms()) ms)")
+        return try result.get()
     }
 
     static func map(_ error: PhotoError) -> GlassesPhotoError {
         switch error {
         case .sessionSetupFailed: return .setupFailed(error.description)
         case .serviceUnavailable, .notReady: return .unsupported(error.description)
+        case .permissionDenied: return .permissionDenied(error.description)
+        case .busy: return .busy
         default: return .failed(error.description)
         }
     }
 
     /// El flujo PRE-1.0 (frame del stream): fallback de la standalone.
+    @MainActor
     static func streamPhoto(_ session: DeviceSession) async throws -> Data {
-        guard let camera = try session.addCamera(config: StreamConfiguration()) else {
-            throw DATCameraError.unavailable
+        let diag = GlassesDiagnostics.shared
+        let added: Camera?
+        do { added = try session.addCamera(config: StreamConfiguration()) } catch {
+            diag.record(.photo, "addCamera (stream): \(error)")
+            throw GlassesPhotoError.unavailable("addCamera: \(error)")
         }
-        defer { camera.stop() }
+        guard let camera = added else { throw GlassesPhotoError.unavailable("addCamera nil (stream)") }
         let stream = camera.stream
-        let once = DATOnce<Result<Data, Error>>()
-        var tokens: [any AnyListenerToken] = []
-        let photo: Data = try await withCheckedThrowingContinuation { continuation in
-            once.set { continuation.resume(with: $0) }
-            tokens.append(stream.photoDataPublisher.listen { photo in once.fire(.success(photo.data)) })
-            tokens.append(stream.errorPublisher.listen { error in once.fire(.failure(error)) })
-            tokens.append(stream.statePublisher.listen { state in
-                if state == .streaming { _ = stream.capturePhoto(format: .jpeg) }
-            })
-            stream.start()
-            if stream.state == .streaming { _ = stream.capturePhoto(format: .jpeg) }
-            Task {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
-                once.fire(.failure(DATCameraError.timeout))
+        let bag = ListenerTokenBag()
+        let once = GlassesOnce<Result<Data, Error>>()
+        let requested = GlassesFlag()
+        var timer: Task<Void, Never>?
+        let requestCapture: @Sendable () -> Void = {
+            guard !once.isResolved, requested.setOnce() else { return }
+            Task { @MainActor in
+                guard !once.isResolved else { return }
+                _ = stream.capturePhoto(format: .jpeg)
             }
         }
-        for token in tokens { await token.cancel() }
+        let result: Result<Data, Error> = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Result<Data, Error>, Never>) in
+                once.set { continuation.resume(returning: $0) }
+                stream.photoDataPublisher.listen { photo in
+                    if requested.isSet { once.fire(.success(photo.data)) }
+                }.store(in: bag)
+                stream.errorPublisher.listen { error in
+                    diag.record(.photo, "stream error: \(error)")
+                    once.fire(.failure(GlassesPhotoError.failed("\(error)")))
+                }.store(in: bag)
+                stream.statePublisher.listen { state in
+                    diag.record(.photo, "stream \(state)")
+                    if state == .streaming { requestCapture() }
+                }.store(in: bag)
+                stream.start()
+                if stream.state == .streaming { requestCapture() }
+                timer = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(streamTimeout * 1_000_000_000))
+                    once.fire(.failure(GlassesPhotoError.timeout))
+                }
+            }
+        } onCancel: {
+            once.fire(.failure(CancellationError()))
+        }
+        timer?.cancel()
+        await bag.cancelAll()
         stream.stop()
-        return photo
+        camera.stop()
+        diag.record(.photo, "stream teardown")
+        return try result.get()
     }
     #endif
-}
-
-enum DATCameraError: Error, CustomStringConvertible {
-    case unavailable, permissionDenied, timeout
-    var description: String {
-        switch self {
-        case .unavailable: return "la cámara de las gafas no está disponible"
-        case .permissionDenied: return "sin permiso de cámara en Meta AI"
-        case .timeout: return "la foto no llegó a tiempo"
-        }
-    }
-}
-
-/// Bandera atómica (listeners del SDK llegan en cualquier hilo).
-final class DATFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
-    func set() { lock.lock(); value = true; lock.unlock() }
-    /// true solo para el primero que la levanta.
-    func setOnce() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if value { return false }
-        value = true
-        return true
-    }
-}
-
-/// Resuelve una continuation una sola vez (listeners del SDK pueden repetir).
-final class DATOnce<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var handler: ((T) -> Void)?
-    func set(_ handler: @escaping (T) -> Void) { lock.lock(); self.handler = handler; lock.unlock() }
-    func fire(_ value: T) {
-        lock.lock(); let h = handler; handler = nil; lock.unlock()
-        h?(value)
-    }
 }
 
 // MARK: - Display
@@ -460,7 +543,7 @@ enum HUDDATMapper {
         case .text(let text):
             return Text(text.content, style: textStyle(text.style), color: text.color == .primary ? .primary : .secondary)
         case .icon(let icon):
-            return Icon(name: iconName(icon.name), style: icon.style == .filled ? .filled : .outline)
+            return self.icon(icon, mode: HUDIconPolicy.mode)
         case .image(let image):
             return Image(uri: image.uri, sizePreset: image.size == .icon ? .icon : .fill,
                          cornerRadius: cornerRadius(image.cornerRadius))
@@ -475,13 +558,155 @@ enum HUDDATMapper {
 
     static func button(_ b: HUDButton, _ onAction: @escaping @Sendable (HUDActionID) -> Void) -> Button {
         let action = b.action
-        let button = Button(label: b.label, style: buttonStyle(b.style), iconName: b.icon.map(iconName)) { onAction(action) }
+        let mode = HUDIconPolicy.mode
+        let button = Button(label: HUDIconPolicy.buttonLabel(b.label, icon: b.icon, mode: mode), style: buttonStyle(b.style),
+                            iconName: HUDIconPolicy.buttonIcon(b.icon, mode: mode).map(iconName)) { onAction(action) }
         // DAT 1.0: el primer botón con rol primary recibe el foco al renderizar.
         return b.isPrimaryAction ? button.actionRole(.primary) : button
     }
 
-    /// El catálogo HUDIcon es 1:1 con IconName (test de catálogo en AnimaKit).
-    static func iconName(_ icon: HUDIcon) -> IconName { IconName(rawValue: icon.rawValue) ?? .circle8RaysLarge }
+    /// Un icono suelto por el camino de `HUDIconPolicy` (nativo / glifo propio /
+    /// texto). Sin glifo renderizable cae a texto; nunca al sol.
+    static func icon(_ node: HUDIconNode, mode: HUDIconMode) -> any ViewComponent {
+        switch node.path ?? HUDIconPolicy.path(for: node.name, mode: mode) {
+        case .native:
+            return Icon(name: iconName(node.name), style: node.style == .filled ? .filled : .outline)
+        case .image:
+            if let symbol = HUDIconPolicy.symbol(for: node.name), let image = HUDGlyphImages.image(symbol: symbol) {
+                return Image(image: image, sizePreset: .icon, cornerRadius: .none)
+            }
+            return textGlyph(node.name)
+        case .text:
+            return textGlyph(node.name)
+        }
+    }
+
+    static func textGlyph(_ icon: HUDIcon) -> Text {
+        Text(HUDIconPolicy.text(for: icon) ?? "•", style: .meta, color: .primary)
+    }
+
+    /// HUDIcon → IconName EXHAUSTIVO (116/116, sin rawValue ni fallback): si el SDK
+    /// renombra o quita un glifo, esto deja de compilar en vez de pintar el sol.
+    static func iconName(_ icon: HUDIcon) -> IconName {
+        switch icon {
+        case .airplane: return .airplane
+        case .arrowDownShallowU: return .arrowDownShallowU
+        case .arrowLeft: return .arrowLeft
+        case .arrowRight: return .arrowRight
+        case .arrowULeft: return .arrowULeft
+        case .arrowUpShallowU: return .arrowUpShallowU
+        case .avatar: return .avatar
+        case .avatarOff: return .avatarOff
+        case .bedSide: return .bedSide
+        case .bell: return .bell
+        case .bellDiagonalRightDot: return .bellDiagonalRightDot
+        case .bellOff: return .bellOff
+        case .bikeShare: return .bikeShare
+        case .bug: return .bug
+        case .bullhorn: return .bullhorn
+        case .bus: return .bus
+        case .calendar: return .calendar
+        case .campfire: return .campfire
+        case .caretDown: return .caretDown
+        case .caretLeft: return .caretLeft
+        case .caretRight: return .caretRight
+        case .caretUp: return .caretUp
+        case .carFrontView: return .carFrontView
+        case .cart: return .cart
+        case .checkmark: return .checkmark
+        case .checkmarkCircle: return .checkmarkCircle
+        case .circle8RaysLarge: return .circle8RaysLarge
+        case .circleHandle: return .circleHandle
+        case .clock: return .clock
+        case .cloud: return .cloud
+        case .cloudCrescentMoon: return .cloudCrescentMoon
+        case .cloudDotFourRays: return .cloudDotFourRays
+        case .cloudFiveDashes: return .cloudFiveDashes
+        case .cloudHookSwirl: return .cloudHookSwirl
+        case .cloudLightning: return .cloudLightning
+        case .cocktailGlass: return .cocktailGlass
+        case .code: return .code
+        case .coffeeCup: return .coffeeCup
+        case .compassNorthUpRed: return .compassNorthUpRed
+        case .containerWithLid: return .containerWithLid
+        case .crossBriefcase: return .crossBriefcase
+        case .dropper: return .dropper
+        case .envelopeOpen: return .envelopeOpen
+        case .exclamationCircle: return .exclamationCircle
+        case .exclamationTriangle: return .exclamationTriangle
+        case .eye: return .eye
+        case .forkKnife: return .forkKnife
+        case .fourArcsUpFilled: return .fourArcsUpFilled
+        case .fourArcsUpGrayscale: return .fourArcsUpGrayscale
+        case .fourCornerFrame: return .fourCornerFrame
+        case .gear: return .gear
+        case .globeWesternHemisphere: return .globeWesternHemisphere
+        case .graduationCap: return .graduationCap
+        case .hashtag: return .hashtag
+        case .headphones: return .headphones
+        case .heart: return .heart
+        case .house: return .house
+        case .iCircle: return .iCircle
+        case .lightBulb: return .lightBulb
+        case .magicWand: return .magicWand
+        case .metaAi: return .metaAi
+        case .mountainSquare: return .mountainSquare
+        case .mountainSquareStacked: return .mountainSquareStacked
+        case .museumBuilding: return .museumBuilding
+        case .musicNote: return .musicNote
+        case .nineSquaresGrid: return .nineSquaresGrid
+        case .padlockClosed: return .padlockClosed
+        case .padlockOpen: return .padlockOpen
+        case .palette: return .palette
+        case .paperAirplane: return .paperAirplane
+        case .pencil: return .pencil
+        case .pencilSquare: return .pencilSquare
+        case .person: return .person
+        case .personCircle: return .personCircle
+        case .phone: return .phone
+        case .phoneHandsetArrowDownLeft: return .phoneHandsetArrowDownLeft
+        case .phoneHandsetArrowUpRight: return .phoneHandsetArrowUpRight
+        case .phoneSlash: return .phoneSlash
+        case .pizzaSlice: return .pizzaSlice
+        case .plus: return .plus
+        case .plusCircle: return .plusCircle
+        case .shoppingBag: return .shoppingBag
+        case .slidersHorizontal: return .slidersHorizontal
+        case .smartGlasses: return .smartGlasses
+        case .smileyCircle: return .smileyCircle
+        case .speakerOff: return .speakerOff
+        case .speakerWithOneArc: return .speakerWithOneArc
+        case .speakerWithThreeArcs: return .speakerWithThreeArcs
+        case .speakerWithTwoArcs: return .speakerWithTwoArcs
+        case .speechBubble: return .speechBubble
+        case .speechBubbleOff: return .speechBubbleOff
+        case .stadium: return .stadium
+        case .star: return .star
+        case .starCircleTriangleAi: return .starCircleTriangleAi
+        case .taxi: return .taxi
+        case .threeDotsHorizontal: return .threeDotsHorizontal
+        case .threeDotSpeechBubble: return .threeDotSpeechBubble
+        case .threeHorizontalLines: return .threeHorizontalLines
+        case .threeHorizontalLinesStackedDescending: return .threeHorizontalLinesStackedDescending
+        case .threePeopleOverlapping: return .threePeopleOverlapping
+        case .train: return .train
+        case .tree: return .tree
+        case .triangleLeftVerticalLine: return .triangleLeftVerticalLine
+        case .triangleRight: return .triangleRight
+        case .triangleRightCircle: return .triangleRightCircle
+        case .triangleRightVerticalLine: return .triangleRightVerticalLine
+        case .twoArrowsClockwise: return .twoArrowsClockwise
+        case .twoLinesParallel: return .twoLinesParallel
+        case .twoSquaresStackedRightDown: return .twoSquaresStackedRightDown
+        case .twoTrianglesLeft: return .twoTrianglesLeft
+        case .twoTrianglesRight: return .twoTrianglesRight
+        case .videoCamera: return .videoCamera
+        case .videoCameraOff: return .videoCameraOff
+        case .wristband: return .wristband
+        case .wristbandSlash: return .wristbandSlash
+        case .x: return .x
+        }
+    }
 
     static func textStyle(_ s: HUDTextStyle) -> TextStyle {
         switch s { case .heading: return .heading; case .body: return .body; case .meta: return .meta }

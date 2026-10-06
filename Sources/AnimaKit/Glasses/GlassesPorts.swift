@@ -26,6 +26,17 @@ public enum GlassesDonState: String, Sendable, Equatable {
     case unknown, doffed, donned
 }
 
+/// DAT 1.0.0 `DeviceType` (calcado del `.swiftinterface`).
+public enum GlassesModel: String, Sendable, Equatable, CaseIterable {
+    case unknown, rayBanMeta, oakleyMetaHSTN, oakleyMetaVanguard, metaRayBanDisplay, rayBanMetaOptics, metaGlasses
+}
+
+/// DAT 1.0.0 `ThermalLevel` (calcado del `.swiftinterface`; su `.none` es
+/// `normal` aquí para no chocar con `Optional.none`).
+public enum GlassesThermal: String, Sendable, Equatable, CaseIterable {
+    case unknown, normal, light, moderate, severe, critical, emergency, shutdown
+}
+
 /// Un device visto por el runtime (link + compatibilidad llegan tarde: el
 /// adapter re-emite el snapshot en cada listener, regla 3).
 public struct GlassesDeviceSnapshot: Sendable, Equatable {
@@ -38,9 +49,15 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
     public var batteryPercent: Int?
     /// DAT 1.0.0: `Device.donState` (puestas / quitadas).
     public var donState: GlassesDonState
+    /// DAT 1.0.0: `Device.deviceType()`. El SDK no expone versión de firmware
+    /// ni de la app DAT de las gafas.
+    public var deviceType: GlassesModel?
+    /// DAT 1.0.0: `Device.thermalLevel` (diagnóstico).
+    public var thermal: GlassesThermal?
 
     public init(id: String, name: String, link: GlassesLink, compatibility: GlassesCompatibility,
-                supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown) {
+                supportsDisplay: Bool = true, batteryPercent: Int? = nil, donState: GlassesDonState = .unknown,
+                deviceType: GlassesModel? = nil, thermal: GlassesThermal? = nil) {
         self.id = id
         self.name = name
         self.link = link
@@ -48,6 +65,8 @@ public struct GlassesDeviceSnapshot: Sendable, Equatable {
         self.supportsDisplay = supportsDisplay
         self.batteryPercent = batteryPercent
         self.donState = donState
+        self.deviceType = deviceType
+        self.thermal = thermal
     }
 }
 
@@ -93,8 +112,12 @@ public protocol GlassesSessionPort: AnyObject, Sendable {
     func faultUpdates() -> AsyncStream<GlassesFault>
     /// Un display por sesión.
     func addDisplay() throws -> any GlassesDisplayPort
+    /// Permiso de cámara (Meta AI, ida y vuelta con tope propio). Se resuelve
+    /// ANTES del tope de la foto: el dueño puede tardar en Meta AI sin que eso
+    /// cuente como cámara colgada. `onPrompt` = se abrió Meta AI.
+    func ensureCameraPermission(onPrompt: @escaping @Sendable () -> Void) async throws
     /// Foto POV (MWDATCamera 1.0: `Camera.photo` standalone, fallback al stream —
-    /// política en GlassesPhotoCapture).
+    /// política en GlassesPhotoCapture). Supone el permiso ya concedido.
     func capturePhoto() async throws -> Data
 }
 
@@ -110,6 +133,8 @@ public protocol GlassesRuntime: Sendable {
     func startUnregistration() async throws
     func handleURL(_ url: URL) async throws -> Bool
     func openDATGlassesAppUpdate() async throws
+    /// DAT 1.0 `openFirmwareUpdate()`: abre Meta AI en la actualización de firmware.
+    func openFirmwareUpdate() async throws
     /// Crea UNA sesión con el selector ÚNICO del runtime (regla 2).
     func makeSession() throws -> any GlassesSessionPort
 }
@@ -130,5 +155,6 @@ public struct AbsentGlassesRuntime: GlassesRuntime {
     public func startUnregistration() async throws { throw Unavailable() }
     public func handleURL(_ url: URL) async throws -> Bool { false }
     public func openDATGlassesAppUpdate() async throws { throw Unavailable() }
+    public func openFirmwareUpdate() async throws { throw Unavailable() }
     public func makeSession() throws -> any GlassesSessionPort { throw Unavailable() }
 }

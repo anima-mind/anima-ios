@@ -70,12 +70,14 @@ struct GlassesCaptureReleaseTests {
         #expect(transcript == "qué tengo mañana")
         #expect(routes.value == [.glassesHFP])
         // La pantalla "Te escuché" ocurre aquí: HFP ya está suelto.
-        #expect(log.entries.value == ["hfp", "start", "stop", "a2dp"])
+        #expect(log.entries.value == ["hfp", "start", "stop", "deactivate", "a2dp"])
         await Speaker(log).speak("Mañana: standup a las 9.")
         let a2dp = try #require(log.index("a2dp"))
         let speak = try #require(log.index("speak"))
         let stop = try #require(log.index("stop"))
-        #expect(stop < a2dp)   // receta Relay intacta: teardown primero, liberación después
+        let deactivate = try #require(log.index("deactivate"))
+        #expect(stop < deactivate)   // doc DAT: tap/engine → setActive(false) → A2DP
+        #expect(deactivate < a2dp)
         #expect(a2dp < speak)
     }
 
@@ -87,7 +89,7 @@ struct GlassesCaptureReleaseTests {
         _ = await eventually { log.index("start") != nil }
         loop.cancel()
         #expect(await task.value == nil)
-        #expect(log.entries.value == ["hfp", "start", "stop", "a2dp"])
+        #expect(log.entries.value == ["hfp", "start", "stop", "deactivate", "a2dp"])
     }
 
     @Test func cancelAntesDeArrancarElEngineSueltaHFP() async {
@@ -96,16 +98,16 @@ struct GlassesCaptureReleaseTests {
         let loop = Self.loop(audio)
         let result = await loop.run(recognizer: { Recognizer(log) }, onRoute: { _ in loop.cancel() })
         #expect(result == nil)
-        #expect(log.entries.value == ["hfp", "a2dp"])
+        #expect(log.entries.value == ["hfp", "deactivate", "a2dp"])
     }
 
-    @Test func errorDelEngineSueltaHFPYSiA2DPFallaDesactiva() async {
+    @Test func errorDelEngineSueltaHFPAunqueA2DPFalle() async {
         let log = Log()
         let audio = Audio(log, a2dpFails: true)
         let loop = Self.loop(audio)
         let result = await loop.run(recognizer: { Recognizer(log, startError: MockError("engine")) }, onRoute: { _ in })
         #expect(result == nil)
-        #expect(log.entries.value == ["hfp", "stop", "a2dp-failed", "deactivate"])
+        #expect(log.entries.value == ["hfp", "stop", "deactivate", "a2dp-failed"])
     }
 
     @Test func sinPermisoNoSeTocaElAudio() async {

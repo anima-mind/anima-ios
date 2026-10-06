@@ -13,6 +13,8 @@ public enum HUDScreen: Sendable, Equatable {
     case home(status: String?)
     /// Foto iniciada por el dueño con el botón "Foto" de la Home (sin confirmación).
     case capturing
+    /// La foto espera el permiso de cámara: Meta AI está abierta en el teléfono.
+    case cameraPermission
     /// Captura de voz activa. `viaPhone` = degradó al micrófono del teléfono.
     case listening(viaPhone: Bool)
     /// Transcript mostrado ANTES de enviarlo (regla del handoff).
@@ -24,6 +26,8 @@ public enum HUDScreen: Sendable, Equatable {
     case answer(HUDCard)
     case declined(String)
     case attention(String)
+    /// Un fallo del cuerpo con título propio (foto, micrófono): siempre visible.
+    case trouble(heading: String, message: String)
     /// Confirmación de cámara con pinch EN las gafas (§8).
     case cameraConfirm(reason: String)
     /// Card proyectada por el agente (`glasses_show`), ya validada.
@@ -56,10 +60,20 @@ public enum HUDRenderer {
                               ]))),
             ]))
 
+        case .cameraPermission:
+            return HUDView(name: "cameraPermission", root: root(back: true, [
+                .flexBox(card(icon: .videoCamera, meta: "Permiso de cámara", heading: HUDPhoto.permissionHeading,
+                              body: "La foto se toma en cuanto vuelvas a Anima.", bodySecondary: true,
+                              group: HUDButtonGroup(alignment: .end, buttons: [
+                                  HUDButton("Cancelar", style: .outline, icon: .x, action: .cancel),
+                              ]))),
+            ]))
+
         case .listening(let viaPhone):
             return HUDView(name: "listening", root: root(back: true, [
                 .flexBox(card(icon: .speechBubble,
-                              meta: viaPhone ? "Escuchando por el teléfono" : "Escuchando · pausa para enviar",
+                              meta: viaPhone ? "Escuchando (teléfono)… pausa para enviar"
+                                             : "Escuchando (gafas)… pausa para enviar",
                               body: "Dilo. Anima responde en voz alta y te muestra lo esencial aquí.",
                               bodySecondary: true,
                               group: HUDButtonGroup(alignment: .end, buttons: [
@@ -104,6 +118,12 @@ public enum HUDRenderer {
         case .attention(let message):
             return HUDView(name: "attention", root: root(back: true, [
                 .flexBox(card(icon: .exclamationTriangle, meta: "Atención", heading: "No pude responder.",
+                              body: HUDSummary.clip(message, HUDValidator.bodyLimit), group: nil)),
+            ]))
+
+        case .trouble(let heading, let message):
+            return HUDView(name: "trouble", root: root(back: true, [
+                .flexBox(card(icon: .exclamationTriangle, meta: "Atención", heading: heading,
                               body: HUDSummary.clip(message, HUDValidator.bodyLimit), group: nil)),
             ]))
 

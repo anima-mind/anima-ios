@@ -117,4 +117,39 @@ final class SettingsUITests: AnimaUITestCase {
         waitFor(element(app, "skills.row.regar-plantas"), timeout: 10)
         XCTAssertFalse(element(app, "workshop.screen").exists)
     }
+
+    /// Ajustes → Gafas con botones de verdad (sin gafas en
+    /// `--uitest`: runtime nulo), selector de iconos y diagnóstico copiable.
+    @MainActor
+    func testGlassesSettingsActionsAndDiagnostics() {
+        let app = launch()
+        onboard(app)
+        openSettings(app, "glasses")
+
+        let pair = app.buttons["settings.glasses.pair"]
+        waitFor(pair)
+        XCTAssertTrue(pair.label.contains("Vincular gafas"), "vincular: \(pair.label)")
+        XCTAssertGreaterThanOrEqual(pair.frame.height, 44)
+        XCTAssertGreaterThan(pair.frame.width, 200)
+        waitFor(element(app, "settings.glasses.sdk"))
+        XCTAssertTrue(element(app, "settings.glasses.sdk").label.contains("1.0.0"))
+        waitFor(element(app, "settings.glasses.iconMode"))
+        // Firmware y app DAT: SIEMPRE visibles (no solo con needsDATUpdate).
+        XCTAssertTrue(app.buttons["settings.glasses.firmwareUpdate"].exists)
+        XCTAssertTrue(app.buttons["settings.glasses.datUpdate"].exists)
+        XCTAssertFalse(app.buttons["settings.glasses.unpair"].exists)
+
+        tap(pair)
+        waitUntil(element(app, "settings.glasses.notice"), "label CONTAINS 'No se pudo vincular'")
+
+        let disclosure = element(app, "settings.glasses.diagnostics")
+        scrollTo(disclosure, in: app)
+        tap(disclosure)
+        let copy = app.buttons["settings.glasses.copyDiagnostics"]
+        scrollTo(copy, in: app)
+        tap(copy)
+        let notice = element(app, "settings.glasses.notice")
+        scrollTo(notice, in: app)
+        waitUntil(notice, "label BEGINSWITH 'Diagnóstico copiado'")
+    }
 }

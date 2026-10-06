@@ -1,7 +1,7 @@
 // GoalsView.swift — el deseo del dueño visible (§5.8). Lista los Goals con su
 // fuente (stated/inferred/structural), estado y evidencia; permite confirmar o
-// abandonar manualmente. Los inferred pendientes también viven en el inbox de
-// Aprobaciones; aquí se ven todos, incluidos achieved/abandoned, para inspección.
+// abandonar manualmente. Los inferred pendientes también viven en "Por aprobar"
+// (Ajustes → Mente); aquí se ven todos, incluidos achieved/abandoned, para inspección.
 // Cada meta activa lleva su check-in (cadencia + hora) — el mismo que se fija
 // por conversación con la tool `goals` — con racha y último check-in.
 
@@ -20,8 +20,8 @@ public final class GoalsViewModel: ObservableObject {
     private let otherModel: OtherModel
     /// Re-sincroniza las notificaciones locales tras cambiar cadencia/estado.
     public var onCheckInChanged: (@Sendable () async -> Void)?
-    /// Sección "Recordatorios" arriba de las metas (la inyecta el shell).
-    public var reminders: RemindersViewModel?
+    /// Meta a la que saltar (check-in tocado en la tab Recordatorios).
+    @Published public var focusedGoalId: String?
 
     public init(otherModel: OtherModel) {
         self.otherModel = otherModel
@@ -36,7 +36,10 @@ public final class GoalsViewModel: ObservableObject {
         }
         goals = all
         progress = next
-        await reminders?.refresh()
+    }
+
+    public func focus(goalId: String) {
+        focusedGoalId = goalId
     }
 
     public func confirm(_ goal: Goal) async {
@@ -128,32 +131,20 @@ public struct GoalsView: View {
 
     public var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
-                        if let reminders = model.reminders {
-                            RemindersSection(model: reminders) { goalId in
-                                withAnimation { proxy.scrollTo(goalId, anchor: .top) }
+            Group {
+                if model.goals.isEmpty {
+                    emptyState
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: Theme.Space.stack) {
+                                ForEach(model.goals) { goal in card(goal).id(goal.id) }
                             }
+                            .padding(Theme.Space.screenInset)
                         }
-                        VStack(alignment: .leading, spacing: 8) {
-                            if model.reminders != nil {
-                                Text("Metas")
-                                    .font(Theme.Type_.label)
-                                    .textCase(.uppercase)
-                                    .kerning(0.66)
-                                    .foregroundStyle(Theme.Colors.textMuted)
-                            }
-                            if model.goals.isEmpty {
-                                emptyState
-                            } else {
-                                VStack(spacing: Theme.Space.stack) {
-                                    ForEach(model.goals) { goal in card(goal).id(goal.id) }
-                                }
-                            }
-                        }
+                        .onAppear { scroll(proxy, to: model.focusedGoalId) }
+                        .onChange(of: model.focusedGoalId) { _, id in scroll(proxy, to: id) }
                     }
-                    .padding(Theme.Space.screenInset)
                 }
             }
             .background(Theme.Colors.bg)
@@ -161,6 +152,12 @@ public struct GoalsView: View {
         }
         .task { await model.refresh() }
         .tint(Theme.Colors.accent)
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy, to id: String?) {
+        guard let id else { return }
+        withAnimation { proxy.scrollTo(id, anchor: .top) }
+        model.focusedGoalId = nil
     }
 
     private var emptyState: some View {
@@ -174,7 +171,8 @@ public struct GoalsView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(Theme.Space.screenInset)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.Colors.bg)
     }
 
     private func card(_ goal: Goal) -> some View {

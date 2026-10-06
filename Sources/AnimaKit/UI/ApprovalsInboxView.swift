@@ -2,7 +2,9 @@
 // cambios identitarios que la plasticidad no dejó aplicar directo, con su diff
 // (antes → después, por qué). El Otro (el dueño) aprueba o rechaza cambios
 // concretos, no "confía en mí". Sin respuesta en 7 días → Rejected (fail-closed,
-// lo resuelve SelfModel.expireStale al abrir la app o en el ciclo).
+// lo resuelve SelfModel.expireStale al abrir la app o en el ciclo). Vive en
+// Ajustes → Mente como "Por aprobar" (la tab Aprobaciones cedió su lugar a
+// Recordatorios); el número va en la tab Ajustes y en un aviso sobre el chat.
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -22,6 +24,11 @@ public final class ApprovalsInboxViewModel: ObservableObject {
     }
 
     public var badgeCount: Int { pending.count + pendingGoals.count }
+
+    /// "Tienes 1 cambio por aprobar" | "Tienes N cambios por aprobar".
+    public static func bannerText(_ count: Int) -> String {
+        count == 1 ? "Tienes 1 cambio por aprobar" : "Tienes \(count) cambios por aprobar"
+    }
     public var isEmpty: Bool { pending.isEmpty && pendingGoals.isEmpty }
 
     public func refresh() async {
@@ -53,7 +60,8 @@ public final class ApprovalsInboxViewModel: ObservableObject {
     }
 }
 
-public struct ApprovalsInboxView: View {
+/// "Por aprobar" (Ajustes → Mente): metas inferidas y cambios de identidad.
+public struct ApprovalsSection: View {
     @ObservedObject private var model: ApprovalsInboxViewModel
 
     public init(model: ApprovalsInboxViewModel) {
@@ -61,44 +69,39 @@ public struct ApprovalsInboxView: View {
     }
 
     public var body: some View {
-        NavigationStack {
-            Group {
-                if model.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        VStack(spacing: Theme.Space.stack) {
-                            ForEach(model.pendingGoals) { goal in
-                                goalCard(goal)
-                            }
-                            ForEach(model.pending) { approval in
-                                card(approval)
-                            }
-                        }
-                        .padding(Theme.Space.screenInset)
-                    }
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            Text("Por aprobar")
+                .font(Theme.Type_.label)
+                .textCase(.uppercase)
+                .kerning(0.66)
+                .foregroundStyle(Theme.Colors.textMuted)
+            if model.isEmpty {
+                emptyState
+            } else {
+                ForEach(model.pendingGoals) { goal in
+                    goalCard(goal)
+                }
+                ForEach(model.pending) { approval in
+                    card(approval)
                 }
             }
-            .background(Theme.Colors.bg)
-            .navigationTitle("Aprobaciones")
         }
         .task { await model.refresh() }
-        .tint(Theme.Colors.accent)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("approvals.section")
     }
 
     private var emptyState: some View {
-        VStack(spacing: Theme.Space.stack) {
-            Text("Sin cambios pendientes")
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.textMuted)
-            Text("Aquí llegan los cambios de identidad que Anima propone y que requieren tu aprobación.")
-                .font(Theme.Type_.secondary)
-                .foregroundStyle(Theme.Colors.textFaint)
-                .multilineTextAlignment(.center)
-        }
-        .padding(Theme.Space.screenInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Colors.bg)
+        Text("Sin cambios pendientes. Aquí llegan los cambios de identidad y las metas que Anima infiere y que requieren tu aprobación.")
+            .font(Theme.Type_.secondary)
+            .foregroundStyle(Theme.Colors.textFaint)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(Theme.Space.cardPad)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+            .accessibilityIdentifier("approvals.empty")
     }
 
     private func card(_ approval: PendingApproval) -> some View {

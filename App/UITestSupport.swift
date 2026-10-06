@@ -17,6 +17,9 @@ enum UITestMode {
 
     static let seedGoalFlag = "--uitest-seed-goal"
     static let seededGoalStatement = "Ahorrar 10 millones para invertir"
+    /// Meta INFERIDA pendiente de confirmar: una aprobación en Ajustes → Mente.
+    static let seedInferredGoalFlag = "--uitest-seed-inferred-goal"
+    static let seededInferredStatement = "Dormir 7 horas"
 
     /// Recordatorio sembrado a +N s con notificaciones REALES (XCUITest del tap al push).
     static let seedReminderPrefix = "--uitest-seed-reminder="
@@ -29,6 +32,7 @@ enum UITestMode {
     static let arguments: [String] = resolveArguments()
     static let isActive = arguments.contains(flag)
     static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
+    static let seedsInferredGoal = isActive && arguments.contains(seedInferredGoalFlag)
     static let shouldReset = isActive && arguments.contains(resetFlag)
     static let seedReminderSeconds: Int? = isActive
         ? arguments.lazy.compactMap { arg -> Int? in
@@ -89,6 +93,12 @@ enum UITestMode {
     static func seedGoal(_ otherModel: OtherModel) async {
         await otherModel.ingestStated(statement: seededGoalStatement,
                                       desiredState: .progressCheckIn(everyDays: 2), evidence: "uitest")
+    }
+
+    static func seedInferredGoal(_ otherModel: OtherModel) async {
+        guard await otherModel.pendingConfirmations().isEmpty else { return }
+        _ = await otherModel.infer(statement: seededInferredStatement,
+                                   desiredState: .progressCheckIn(everyDays: 1), evidence: "uitest")
     }
 
     /// Recordatorio de prueba a +`seconds` (el XCUITest de notificación lo toca).

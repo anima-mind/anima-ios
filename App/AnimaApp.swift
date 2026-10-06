@@ -4,6 +4,7 @@
 // (7 tools) → AgentLoop → ChatView. El `ask` in-chat pasa por ConfirmationCenter.
 
 import SwiftUI
+import Combine
 import AnimaKit
 import FirebaseCore
 
@@ -68,6 +69,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
     @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
     @Published private(set) var goalsModel: GoalsViewModel?
+    @Published private(set) var remindersModel: RemindersViewModel?
+    /// Aprobaciones pendientes: badge de la tab Ajustes y aviso sobre el chat.
+    @Published private(set) var pendingApprovals = 0
+    private var approvalsWatch: AnyCancellable?
     let confirmation = ConfirmationCenter()
     /// Identidad (Sign in with Apple vía Firebase Auth). Se crea en bootstrap,
     /// tras FirebaseApp.configure; es opcional y jamás bloquea el uso.
@@ -204,7 +209,15 @@ final class AppModel: ObservableObject {
             let otherModel = OtherModel(queue: queue)
             self.otherModel = otherModel
             self.goalsModel = GoalsViewModel(otherModel: otherModel)
-            self.approvalsModel = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
+            let approvals = ApprovalsInboxViewModel(selfModel: selfModel, otherModel: otherModel)
+            self.approvalsModel = approvals
+            approvalsWatch = approvals.$pending.combineLatest(approvals.$pendingGoals)
+                .map { $0.count + $1.count }
+                .removeDuplicates()
+                .sink { [weak self] count in
+                    self?.pendingApprovals = count
+                    self?.chatModel?.pendingApprovals = count
+                }
             let reminderStore = AnimaReminderStore(queue: queue)
             let notifications: any LocalNotificationScheduler = UITestMode.isActive && !UITestMode.usesRealNotifications
                 ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
@@ -222,9 +235,14 @@ final class AppModel: ObservableObject {
                 await proactive?.sync()
                 await notificationsModel?.refresh()
             }
-            goalsModel?.reminders = remindersList
-            notificationsModel.list = remindersList
+            remindersList.onOpenGoal = { [weak self] goalId in
+                self?.selectedTab = .goals
+                self?.goalsModel?.focus(goalId: goalId)
+            }
+            notificationsModel.openList = { [weak self] in self?.selectedTab = .reminders }
+            self.remindersModel = remindersList
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
+            if UITestMode.seedsInferredGoal { await UITestMode.seedInferredGoal(otherModel) }
             if let seconds = UITestMode.seedReminderSeconds {
                 await UITestMode.seedReminder(reminderStore, seconds: seconds)
             }
@@ -256,6 +274,7 @@ final class AppModel: ObservableObject {
             settings.selfModel = selfModel
             settings.glasses = glassesModel
             settings.notifications = notificationsModel
+            settings.approvals = approvals
             self.settingsModel = settings
             if let brain = self.brain { self.memoryModel = MemoryBrowserViewModel(brain: brain) }
         } catch {
@@ -414,6 +433,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()
+                    await self?.approvalsModel?.refresh()
                     await self?.chatModel?.loadMind()
                 }
             }
@@ -456,6 +476,8 @@ final class AppModel: ObservableObject {
                          previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [])
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
+        chat.pendingApprovals = pendingApprovals
+        chat.onOpenApprovals = { [weak self] in self?.openApprovals() }
         // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
         chat.photosAvailable = mode != .onDeviceOnly
         if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
@@ -463,6 +485,7 @@ final class AppModel: ObservableObject {
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
         phase = .ready
+        await approvalsModel?.refresh()
         await reconcileProactive()
         if let link = pendingLink {
             pendingLink = nil
@@ -481,7 +504,16 @@ final class AppModel: ObservableObject {
 
     func didBecomeActive() {
         guard phase == .ready else { return }
-        Task { await reconcileProactive() }
+        Task {
+            await reconcileProactive()
+            await approvalsModel?.refresh()
+        }
+    }
+
+    /// Aviso del chat → Ajustes → Mente ("Por aprobar").
+    func openApprovals() {
+        selectedTab = .settings
+        settingsModel?.path = [.mind]
     }
 
     /// Sesión activa del proceso: se decide UNA vez al abrir (Recovery.decideLaunch:
@@ -848,16 +880,16 @@ struct RootView: View {
                     .tabItem { Label(AppTab.goals.title, systemImage: "target").accessibilityIdentifier("tab.goals") }
                     .tag(AppTab.goals)
             }
-            if let approvals = app.approvalsModel {
-                ApprovalsInboxView(model: approvals)
-                    .tabItem { Label(AppTab.approvals.title, systemImage: "checkmark.seal").accessibilityIdentifier("tab.approvals") }
-                    .tag(AppTab.approvals)
-                    .badge(approvals.badgeCount)
+            if let reminders = app.remindersModel {
+                RemindersView(model: reminders)
+                    .tabItem { Label(AppTab.reminders.title, systemImage: "bell").accessibilityIdentifier("tab.reminders") }
+                    .tag(AppTab.reminders)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)
                     .tabItem { Label(AppTab.settings.title, systemImage: "gearshape").accessibilityIdentifier("tab.settings") }
                     .tag(AppTab.settings)
+                    .badge(app.pendingApprovals)
             }
         }
         .tint(Theme.Colors.accent)

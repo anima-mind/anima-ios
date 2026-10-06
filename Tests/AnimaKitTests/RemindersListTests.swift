@@ -77,13 +77,18 @@ import Testing
         #expect(RemindersViewModel.capitalized("") == "")
     }
 
-    @Test func goalsModelRefreshesTheSection() async throws {
+    @Test func checkInLeadsToItsGoal() async throws {
         let w = try F.world()
         let goals = GoalsViewModel(otherModel: w.other)
         let list = model(w)
-        goals.reminders = list
-        _ = try await w.reminders.create(text: "x", fireAt: F.date(2026, 10, 6, 9))
-        await goals.refresh()
-        #expect(list.reminders.count == 1)
+        list.onOpenGoal = { goals.focus(goalId: $0) }
+        list.onOpenGoal?("g1")
+        #expect(goals.focusedGoalId == "g1")
+        #expect(RemindersView.emptyHint.hasPrefix("Dime: «recuérdame mañana a las 9…»"))
+    }
+
+    @Test func approvalsBannerCopy() {
+        #expect(ApprovalsInboxViewModel.bannerText(1) == "Tienes 1 cambio por aprobar")
+        #expect(ApprovalsInboxViewModel.bannerText(3) == "Tienes 3 cambios por aprobar")
     }
 }

@@ -23,6 +23,8 @@ el argumento nada de esto se activa:
   `--uitest-reset` los borra al arrancar.
 - Sin validar la key contra el API: el paso API key acepta offline con warning.
 - `--uitest-seed-goal`: siembra una meta declarada (Metas, check-ins).
+- `--uitest-seed-inferred-goal`: siembra una meta inferida por confirmar
+  (aviso sobre el chat → Ajustes → Mente → "Por aprobar").
 - `--uitest-seed-reminder=N`: siembra un recordatorio de Anima a +N s.
 - `--uitest-sticky` (solo DEBUG + simulador): notificaciones REALES y el modo
   UI-test persiste en `Library/uitest-sticky.plist`, para que el lanzamiento

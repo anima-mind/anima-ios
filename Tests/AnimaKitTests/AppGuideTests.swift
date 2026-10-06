@@ -14,7 +14,7 @@ import Testing
             #expect(AppGuide.block.contains(route.title), "falta la fila \(route.title)")
         }
         for concept in ["Recordatorios", "Solo este teléfono", "Híbrido", "Enséñame algo", "Simular una noche",
-                        "Avisos de Anima", "noches de consolidación", "confirmación", "guíalo"] {
+                        "Avisos de Anima", "Por aprobar", "noches de consolidación", "confirmación", "guíalo"] {
             #expect(AppGuide.block.contains(concept), "falta \(concept)")
         }
     }

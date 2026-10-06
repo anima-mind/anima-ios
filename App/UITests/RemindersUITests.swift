@@ -1,6 +1,8 @@
-// RemindersUITests.swift — la lista de lo programado (campo batch 5 #6): un
-// recordatorio sembrado aparece arriba en Metas con lo que ella dirá y cuándo;
-// "Cancelar" lo quita y el contador de Ajustes → Notificaciones baja.
+// RemindersUITests.swift — la tab Recordatorios (campo batch 5 #6): un
+// recordatorio sembrado aparece con lo que ella dirá y cuándo; deslizar →
+// "Cancelar" lo quita y el contador de Ajustes → Notificaciones baja; "N
+// programados" lleva a la tab. Y las aprobaciones, que cedieron su tab: aviso
+// sobre el chat → Ajustes → Mente → "Por aprobar".
 
 import XCTest
 
@@ -12,31 +14,48 @@ final class RemindersUITests: AnimaUITestCase {
     }
 
     @MainActor
-    func testSeededReminderShowsInGoalsAndCancelLowersTheCount() {
+    func testSeededReminderShowsInItsTabAndCancelLowersTheCount() {
         let app = makeApp(reset: true)
         app.launchArguments.append("--uitest-seed-reminder=3600")
         app.launch()
         onboard(app)
+        XCTAssertFalse(app.tabBars.buttons["Aprobaciones"].exists)
 
         waitUntil(notificationsCount(app), "label == '1 recordatorio programado'")
+        // "N programados" → la tab Recordatorios.
+        tap(element(app, "settings.notifications.list"))
+        waitUntil(app.tabBars.buttons["Recordatorios"], "isSelected == true")
 
-        openTab(app, "Metas")
         let item = element(app, "reminders.item")
         waitFor(item)
-        XCTAssertTrue(item.staticTexts["Cita médica de prueba"].exists)
-        XCTAssertTrue(item.staticTexts["«Oye, ya casi es tu cita médica de prueba.»"].exists)
-        let actions = element(app, "reminders.actions")
-        tap(actions, until: app.buttons["Cancelar"])
+        XCTAssertTrue(item.label.contains("Cita médica de prueba"), item.label)
+        XCTAssertTrue(item.label.contains("Oye, ya casi es tu cita médica de prueba."), item.label)
+        item.swipeLeft()
         tap(app.buttons["Cancelar"])
         waitFor(element(app, "reminders.empty"))
         XCTAssertFalse(element(app, "reminders.item").exists)
 
         openTab(app, "Ajustes")
-        let back = app.navigationBars.buttons.firstMatch
-        if back.exists { tap(back) }
-        waitUntil(notificationsCount(app), "label == '0 recordatorios programados'")
+        waitUntil(element(app, "settings.notifications.count"), "label == '0 recordatorios programados'")
+    }
 
-        // "N programados" lleva a la misma lista.
-        tap(element(app, "settings.notifications.list"), until: element(app, "reminders.empty"))
+    @MainActor
+    func testPendingApprovalBannerLeadsToMind() {
+        let app = makeApp(reset: true)
+        app.launchArguments.append("--uitest-seed-inferred-goal")
+        app.launch()
+        onboard(app)
+
+        let banner = element(app, "chat.approvalsBanner")
+        waitUntil(banner, "label CONTAINS 'Tienes 1 cambio por aprobar'")
+        tap(banner)
+        waitUntil(app.tabBars.buttons["Ajustes"], "isSelected == true")
+        waitFor(element(app, "approvals.section"))
+        waitFor(text(app, "Dormir 7 horas"))
+        tap(app.buttons["Confirmar"])
+        waitFor(element(app, "approvals.empty"))
+
+        openTab(app, "Chat")
+        waitUntil(element(app, "chat.approvalsBanner"), "exists == false")
     }
 }

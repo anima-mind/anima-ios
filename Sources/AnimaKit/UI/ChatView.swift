@@ -174,6 +174,10 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var mind = MindState()
     /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
     @Published public private(set) var selfName: String = Birth.seed.name
+    /// Cambios de identidad / metas inferidas esperando al dueño: aviso sobre el chat.
+    @Published public var pendingApprovals = 0
+    /// Tap al aviso → Ajustes → Mente (lo cablea el shell).
+    public var onOpenApprovals: (() -> Void)?
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -494,6 +498,9 @@ public struct ChatView: View {
                 header
                 if let error = model.errorText {
                     errorBanner(error)
+                }
+                if model.pendingApprovals > 0 {
+                    approvalsBanner(model.pendingApprovals)
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -936,6 +943,34 @@ public struct ChatView: View {
                 .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.proactive.\(kind?.slug ?? "intention")")
+    }
+
+    /// Aviso discreto: hay cambios esperando su aprobación (→ Ajustes → Mente).
+    private func approvalsBanner(_ count: Int) -> some View {
+        Button { model.onOpenApprovals?() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.seal")
+                    .font(.system(size: 13, weight: .light))
+                    .foregroundStyle(Theme.Colors.accent)
+                Text(ApprovalsInboxViewModel.bannerText(count))
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .light))
+                    .foregroundStyle(Theme.Colors.textFaint)
+            }
+            .padding(.horizontal, Theme.Space.cardPad)
+            .frame(minHeight: Theme.minHitTarget)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .strokeBorder(Theme.Colors.accent.opacity(0.5), lineWidth: Theme.Stroke.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, Theme.Space.screenInset)
+        .padding(.top, 8)
+        .accessibilityIdentifier("chat.approvalsBanner")
     }
 
     private func errorBanner(_ text: String) -> some View {

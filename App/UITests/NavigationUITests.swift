@@ -49,13 +49,15 @@ final class NavigationUITests: AnimaUITestCase {
         waitUntil(app.tabBars.buttons["Memoria"], "isHittable == true")
 
         // Tabs: cada una deja la tab bar usable.
-        for tab in ["Memoria", "Metas", "Aprobaciones", "Ajustes", "Chat"] {
+        for tab in ["Memoria", "Metas", "Recordatorios", "Ajustes", "Chat"] {
             openTab(app, tab)
             waitUntil(app.tabBars.buttons[tab], "isSelected == true")
         }
 
         // Repetir onboarding desde Ajustes → Mente → abandonarlo a mitad con la X → de vuelta en Ajustes.
         openSettings(app, "mind")
+        waitFor(element(app, "approvals.section"))
+        waitFor(element(app, "approvals.empty"))
         let replay = app.buttons["settings.replayOnboarding"]
         scrollTo(replay, in: app)
         let title = text(app, "Qué es Anima")

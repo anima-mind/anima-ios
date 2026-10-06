@@ -14,8 +14,8 @@ public final class NotificationsSettingsModel: ObservableObject {
     private let reminders: AnimaReminderStore?
     /// El shell abre los ajustes de notificaciones de iOS (UIApplication).
     public var openSystemSettings: (() -> Void)?
-    /// La lista de lo programado (la misma de la tab Metas).
-    public var list: RemindersViewModel?
+    /// "N programados" → la tab Recordatorios (la cablea el shell).
+    public var openList: (() -> Void)?
 
     public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?) {
         self.scheduler = scheduler
@@ -77,10 +77,8 @@ public struct NotificationsSettingsSection: View {
                         .foregroundStyle(model.status == .denied ? Theme.Colors.accentText : Theme.Colors.textMuted)
                         .accessibilityIdentifier("settings.notifications.status")
                 }
-                if let list = model.list {
-                    NavigationLink {
-                        RemindersScreen(model: list)
-                    } label: {
+                if let openList = model.openList {
+                    Button(action: openList) {
                         HStack(spacing: 4) {
                             Text(NotificationsSettingsModel.countLabel(model.scheduledCount))
                                 .accessibilityIdentifier("settings.notifications.count")

@@ -50,6 +50,10 @@ public final class SettingsViewModel: ObservableObject {
     public var glasses: GlassesViewModel?
     /// Sección Notificaciones (capa proactiva); la inyecta el shell.
     public var notifications: NotificationsSettingsModel?
+    /// "Por aprobar" en Mente (la inyecta el shell).
+    public var approvals: ApprovalsInboxViewModel?
+    /// Pila del hub: el shell la empuja (aviso del chat → Mente).
+    @Published public var path: [SettingsRoute] = []
     /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
     public var nightSimulator: NightSimulator?
     /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
@@ -364,14 +368,13 @@ public enum SettingsRoute: String, Hashable, CaseIterable, Sendable {
 
 public struct SettingsView: View {
     @ObservedObject private var model: SettingsViewModel
-    @State private var path: [SettingsRoute] = []
 
     public init(model: SettingsViewModel) {
         self.model = model
     }
 
     public var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack(path: $model.path) {
             ZStack {
                 Theme.Colors.bg.ignoresSafeArea()
                 ScrollView {
@@ -390,7 +393,11 @@ public struct SettingsView: View {
                             GlassesHubRow(glasses: glasses)
                         }
                         hubDivider
-                        hubRow(.mind, title: SettingsRoute.mind.title, subtitle: model.mindSummary, glyph: "moon")
+                        if let approvals = model.approvals {
+                            MindHubRow(summary: model.mindSummary, approvals: approvals)
+                        } else {
+                            hubRow(.mind, title: SettingsRoute.mind.title, subtitle: model.mindSummary, glyph: "moon")
+                        }
                         if let notifications = model.notifications {
                             hubDivider
                             NotificationsHubRow(notifications: notifications)
@@ -526,6 +533,23 @@ private struct GlassesHubRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("settings.hub.glasses")
+    }
+}
+
+private struct MindHubRow: View {
+    let summary: String
+    @ObservedObject var approvals: ApprovalsInboxViewModel
+    var body: some View {
+        NavigationLink(value: SettingsRoute.mind) {
+            SettingsHubRowLabel(title: SettingsRoute.mind.title, subtitle: subtitle, glyph: "moon")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.hub.mind")
+    }
+    private var subtitle: String {
+        let count = approvals.badgeCount
+        guard count > 0 else { return summary }
+        return "\(count) por aprobar · \(summary)"
     }
 }
 
@@ -734,7 +758,14 @@ struct ModelSettingsContent: View {
 struct MindSettingsContent: View {
     @ObservedObject var model: SettingsViewModel
 
-    var body: some View { mindSection }
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+            if let approvals = model.approvals {
+                ApprovalsSection(model: approvals)
+            }
+            mindSection
+        }
+    }
 
     /// Sección Mente: repetir el onboarding (sin borrar memoria).
     private var mindSection: some View {

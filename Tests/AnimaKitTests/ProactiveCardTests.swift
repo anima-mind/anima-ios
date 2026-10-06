@@ -49,9 +49,9 @@ import Testing
         #expect(ProactiveCard.label(.reminder(id: "r"), at: nil, goalStatement: nil, now: now, dates: dates)
                 == "Recordatorio")
         #expect(ProactiveCard.label(.checkIn(goalId: "g"), at: at, goalStatement: "correr", now: now, dates: dates)
-                == "Check-in · correr")
+                == "Seguimiento · correr")
         #expect(ProactiveCard.label(.checkIn(goalId: "g"), at: at, goalStatement: nil, now: now, dates: dates)
-                == "Check-in")
+                == "Seguimiento")
         #expect(ProactiveCard.label(.intention(id: "i"), at: at, goalStatement: nil, now: now, dates: dates)
                 == "Propuesta")
     }
@@ -98,7 +98,7 @@ import Testing
         #expect(chat.cardLabel(reminder) == "Recordatorio · hoy 3:00 p. m.")
         #expect(chat.cardFollowUp(reminder) == "¿Cómo te fue?")
         let checkIn = chat.messages[2]
-        #expect(chat.cardLabel(checkIn) == "Check-in · invertir 10M")
+        #expect(chat.cardLabel(checkIn) == "Seguimiento · invertir 10M")
         #expect(chat.cardFollowUp(checkIn) == nil)
         #expect(chat.cardLabel(chat.messages[0]).isEmpty && chat.cardFollowUp(chat.messages[0]) == nil)
     }

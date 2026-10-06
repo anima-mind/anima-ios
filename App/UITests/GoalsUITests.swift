@@ -28,23 +28,47 @@ final class GoalsUITests: AnimaUITestCase {
         openTab(app, "Metas")
 
         let status = byPrefix(app, "goal.checkin.status.")
-        waitUntil(status, "label BEGINSWITH 'Sin check-in'")
+        waitUntil(status, "label BEGINSWITH 'Sin seguimiento'")
         let cadence = byPrefix(app, "goal.checkin.cadence.")
         tap(cadence, until: app.buttons["Diario"])
         tap(app.buttons["Diario"])
-        waitUntil(status, "label BEGINSWITH 'Check-in cada día a las 20:00'")
+        waitUntil(status, "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
         waitFor(byPrefix(app, "goal.checkin.time."))
 
         // Reabrir la vista: se relee de la base.
         openTab(app, "Chat")
         openTab(app, "Metas")
-        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Check-in cada día a las 20:00'")
+        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
 
         // Relanzar sin reset: la cadencia vive en SQLite, no en memoria.
         app.terminate()
         let relaunched = launchSeeded(reset: false)
         waitForChat(relaunched)
         openTab(relaunched, "Metas")
-        waitUntil(byPrefix(relaunched, "goal.checkin.status."), "label BEGINSWITH 'Check-in cada día a las 20:00'")
+        waitUntil(byPrefix(relaunched, "goal.checkin.status."), "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
+    }
+}
+
+/// Batch 5b #9: etiquetas en español y "Eliminar" con confirmación ligera → Historial.
+final class GoalsDeleteUITests: AnimaUITestCase {
+    @MainActor
+    func testDeleteGoalMovesItToHistory() {
+        let app = makeApp(reset: true)
+        app.launchArguments.append(GoalsUITests.seedFlag)
+        app.launch()
+        onboard(app)
+        openTab(app, "Metas")
+        let statement = text(app, "Ahorrar 10 millones para invertir")
+        waitFor(statement)
+        XCTAssertTrue(app.staticTexts.matching(identifier: "goal.source").firstMatch.label.lowercased() == "declarada")
+        statement.swipeLeft()
+        tap(app.buttons["Eliminar"])
+        let confirm = app.sheets.buttons["Eliminar"].exists ? app.sheets.buttons["Eliminar"]
+            : app.buttons.matching(NSPredicate(format: "label == 'Eliminar'")).element(boundBy: 0)
+        tap(confirm)
+        let history = element(app, "goals.history")
+        waitFor(history)
+        tap(history, until: text(app, "abandonada"))
+        XCTAssertTrue(statement.exists)
     }
 }

@@ -76,8 +76,8 @@ public final class RemindersViewModel: ObservableObject {
     }
 
     static func item(checkIn goal: Goal) -> Item {
-        Item(id: "checkin-\(goal.id)", kind: .checkIn(goalId: goal.id), title: "Check-in · \(goal.statement)",
-             spoken: nil, schedule: goal.checkIn.phrase)
+        Item(id: "checkin-\(goal.id)", kind: .checkIn(goalId: goal.id), title: "Seguimiento · \(goal.statement)",
+             spoken: nil, schedule: GoalsViewModel.followUpPhrase(goal.checkIn))
     }
 
     static func capitalized(_ text: String) -> String {
@@ -140,7 +140,7 @@ public struct RemindersView: View {
                         checkInRow(item)
                     }
                 } header: {
-                    sectionHeader("Check-ins")
+                    sectionHeader("Seguimientos")
                 }
             }
         }

@@ -43,8 +43,8 @@ import Testing
                                                    "lun 12 oct, 9:00 a. m."])
         #expect(list.reminders.map(\.spoken) == ["Oye, en media hora tienes la cita", nil, nil])
         #expect(list.checkIns == [RemindersViewModel.Item(id: "checkin-\(goalId)", kind: .checkIn(goalId: goalId),
-                                                          title: "Check-in · correr", spoken: nil,
-                                                          schedule: "cada día a las 20:00")])
+                                                          title: "Seguimiento · correr", spoken: nil,
+                                                          schedule: "cada día a las 8:00 p. m.")])
         #expect(!list.isEmpty)
     }
 

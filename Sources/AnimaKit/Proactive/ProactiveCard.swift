@@ -25,7 +25,7 @@ public enum ProactiveCard {
         case .reminder:
             return at.map { "Recordatorio · \(dates.moment($0, now: now))" } ?? "Recordatorio"
         case .checkIn:
-            return goalStatement.map { "Check-in · \($0)" } ?? "Check-in"
+            return goalStatement.map { "Seguimiento · \($0)" } ?? "Seguimiento"
         case .intention:
             return selfName.map { "Propuesta de \($0)" } ?? "Propuesta"
         }

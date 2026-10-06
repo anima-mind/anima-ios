@@ -90,9 +90,9 @@ public final class GoalsViewModel: ObservableObject {
         await onCheckInChanged?()
     }
 
-    /// "Check-in cada día a las 20:00 · racha 4 días · último: sí, hoy".
-    public static func checkInStatus(_ goal: Goal, _ progress: Progress?) -> String {
-        var parts = [goal.checkIn.isActive ? "Check-in \(goal.checkIn.phrase)" : "Sin check-in"]
+    /// "Seguimiento cada día a las 8:00 p. m. · racha 4 días · último: sí, hoy".
+    public static func checkInStatus(_ goal: Goal, _ progress: Progress?, dates: AnimaDateText = AnimaDateText()) -> String {
+        var parts = [goal.checkIn.isActive ? "Seguimiento \(followUpPhrase(goal.checkIn, dates: dates))" : "Sin seguimiento"]
         if let progress {
             if progress.streak > 0 { parts.append("racha \(progress.streak) \(progress.streak == 1 ? "día" : "días")") }
             if let last = progress.last, let answer = last.answer, let at = last.answeredAt {
@@ -100,6 +100,38 @@ public final class GoalsViewModel: ObservableObject {
             }
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// "cada día a las 8:00 p. m.", "entre semana a las 7:30 a. m.", "cada domingo a las 8:00 p. m.".
+    public static func followUpPhrase(_ checkIn: CheckInCadence, dates: AnimaDateText = AnimaDateText()) -> String {
+        var comps = DateComponents()
+        comps.year = 2026; comps.month = 1; comps.day = 1
+        comps.hour = checkIn.hour; comps.minute = checkIn.minute
+        let time = dates.calendar.date(from: comps).map(dates.time) ?? String(format: "%02d:%02d", checkIn.hour, checkIn.minute)
+        switch checkIn.cadence {
+        case .none: return "sin seguimiento"
+        case .daily: return "cada día a las \(time)"
+        case .weekdays: return "entre semana a las \(time)"
+        case .weekly: return "cada \(CheckInCadence.weekdayName(checkIn.weekday ?? 2)) a las \(time)"
+        }
+    }
+
+    /// STATED → "Declarada" (y compañía): la fuente en español.
+    public static func sourceLabel(_ source: GoalSource) -> String {
+        switch source {
+        case .stated: return "Declarada"
+        case .inferred: return "Inferida"
+        case .structural: return "Estructural"
+        }
+    }
+
+    /// Activas y por confirmar arriba; logradas y abandonadas en "Historial".
+    public var currentGoals: [Goal] { goals.filter { $0.status == .active || $0.status == .pendingConfirmation } }
+    public var pastGoals: [Goal] { goals.filter { $0.status == .achieved || $0.status == .abandoned } }
+
+    /// "Eliminar" = abandonar: deja de motivar y se cancelan sus avisos.
+    public func delete(_ goal: Goal) async {
+        await abandon(goal)
     }
 
     static func answerLabel(_ answer: CheckInAnswer) -> String {
@@ -124,6 +156,8 @@ public final class GoalsViewModel: ObservableObject {
 
 public struct GoalsView: View {
     @ObservedObject private var model: GoalsViewModel
+    @State private var showHistory = false
+    @State private var pendingDelete: Goal?
 
     public init(model: GoalsViewModel) {
         self.model = model
@@ -136,14 +170,9 @@ public struct GoalsView: View {
                     emptyState
                 } else {
                     ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(spacing: Theme.Space.stack) {
-                                ForEach(model.goals) { goal in card(goal).id(goal.id) }
-                            }
-                            .padding(Theme.Space.screenInset)
-                        }
-                        .onAppear { scroll(proxy, to: model.focusedGoalId) }
-                        .onChange(of: model.focusedGoalId) { _, id in scroll(proxy, to: id) }
+                        list
+                            .onAppear { scroll(proxy, to: model.focusedGoalId) }
+                            .onChange(of: model.focusedGoalId) { _, id in scroll(proxy, to: id) }
                     }
                 }
             }
@@ -152,6 +181,66 @@ public struct GoalsView: View {
         }
         .task { await model.refresh() }
         .tint(Theme.Colors.accent)
+        .confirmationDialog("¿Eliminar esta meta?", isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible, presenting: pendingDelete) { goal in
+            Button("Eliminar", role: .destructive) { Task { await model.delete(goal) } }
+            Button("Cancelar", role: .cancel) {}
+        } message: { _ in
+            Text("Deja de motivarte y se cancelan sus avisos. Queda en el historial.")
+        }
+    }
+
+    private var list: some View {
+        List {
+            Section {
+                if model.currentGoals.isEmpty {
+                    Text("Sin metas activas. Cuéntale a Anima qué quieres lograr.")
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(model.currentGoals) { goal in
+                    card(goal)
+                        .id(goal.id)
+                        .listRowInsets(EdgeInsets(top: 6, leading: Theme.Space.screenInset,
+                                                  bottom: 6, trailing: Theme.Space.screenInset))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { pendingDelete = goal } label: {
+                                Label("Eliminar", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            if goal.status == .active {
+                                Button { Task { await model.markAchieved(goal) } } label: {
+                                    Label("Marcar lograda", systemImage: "checkmark")
+                                }
+                                .tint(Theme.Colors.accent)
+                            }
+                        }
+                }
+            }
+            if !model.pastGoals.isEmpty {
+                Section {
+                    DisclosureGroup(isExpanded: $showHistory) {
+                        ForEach(model.pastGoals) { goal in
+                            pastRow(goal)
+                        }
+                    } label: {
+                        Text("Historial (\(model.pastGoals.count))")
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.textMuted)
+                    }
+                    .accessibilityIdentifier("goals.history")
+                    .listRowBackground(Theme.Colors.surface)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     private func scroll(_ proxy: ScrollViewProxy, to id: String?) {
@@ -175,13 +264,29 @@ public struct GoalsView: View {
         .background(Theme.Colors.bg)
     }
 
+    private func pastRow(_ goal: Goal) -> some View {
+        HStack {
+            Text(goal.statement)
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+            Spacer()
+            Text(statusLabel(goal.status))
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Theme.Colors.textFaint)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("goals.history.item")
+    }
+
     private func card(_ goal: Goal) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(goal.source.rawValue.uppercased())
+                Text(GoalsViewModel.sourceLabel(goal.source))
                     .font(Theme.Type_.label)
+                    .textCase(.uppercase)
                     .kerning(0.66)
                     .foregroundStyle(Theme.Colors.textMuted)
+                    .accessibilityIdentifier("goal.source")
                 Spacer()
                 Text(statusLabel(goal.status))
                     .font(Theme.Type_.meta)
@@ -209,6 +314,7 @@ public struct GoalsView: View {
                     Button("Confirmar") { Task { await model.confirm(goal) } }
                         .foregroundStyle(Theme.Colors.accent)
                 }
+                .buttonStyle(.plain)
                 .font(Theme.Type_.body)
                 .padding(.top, 4)
             }
@@ -223,8 +329,12 @@ public struct GoalsView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         .contextMenu {
             if goal.status == .active {
-                Button("Marcar lograda") { Task { await model.markAchieved(goal) } }
-                Button("Abandonar", role: .destructive) { Task { await model.abandon(goal) } }
+                Button { Task { await model.markAchieved(goal) } } label: {
+                    Label("Marcar lograda", systemImage: "checkmark")
+                }
+            }
+            Button(role: .destructive) { pendingDelete = goal } label: {
+                Label("Eliminar", systemImage: "trash")
             }
         }
     }
@@ -233,16 +343,17 @@ public struct GoalsView: View {
         (.none, "Ninguno"), (.daily, "Diario"), (.weekdays, "Entre semana"), (.weekly, "Semanal"),
     ]
 
-    /// Check-in de la meta: cadencia + hora (+ día si es semanal), racha y último.
+    /// Seguimiento de la meta en UNA línea: cadencia (+ día) + hora; abajo el resumen.
     private func checkInRow(_ goal: Goal) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(Theme.Colors.border)
-            HStack(spacing: Theme.Space.stack) {
-                Text("Check-in")
+            HStack(spacing: 8) {
+                Text("Seguimiento")
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.textMuted)
-                Spacer()
-                Picker("Check-in", selection: Binding(
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Picker("Seguimiento", selection: Binding(
                     get: { goal.checkIn.cadence },
                     set: { cadence in Task { await model.setCadence(goal, cadence) } })) {
                     ForEach(Self.cadenceOptions, id: \.0) { option in
@@ -250,33 +361,37 @@ public struct GoalsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
                 .accessibilityIdentifier("goal.checkin.cadence.\(goal.id)")
-            }
-            if goal.checkIn.isActive {
-                HStack(spacing: Theme.Space.stack) {
-                    if goal.checkIn.cadence == .weekly {
-                        Picker("Día", selection: Binding(
-                            get: { goal.checkIn.weekday ?? 2 },
-                            set: { day in Task { await model.setWeekday(goal, day) } })) {
-                            ForEach(1...7, id: \.self) { day in
-                                Text(CheckInCadence.weekdayName(day).capitalized).tag(day)
-                            }
+                if goal.checkIn.cadence == .weekly {
+                    Picker("Día", selection: Binding(
+                        get: { goal.checkIn.weekday ?? 2 },
+                        set: { day in Task { await model.setWeekday(goal, day) } })) {
+                        ForEach(1...7, id: \.self) { day in
+                            Text(CheckInCadence.weekdayName(day).capitalized).tag(day)
                         }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("goal.checkin.weekday.\(goal.id)")
                     }
-                    Spacer()
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityIdentifier("goal.checkin.weekday.\(goal.id)")
+                }
+                if goal.checkIn.isActive {
                     DatePicker("Hora", selection: Binding(
                         get: { Self.time(goal.checkIn) },
                         set: { date in Task { await model.setTime(goal, date) } }),
                                displayedComponents: .hourAndMinute)
                         .labelsHidden()
+                        .fixedSize()
+                        .environment(\.locale, Locale(identifier: "es_CO"))
                         .accessibilityIdentifier("goal.checkin.time.\(goal.id)")
                 }
             }
             Text(GoalsViewModel.checkInStatus(goal, model.progress[goal.id]))
-                .font(Theme.Type_.meta)
+                .font(Theme.Type_.secondary)
                 .foregroundStyle(Theme.Colors.textFaint)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("goal.checkin.status.\(goal.id)")
         }
         .padding(.top, 4)

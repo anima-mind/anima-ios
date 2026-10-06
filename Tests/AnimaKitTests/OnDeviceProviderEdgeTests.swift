@@ -124,7 +124,8 @@ struct ThrowingOnDeviceSession: OnDeviceModelSession {
             .toolOutput(id: "t2", name: "reminders", content: "ERROR: sin permiso"),
             .toolOutput(id: "t9", name: "tool", content: "huérfano"),
         ])
-        #expect(request.prompt == OnDevicePromptBuilder.continuationCue)
+        #expect(request.prompt == OnDevicePromptBuilder.errorCue)
+        #expect(request.fallbackText == nil)
         #expect(OnDevicePromptBuilder.estimateTokens(request) > 0)
     }
 

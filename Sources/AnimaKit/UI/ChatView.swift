@@ -540,7 +540,7 @@ public final class ChatViewModel: ObservableObject {
                 index += 1
             case .context(let gauge):
                 contextGauge = gauge
-            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
+            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished, .toolFailure:
                 break
             }
             assistant.isStreaming = true

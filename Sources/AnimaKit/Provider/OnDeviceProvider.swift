@@ -278,6 +278,10 @@ public enum OnDevicePromptBuilder {
     /// Tras una ronda de tools sin errores el modelo local solo redacta: la
     /// continuación va SIN tools (con ellas el 3B repetía la llamada en bucle o
     /// el framework fallaba generando otra).
+    /// Tras un fallo de tool: corregir una vez o admitirlo (nunca afirmar éxito).
+    public static let errorCue =
+        "La herramienta falló. Corrige los datos y llámala otra vez, o dile al dueño que no se pudo y por qué."
+
     /// Tras una lectura (list_reminders, read_note): responder con lo leído.
     public static func readPrompt(results: [String]) -> String {
         "Esto encontraste: " + results.joined(separator: " ")
@@ -395,7 +399,7 @@ public enum OnDevicePromptBuilder {
             prompt = last
             entries.removeLast()
         } else {
-            prompt = continuationCue
+            prompt = endsInToolError(ctx.messages) ? errorCue : continuationCue
         }
 
         // 4. Solo tools client-side: las server-side (web_search) necesitan red.
@@ -468,6 +472,12 @@ public enum OnDevicePromptBuilder {
         let body = cleaned.joined(separator: " ")
         let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
         return "Listo: " + trimmed
+    }
+
+    /// ¿El contexto termina en resultados de tool con algún error?
+    static func endsInToolError(_ messages: [Message]) -> Bool {
+        guard let last = messages.last, last.role == .user else { return false }
+        return last.content.contains { if case .toolResult(_, _, true) = $0 { return true } else { return false } }
     }
 
     /// ¿El contexto termina en resultados de tool, todos exitosos?

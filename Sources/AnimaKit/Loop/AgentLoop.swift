@@ -25,6 +25,8 @@ public enum LoopEvent: Sendable, Equatable {
     case contextTrimmed(model: String)
     /// Cuánto del contexto del modelo ocupa el turno (medidor del chat).
     case context(ContextGauge)
+    /// Una tool falló y el turno cerró sin éxito: la línea "⚠️ No pude …".
+    case toolFailure(String)
 }
 
 public actor AgentLoop {
@@ -280,6 +282,9 @@ public actor AgentLoop {
             var loopDetector = LoopDetector(threshold: stopConditions.loopRepeatThreshold)
             var reliefRetried = false
             var hardTrimmed = false
+            var failures = TurnFailures()
+            // Modelo local: un solo reintento guiado tras un fallo de tool.
+            var localToolErrors = 0
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -391,11 +396,13 @@ public actor AgentLoop {
                             : .real(name: call.name, input: call.input)
                         let realName: String
                         let realInput: JSONValue
-                        let result: ToolResult
+                        var result: ToolResult
+                        let verb: String
                         switch resolution {
                         case .real(let name, let input):
                             realName = name
                             realInput = input
+                            verb = ToolFailureNotice.verb(tool: name, input: input)
                             emit(.toolStarted(name: name))
                             toolCallCount += 1
                             let executed = await sensorimotor.execute(name: name, input: input)
@@ -404,9 +411,16 @@ public actor AgentLoop {
                         case .invalid(let tool, let message):
                             realName = tool
                             realInput = call.input
+                            verb = LocalToolAdapter.verb(local: LocalToolAdapter.intended(name: call.name, ownerText: userText))
                             emit(.toolStarted(name: tool))
                             toolCallCount += 1
                             result = ToolResult(content: message, isError: true)
+                        }
+                        failures.record(verb: verb, result: result)
+                        if toolProfile == .onDevice, result.isError, !result.isRejection {
+                            localToolErrors += 1
+                            result.content = LocalToolAdapter.retryHint(
+                                tool: LocalToolAdapter.intended(name: call.name, ownerText: userText), message: result.content)
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
                         skillTurn.recordTool(realName, isError: result.isError && !result.isRejection, rejected: result.isRejection)
@@ -423,6 +437,21 @@ public actor AgentLoop {
                     let toolMessage = Message.user(results + attachments)
                     try store.append(sessionId: sessionId, message: toolMessage, surface: surface)
                     messages.append(toolMessage)
+                    // Modelo local: el reintento guiado ya se gastó y volvió a
+                    // fallar ⇒ el turno cierra con el aviso, sin otra llamada.
+                    if toolProfile == .onDevice, localToolErrors >= 2,
+                       let notice = ToolFailureNotice.notice(failures: failures.entries, finalText: "") {
+                        emit(.textDelta(notice))
+                        emit(.toolFailure(notice))
+                        let closing = Message.assistant([.text(notice)])
+                        try store.append(sessionId: sessionId, message: closing, surface: surface)
+                        emit(.assistantMessage(closing.content))
+                        await logMemoryUsage(activatedIds, sessionId: sessionId)
+                        try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
+                                              usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
+                        emit(.turnFinished(stopReason: .endTurn))
+                        return .finished(.endTurn)
+                    }
                     iteration += 1
                     continue
 

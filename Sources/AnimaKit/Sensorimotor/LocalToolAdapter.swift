@@ -72,6 +72,12 @@ public enum LocalToolAdapter {
             example: "{name:'libros'}"),
     ]
 
+    /// "crear el recordatorio": la intención de una tool local.
+    public static func verb(local name: String) -> String {
+        guard let tool = byName[name] else { return "usar \(name)" }
+        return ToolFailureNotice.verb(tool: tool.realTool, input: .object(["action": .string(tool.realAction)]))
+    }
+
     /// Las que solo leen: tras ellas el modelo responde con lo leído.
     public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "read_note"]
 

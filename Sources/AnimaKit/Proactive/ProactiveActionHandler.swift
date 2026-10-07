@@ -31,6 +31,7 @@ public enum ProactiveNotificationAction: Sendable, Equatable {
 
 public struct ProactiveActionHandler: Sendable {
     public static let notificationNote = "respondido desde la notificación"
+    public static let widgetNote = "respondido desde el widget"
 
     private let reminders: AnimaReminderStore?
     private let otherModel: OtherModel?
@@ -43,8 +44,10 @@ public struct ProactiveActionHandler: Sendable {
     }
 
     /// Aplica una acción en background. `.open` no se maneja aquí (es del shell).
+    /// `note`: de dónde respondió el dueño (notificación o widget).
     @discardableResult
-    public func handle(_ action: ProactiveNotificationAction) async -> Bool {
+    public func handle(_ action: ProactiveNotificationAction,
+                       note: String = ProactiveActionHandler.notificationNote) async -> Bool {
         let handled: Bool
         switch action {
         case .reminderDone(let id):
@@ -53,7 +56,7 @@ public struct ProactiveActionHandler: Sendable {
             handled = (try? await reminders?.snooze(id: id, minutes: ProactiveNotificationIDs.snoozeMinutes)) != nil
         case .checkIn(let goalId, let answer):
             handled = await otherModel?.recordCheckIn(goalId: goalId, answer: answer,
-                                                       note: Self.notificationNote) != nil
+                                                       note: note) != nil
         case .open:
             return false
         }

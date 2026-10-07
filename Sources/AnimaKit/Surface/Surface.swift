@@ -125,6 +125,13 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case goal(id: String)
     /// Una Intention del pulso en background: chat con el foco en la propuesta.
     case intention(id: String)
+    /// "Hablar con Anima" (Centro de control / botón de Acción / marca del
+    /// widget con mic): chat con el micrófono ya escuchando (`anima://chat?mic=1`).
+    case talk
+    /// Widgets: tab Recordatorios.
+    case reminders
+    /// Widgets: tab Metas (con foco en una meta si viene el id).
+    case goals(id: String?)
 
     public static let scheme = "anima"
 
@@ -146,6 +153,14 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case .intention(let id):
             components.host = "intention"
             components.queryItems = [URLQueryItem(name: "id", value: id)]
+        case .talk:
+            components.host = "chat"
+            components.queryItems = [URLQueryItem(name: "mic", value: "1")]
+        case .reminders:
+            components.host = "reminders"
+        case .goals(let id):
+            components.host = "goals"
+            if let id { components.queryItems = [URLQueryItem(name: "id", value: id)] }
         }
         return components.url!
     }
@@ -158,6 +173,9 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case "glasses":
             return .glasses
         case "chat":
+            if components.queryItems?.contains(where: { $0.name == "mic" && $0.value == "1" }) == true {
+                return .talk
+            }
             let turn = components.queryItems?.first { $0.name == "turn" }?.value.flatMap(UUID.init(uuidString:))
             return .chat(turn: turn)
         case "reminder":
@@ -166,6 +184,10 @@ public enum AnimaDeepLink: Sendable, Equatable {
             return id.map { .goal(id: $0) }
         case "intention":
             return id.map { .intention(id: $0) }
+        case "reminders":
+            return .reminders
+        case "goals":
+            return .goals(id: id)
         default:
             return nil
         }

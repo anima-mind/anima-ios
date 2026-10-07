@@ -343,6 +343,19 @@ public actor OtherModel {
         return max(0, Int(now().timeIntervalSince(last) / 86_400))
     }
 
+    /// Último avance (yes/partial). nil si nunca hubo.
+    public func lastProgressAt(goalId: String) -> Date? {
+        progressDates(goalId: goalId).first
+    }
+
+    /// Última respuesta del dueño (cualquier respuesta). nil si nunca respondió.
+    public func lastAnsweredAt(goalId: String) -> Date? {
+        (try? queue.read { db in
+            try Double.fetchOne(db, sql: "SELECT MAX(answered_at) FROM goal_checkin WHERE goal_id=?",
+                                arguments: [goalId])
+        }).flatMap { $0 }.map(Date.init(timeIntervalSince1970:))
+    }
+
     private func progressDates(goalId: String) -> [Date] {
         (try? queue.read { db in
             try Double.fetchAll(db, sql: """

@@ -13,7 +13,7 @@ public enum ModelNames {
     /// "gemini-3.1-pro-preview" → "Gemini 3.1 Pro (preview)"; desconocido → el id.
     public static func friendly(_ raw: String) -> String {
         let model = normalized(raw)
-        if model == OnDeviceProvider.modelName { return "Modelo local (Apple)" }
+        if OnDeviceProvider.isOnDevice(model: model) { return "Modelo local (Apple)" }
         let parts = model.split(separator: "-").map(String.init)
         guard let family = parts.first else { return raw }
         switch family {

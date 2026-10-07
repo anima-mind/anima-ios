@@ -11,7 +11,7 @@ import XCTest
 
 final class PermissionsUITests: AnimaUITestCase {
 
-    private static let allowLabels = ["Allow Full Access", "Permitir acceso total", "Allow", "Permitir", "OK"]
+    private static let allowLabels = ["Allow Full Access", "Permitir acceso total", "Otorgar acceso completo", "Allow", "Permitir", "OK"]
     private static let denyLabels = ["Don’t Allow", "Don't Allow", "No permitir"]
 
     /// 6a. Conceder → la tool corre y el agente reporta el calendario.
@@ -43,9 +43,11 @@ final class PermissionsUITests: AnimaUITestCase {
         send(app, "Revisa mi calendario")
         answerSystemAlert(in: app, allow: false)
 
-        let reply = assistantMessage(app, value: "done", labelContains: "Calendario sin permiso")
+        // Solo teléfono: un permiso negado cierra el turno con el aviso (sin
+        // otra llamada al modelo), en la card de alerta.
+        let reply = assistantMessage(app, value: "done", labelContains: "No pude consultar tu agenda")
         waitFor(reply, timeout: 20)
-        XCTAssertTrue(reply.label.contains("no ha concedido acceso"), reply.label)
+        XCTAssertTrue(reply.label.contains("no me has dado acceso"), reply.label)
         XCTAssertEqual(app.state, .runningForeground)
     }
 

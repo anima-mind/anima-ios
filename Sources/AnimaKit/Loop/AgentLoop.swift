@@ -25,6 +25,9 @@ public enum LoopEvent: Sendable, Equatable {
     case contextTrimmed(model: String)
     /// Cuánto del contexto del modelo ocupa el turno (medidor del chat).
     case context(ContextGauge)
+    /// Una tool falló y el texto final no lo admitía: la línea "⚠️ No pude …"
+    /// que el loop antepuso al mensaje (la card la muestra con alerta).
+    case toolFailure(String)
 }
 
 public actor AgentLoop {
@@ -203,7 +206,8 @@ public actor AgentLoop {
                 return .error
             }
             let route = binding.router.route(turnClass)
-            allSpecs = ToolProfile.for(model: route.model).apply(allSpecs)
+            let toolProfile = ToolProfile.for(model: route.model)
+            allSpecs = toolProfile.apply(allSpecs)
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -238,7 +242,7 @@ public actor AgentLoop {
             // lugar el bloque con los aferentes YA ejecutados.
             if let skillEngine {
                 skillTurn.wired = true
-                let available = Set(allSpecs.map(\.name))
+                let available = Set(allSpecs.map { LocalToolAdapter.tool(named: $0.name)?.realTool ?? $0.name })
                 skillTurn.match = await skillEngine.bestMatch(userText, availableTools: available)
                 if let match = skillTurn.match {
                     skillTurn.injection = await runAutomation(match, engine: skillEngine, userText: userText,
@@ -279,6 +283,13 @@ public actor AgentLoop {
             var loopDetector = LoopDetector(threshold: stopConditions.loopRepeatThreshold)
             var reliefRetried = false
             var hardTrimmed = false
+            var failures = TurnFailures()
+            // Modelo local: un solo reintento guiado tras un fallo de tool. La
+            // primera redirección (consulta en vez de creación) no lo gasta.
+            var localToolErrors = 0
+            var localRedirected = false
+            // Modelo local: ¿alguna tool del turno escribió (no solo leyó)?
+            var localWrote = false
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -360,10 +371,29 @@ public actor AgentLoop {
                     return .refused
                 }
 
-                let assistantMessage = Message.assistant(response.content)
+                // Nunca mentir tras un error: si una intención falló y el texto
+                // final no lo admite, la línea fija va al frente.
+                var content = response.content
+                if response.stopReason != .toolUse, response.stopReason != .pauseTurn,
+                   let notice = ToolFailureNotice.notice(failures: failures.entries,
+                                                         finalText: Self.plainText(response.content)) {
+                    content = ToolFailureNotice.prepend(notice, to: content)
+                    emit(.toolFailure(notice))
+                }
+                // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
+                // el turno cerró sin tools ⇒ dónde se hace, determinista.
+                if toolProfile == .onDevice, !localWrote, response.stopReason != .toolUse,
+                   response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText),
+                   !Self.plainText(content).contains(hint), !Self.plainText(content).lowercased().contains("tab ") {
+                    let body = Self.plainText(content).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let addition = body.isEmpty ? hint : (Self.plainText(content).hasSuffix("\n") ? "" : "\n") + hint
+                    emit(.textDelta(addition))
+                    content.append(.text(addition))
+                }
+                let assistantMessage = Message.assistant(content)
                 try store.append(sessionId: sessionId, message: assistantMessage, usage: response.usage, surface: surface)
                 messages.append(assistantMessage)
-                emit(.assistantMessage(response.content))
+                emit(.assistantMessage(content))
 
                 switch response.stopReason {
                 case .pauseTurn:
@@ -382,14 +412,83 @@ public actor AgentLoop {
                             emit(.stopped(.loopDetected))
                             return .stopped(.loopDetected)
                         }
-                        emit(.toolStarted(name: call.name))
-                        toolCallCount += 1
-                        let result = await sensorimotor.execute(name: call.name, input: call.input)
-                        emit(.toolFinished(name: call.name, isError: result.isError))
-                        skillTurn.recordTool(call.name, isError: result.isError && !result.isRejection, rejected: result.isRejection)
+                        // Modelo local: la llamada del adapter se traduce a la tool real
+                        // (mismo Sensorimotor); el transcript conserva lo que dijo el modelo.
+                        let resolution: LocalToolAdapter.Resolution = toolProfile == .onDevice
+                            ? LocalToolAdapter.resolve(name: call.name, input: call.input, now: clock?() ?? Date(),
+                                                      ownerText: userText)
+                            : .real(name: call.name, input: call.input)
+                        let realName: String
+                        let realInput: JSONValue
+                        var result: ToolResult
+                        let verb: String
+                        var parameterError = false
+                        // Una llamada que el adapter rechaza (redirect, parámetros) es un
+                        // artefacto del 3B, no un fallo del mundo: no va al RealRegister
+                        // ni al skill (3 redirects armaban un RESTRUCTURE falso).
+                        var adapterArtifact = false
+                        switch resolution {
+                        case .real(let name, let input):
+                            realName = name
+                            realInput = input
+                            verb = ToolFailureNotice.verb(tool: name, input: input)
+                            if !LocalToolAdapter.readOnlyTools.contains(call.name) { localWrote = true }
+                            emit(.toolStarted(name: name))
+                            toolCallCount += 1
+                            let executed = await sensorimotor.execute(name: name, input: input)
+                            result = toolProfile == .onDevice
+                                ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
+                                : executed
+                            if toolProfile == .onDevice, LocalToolAdapter.listTools.contains(call.name), !executed.isError,
+                               LocalToolAdapter.asksForSummary(userText) {
+                                result = await pendingSummary(now: clock?() ?? Date(), ownerText: userText)
+                            }
+                            parameterError = LocalToolAdapter.isParameterError(executed.content)
+                        case .invalid(let tool, let message):
+                            realName = tool
+                            realInput = call.input
+                            verb = LocalToolAdapter.verb(local: LocalToolAdapter.intended(name: call.name, ownerText: userText))
+                            emit(.toolStarted(name: tool))
+                            toolCallCount += 1
+                            result = ToolResult(content: message, isError: true)
+                            parameterError = true
+                            adapterArtifact = true
+                        }
+                        let redirected = adapterArtifact
+                            && LocalToolAdapter.intended(name: call.name, ownerText: userText) != call.name
+                        if adapterArtifact {
+                            // El aviso nunca muestra el texto interno del adapter; un
+                            // redirect no es un fallo de la intención.
+                            if !redirected {
+                                failures.record(verb: verb, result: ToolResult(
+                                    content: LocalToolAdapter.ownerFacing(result.content), isError: true))
+                            }
+                        } else {
+                            failures.record(verb: verb, result: result)
+                        }
+                        if toolProfile == .onDevice, result.isError, !result.isRejection {
+                            // Solo los parámetros se corrigen reintentando; un fallo del
+                            // mundo (sin permiso, store roto) cierra el turno con el aviso.
+                            let intended = LocalToolAdapter.intended(name: call.name, ownerText: userText)
+                            if !parameterError {
+                                localToolErrors = 2
+                            } else if intended != call.name, !localRedirected {
+                                localRedirected = true
+                            } else {
+                                localToolErrors += 1
+                            }
+                            if parameterError {
+                                result.content = LocalToolAdapter.retryHint(tool: intended, message: result.content)
+                            }
+                        }
+                        emit(.toolFinished(name: realName, isError: result.isError))
+                        if !adapterArtifact {
+                            skillTurn.recordTool(realName, isError: result.isError && !result.isRejection,
+                                                 rejected: result.isRejection)
+                        }
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
-                        if result.isError {
-                            await realRegister?.record(.tool(name: call.name, input: call.input,
+                        if result.isError, !adapterArtifact {
+                            await realRegister?.record(.tool(name: realName, input: realInput,
                                                              result: result, sessionId: sessionId, now: Date()))
                         }
                         results.append(.toolResult(toolUseId: call.id, content: result.content, isError: result.isError))
@@ -400,6 +499,21 @@ public actor AgentLoop {
                     let toolMessage = Message.user(results + attachments)
                     try store.append(sessionId: sessionId, message: toolMessage, surface: surface)
                     messages.append(toolMessage)
+                    // Modelo local: el reintento guiado ya se gastó y volvió a
+                    // fallar ⇒ el turno cierra con el aviso, sin otra llamada.
+                    if toolProfile == .onDevice, localToolErrors >= 2,
+                       let notice = ToolFailureNotice.notice(failures: failures.entries, finalText: "") {
+                        emit(.textDelta(notice))
+                        emit(.toolFailure(notice))
+                        let closing = Message.assistant([.text(notice)])
+                        try store.append(sessionId: sessionId, message: closing, surface: surface)
+                        emit(.assistantMessage(closing.content))
+                        await logMemoryUsage(activatedIds, sessionId: sessionId)
+                        try? telemetry.record(sessionId: sessionId, turnClass: turnClass, model: route.model,
+                                              usage: lastUsage, toolCalls: toolCallCount, retries: retryCount)
+                        emit(.turnFinished(stopReason: .endTurn))
+                        return .finished(.endTurn)
+                    }
                     iteration += 1
                     continue
 
@@ -501,6 +615,23 @@ public actor AgentLoop {
                 throw error
             }
         }
+    }
+
+    /// "¿Qué tengo pendiente?" con el modelo local: recordatorios + metas activas
+    /// + agenda de hoy en un solo listado (las tools que no estén, se omiten).
+    private func pendingSummary(now: Date, ownerText: String) async -> ToolResult {
+        let range = LocalWhen(now: now, calendar: .current, ownerText: ownerText).requestedRange
+        func read(_ tool: String, _ input: JSONValue) async -> String? {
+            guard await sensorimotor.has(tool) else { return nil }
+            let result = await sensorimotor.execute(name: tool, input: input)
+            return result.isError ? nil : result.content
+        }
+        let reminders = await read("anima_reminders", .object(["action": .string("list")]))
+        let goals = await read("goals", .object(["action": .string("list")]))
+        let days = range.map { max(1, Int(ceil($0.end.timeIntervalSince(now) / 86_400))) } ?? 1
+        let events = await read("calendar", .object(["action": .string("list"), "days_ahead": .int(days)]))
+        return ToolResult(content: LocalToolAdapter.pendingSummary(reminders: reminders, goals: goals, events: events,
+                                                                   now: now, range: range))
     }
 
     /// Evict al Brain (§4.9, relieve local): el texto desalojado del contexto se

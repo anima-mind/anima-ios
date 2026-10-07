@@ -123,15 +123,45 @@ public struct OnDeviceRequest: Sendable, Equatable {
     public var prompt: String
     public var tools: [OnDeviceToolDefinition]
     public var maxResponseTokens: Int
+    /// Continuación tras tools exitosas: la confirmación determinista si el
+    /// modelo no logra redactar (guardrails, error). Con ella el texto no se
+    /// streamea a medias: se entrega completo o se usa este fallback.
+    public var fallbackText: String?
+    /// Lo que la redacción debe nombrar para no perder el dato. Ver `acceptsConfirmation`.
+    public var salientWords: [SalientGroup]
+    /// El turno es una consulta sobre lo suyo: si el 3B responde sin tool, la
+    /// llamada de consulta se hace igual (no se responde de memoria).
+    public var requiredQueryTool: String?
+    /// La ronda fue solo de listados: se entrega `fallbackText` tal cual.
+    public var listIsDeterministic: Bool = false
 
     public init(instructions: String, history: [OnDeviceTranscriptEntry], prompt: String,
-                tools: [OnDeviceToolDefinition], maxResponseTokens: Int) {
+                tools: [OnDeviceToolDefinition], maxResponseTokens: Int, fallbackText: String? = nil,
+                salientWords: [SalientGroup] = []) {
         self.instructions = instructions
         self.history = history
         self.prompt = prompt
         self.tools = tools
         self.maxResponseTokens = maxResponseTokens
+        self.fallbackText = fallbackText
+        self.salientWords = salientWords
     }
+}
+
+/// Raíces que una confirmación debe nombrar: al menos `minimum` de `stems`.
+public struct SalientGroup: Sendable, Equatable {
+    public var stems: [String]
+    public var minimum: Int
+
+    public init(_ stems: [String], minimum: Int = 1) {
+        self.stems = stems
+        self.minimum = min(minimum, stems.count)
+    }
+
+    /// El sujeto de lo hecho: hasta 2 de sus raíces ("llamar al banco" ⇒ llam + banc).
+    public static func subject(_ stems: [String]) -> SalientGroup { SalientGroup(stems, minimum: 2) }
+
+    func isMet(by folded: String) -> Bool { stems.filter { folded.contains($0) }.count >= minimum }
 }
 
 /// Lo que emite la sesión: snapshots acumulados del texto (semántica del
@@ -194,7 +224,12 @@ public struct SnapshotDeltaTracker: Sendable, Equatable {
 public indirect enum OnDeviceSchema: Sendable, Equatable {
     case object(name: String, description: String?, properties: [Property])
     case string(description: String?, choices: [String]?)
+    /// String con forma fija (`pattern` del JSON Schema): la generación guiada
+    /// del framework solo produce texto que la cumple.
+    case patterned(description: String?, pattern: String)
     case integer(description: String?)
+    /// Entero acotado (`minimum`/`maximum`).
+    case bounded(description: String?, range: ClosedRange<Int>)
     case number(description: String?)
     case boolean(description: String?)
     case array(description: String?, items: OnDeviceSchema)
@@ -225,6 +260,9 @@ public indirect enum OnDeviceSchema: Sendable, Equatable {
             }
             return .object(name: name, description: description, properties: properties)
         case "integer":
+            if case .int(let low)? = jsonSchema["minimum"], case .int(let high)? = jsonSchema["maximum"], low <= high {
+                return .bounded(description: description, range: low...high)
+            }
             return .integer(description: description)
         case "number":
             return .number(description: description)
@@ -235,6 +273,9 @@ public indirect enum OnDeviceSchema: Sendable, Equatable {
                 ?? .string(description: nil, choices: nil)
             return .array(description: description, items: items)
         default:
+            if let pattern = jsonSchema["pattern"]?.stringValue, (choices?.isEmpty ?? true) {
+                return .patterned(description: description, pattern: pattern)
+            }
             return .string(description: description, choices: (choices?.isEmpty ?? true) ? nil : choices)
         }
     }
@@ -254,6 +295,29 @@ public enum OnDevicePromptBuilder {
     /// prompt para continuar: este cue le pide responder con ellos.
     public static let continuationCue =
         "Continúa: responde al dueño usando lo que devolvió la herramienta."
+    /// Tras una ronda de tools sin errores el modelo local solo redacta: la
+    /// continuación va SIN tools (con ellas el 3B repetía la llamada en bucle o
+    /// el framework fallaba generando otra).
+    /// Tras un fallo de tool: corregir una vez o admitirlo (nunca afirmar éxito).
+    public static let errorCue =
+        "La herramienta falló. Corrige los datos y llámala otra vez, o dile al dueño que no se pudo y por qué."
+
+    /// Tras una lectura (list_reminders, read_note): responder con lo leído.
+    public static func readPrompt(results: [String]) -> String {
+        "Esto encontraste: " + results.joined(separator: " ")
+            + "\nRespóndele (de tú) en 1-3 frases usando solo eso."
+    }
+
+    public static func successPrompt(results: [String]) -> String {
+        "Ya lo hiciste: " + results.joined(separator: " ")
+            + "\nConfírmaselo (de tú) en UNA frase que empiece con «Listo,» y diga solo lo que quedó hecho."
+    }
+
+    /// El turno del dueño como cita: sin esto el 3B respondía COMO el dueño
+    /// ("pregúntame cómo voy" → "esta semana bajamos 1 kilo").
+    public static func quotedOwner(_ text: String) -> String {
+        "El dueño te dijo: «\(text)»"
+    }
     /// Las imágenes no llegan al modelo local (no es multimodal en v1).
     public static let imagePlaceholder = "[imagen adjunta: el modelo local no puede verla]"
 
@@ -316,23 +380,277 @@ public enum OnDevicePromptBuilder {
         //    turn input ya vienen fusionados); si el contexto termina en tool
         //    output, el cue de continuación.
         let prompt: String
-        if case .prompt(let last)? = entries.last {
+        var fallbackText: String?
+        var salient: [SalientGroup] = []
+        var listIsDeterministic = false
+        var requiredQueryTool: String?
+        let toolsSucceeded = endsInSuccessfulToolResults(ctx.messages)
+        if toolsSucceeded {
+            // Éxito: la ronda de tools se pliega a texto ("Ya quedó hecho: …")
+            // sobre el turno del dueño; sin estructura de tool el 3B redacta prosa.
+            // Los pares fallidos de la ronda (redirect, reintento) no se cuentan:
+            // "Listo: ERROR: …" llegaba al dueño.
+            var round: [OnDeviceTranscriptEntry] = []
+            while let last = entries.last {
+                guard case .toolOutput = last else {
+                    guard case .toolCall = last else { break }
+                    round.insert(entries.removeLast(), at: 0)
+                    continue
+                }
+                round.insert(entries.removeLast(), at: 0)
+            }
+            let failedIds = Set(round.compactMap { entry -> String? in
+                if case .toolOutput(let id, _, let content) = entry, content.hasPrefix("ERROR: ") { return id }
+                return nil
+            })
+            var results: [String] = []
+            var onlyReads = true
+            for entry in round {
+                switch entry {
+                case .toolOutput(let id, _, let content) where !failedIds.contains(id):
+                    results.append(content)
+                case .toolCall(let id, let name, let json) where !failedIds.contains(id):
+                    if !LocalToolAdapter.readOnlyTools.contains(name) {
+                        onlyReads = false
+                        let args = normalizeArguments(json)
+                        let subject = ["text", "statement", "title", "content"].compactMap { args[$0]?.stringValue }.first
+                        if let subject, !salientStems(subject).isEmpty { salient.append(.subject(salientStems(subject))) }
+                        if let action = Self.actionStems[name] { salient.append(SalientGroup(action)) }
+                    }
+                default:
+                    break
+                }
+            }
+            // Un evento agendado se confirma con lo guardado (medido: el 3B inventaba
+            // "en el restaurante La Terraza").
+            if round.contains(where: { if case .toolCall(let id, "add_calendar_event", _) = $0 { !failedIds.contains(id) } else { false } }) {
+                listIsDeterministic = true
+            }
+            if onlyReads {
+                // Solo si el dueño preguntó por lo suyo: si el 3B listó para otra
+                // pregunta ("¿qué tengo que hacer para…?"), el modelo responde.
+                var ownerTurn = ""
+                if case .prompt(let owner)? = entries.last { ownerTurn = owner.components(separatedBy: "\n\n").last ?? owner }
+                let aboutTheirThings = LocalToolAdapter.queryTool(ownerTurn) != nil || LocalWhen.asksToChange(ownerTurn)
+                listIsDeterministic = aboutTheirThings && round.allSatisfy { entry in
+                    if case .toolCall(_, let name, _) = entry { return LocalToolAdapter.listTools.contains(name) }
+                    return true
+                }
+                results = results.map(withoutListIds)
+                salient = listedItems(results.joined(separator: "\n")).prefix(3).map(salientStems)
+                    .filter { !$0.isEmpty }.map { SalientGroup($0) }
+                // Lectura vacía: la respuesta debe decir que no hay (medido: "¿Qué
+                // te gustaría que las metas fueran?").
+                if listedItems(results.joined(separator: "\n")).isEmpty {
+                    salient = [SalientGroup(["no tienes", "ningun", "sin ", "no hay"])]
+                }
+            }
+            // Lo que no se puede cambiar desde aquí se dice siempre (la tab).
+            if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
+                salient = [SalientGroup(["tab"])]
+            }
+            if results.contains(where: { $0.contains("ya pasó, así que te lo puse para mañana") }) {
+                salient.append(SalientGroup(["pas"]))
+            }
+            // Una repetición no soportada se dice siempre ("aún no lo repito").
+            if results.contains(where: { $0.contains("aún no lo repito") }) { salient.append(SalientGroup(["repit"])) }
+            let done = onlyReads ? readPrompt(results: results) : successPrompt(results: results)
+            fallbackText = onlyReads ? results.joined(separator: "\n") : confirmation(results: results)
+            if case .prompt(let owner)? = entries.last {
+                entries.removeLast()
+                prompt = quotedOwner(owner) + "\n" + done
+            } else {
+                prompt = done
+            }
+        } else if case .prompt(let last)? = entries.last {
             prompt = last
             entries.removeLast()
+            let ownerTurn = last.components(separatedBy: "\n\n").last ?? last
+            requiredQueryTool = LocalToolAdapter.queryTool(ownerTurn)
+                .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
         } else {
-            prompt = continuationCue
+            prompt = endsInToolError(ctx.messages) ? errorCue : continuationCue
         }
 
         // 4. Solo tools client-side: las server-side (web_search) necesitan red.
-        let definitions: [OnDeviceToolDefinition] = ToolProfile.onDevice.apply(tools).compactMap { spec in
+        let offered = toolsSucceeded ? [] : tools
+        let definitions: [OnDeviceToolDefinition] = ToolProfile.onDevice.apply(offered).compactMap { spec in
             guard case .client(let name, let description, let schema) = spec else { return nil }
             return OnDeviceToolDefinition(name: name, description: description,
                                           schema: OnDeviceSchema.from(jsonSchema: schema, name: name))
         }
 
-        return OnDeviceRequest(instructions: instructionParts.joined(separator: "\n\n"),
+        var built = OnDeviceRequest(instructions: instructionParts.joined(separator: "\n\n"),
                                history: entries, prompt: prompt, tools: definitions,
-                               maxResponseTokens: opts.route.maxTokens)
+                               maxResponseTokens: fallbackText == nil ? opts.route.maxTokens
+                                   : min(opts.route.maxTokens, confirmationMaxTokens),
+                               fallbackText: fallbackText, salientWords: salient)
+        built.listIsDeterministic = listIsDeterministic
+        built.requiredQueryTool = requiredQueryTool
+        return built
+    }
+
+    /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
+    static func withoutListIds(_ text: String) -> String {
+        text.replacing(/\[[^\]\n]{6,}\]\s*/, with: "")
+    }
+
+    /// La confirmación tras tools es una frase: tope corto (y más rápido).
+    public static let confirmationMaxTokens = 120
+
+    /// ¿La redacción del modelo sirve como confirmación? Una o dos frases
+    /// completas; si divaga (medido: "hoy me levanté a las 6…") o quedó cortada,
+    /// va la confirmación determinista.
+    /// Además: de tú (sin "el dueño" ni placeholders) y nombrando lo hecho o
+    /// leído (medido: "El recordatorio está programado para mañana" sin decir cuál).
+    /// Y debe decir la acción de Anima (recordar, anotar, agendar, registrar) sin
+    /// afirmar que la tarea del dueño ya se hizo (medido: "Listo, sacué la basura",
+    /// "Listo, revisé el horno", "me acordé de llamar al banco").
+    public static func acceptsConfirmation(_ text: String, salient: [SalientGroup] = []) -> Bool {
+        guard !text.isEmpty, text.count <= 240, let last = text.last, ".!?»)\"'".contains(last) else { return false }
+        let folded = fold(text)
+        if folded.contains("dueno") || text.contains("[") || claimsTheOwnersTask(text) || speaksAsTheOwner(folded) {
+            return false
+        }
+        return salient.allSatisfy { $0.isMet(by: folded) }
+    }
+
+    /// Las cosas del dueño dichas como propias ("No tengo metas activas", "mis
+    /// recordatorios"): medido en las lecturas vacías.
+    static func speaksAsTheOwner(_ folded: String) -> Bool {
+        let words = Set(folded.components(separatedBy: CharacterSet.letters.inverted))
+        return words.contains("tengo") || words.contains("mis")
+    }
+
+    /// La redacción no contradice el momento guardado (medido: guardado hoy
+    /// 18:00, texto "te recuerdo mañana a las 6"): día de la semana, hoy/mañana/
+    /// pasado mañana y hora deben coincidir con el resultado de la tool.
+    public static func agreesWithTheResult(_ text: String, fallback: String, now: Date,
+                                           calendar: Calendar = .current) -> Bool {
+        let result = fold(fallback)
+        guard let m = result.firstMatch(of: /(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
+              let day = Int(m.2), let month = LocalWhen.months.firstIndex(of: String(m.3)).map({ $0 + 1 }),
+              let hour = Int(m.4) else { return true }
+        let said = fold(text)
+        let words = LocalWhen.words(said)
+        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(m.1) { return false }
+        let today = calendar.startOfDay(for: now)
+        var parts = calendar.dateComponents([.year], from: today)
+        parts.month = month; parts.day = day
+        if let target = calendar.date(from: parts) {
+            var diff = calendar.dateComponents([.day], from: today, to: target).day ?? 0
+            if diff < 0, let next = calendar.date(byAdding: .year, value: 1, to: target) {
+                diff = calendar.dateComponents([.day], from: today, to: next).day ?? diff
+            }
+            let relative = said.replacingOccurrences(of: "de la manana", with: " ")
+            let relWords = LocalWhen.words(relative)
+            if relative.contains("pasado manana") { if diff != 2 { return false } }
+            else if relWords.contains("manana") { if diff != 1 { return false } }
+            if relWords.contains("hoy"), diff != 0 { return false }
+        }
+        let when = LocalWhen(now: now, calendar: calendar)
+        for mention in when.times(said) where mention.explicit || mention.afterLas {
+            if mention.clock.hour % 12 != hour % 12 { return false }
+        }
+        return true
+    }
+
+    /// Lo que cada tool local hizo, como raíz: la confirmación debe nombrarlo.
+    static let actionStems: [String: [String]] = [
+        "remind_me": ["recuerd", "record", "avis", "program"],
+        "declare_goal": ["meta", "regist", "pregunt", "segui", "recuerd"],
+        "add_calendar_event": ["agend", "event", "calend", "cita", "reuni"],
+        "write_note": ["anot", "nota", "guard", "apunt"],
+    ]
+
+    /// Pretérito en 1ª persona que no es de Anima ("saqué", "llamé") o en 2ª
+    /// ("compraste"): afirma que la tarea del dueño ya ocurrió.
+    /// También el perfecto que da por ocurrido el aviso ("ya te he recordado"),
+    /// el reflexivo ("me he registrado") y el futuro de la tarea ("llevaré el carro").
+    static func claimsTheOwnersTask(_ text: String) -> Bool {
+        let all = text.lowercased().components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+        for (index, word) in all.enumerated() {
+            if word == "he", index + 1 < all.count {
+                let next = all[index + 1]
+                let participle = next.hasSuffix("ado") || next.hasSuffix("ido")
+                if participle && (!ownParticiples.contains(next) || (index > 0 && all[index - 1] == "me")) { return true }
+            }
+            if ["hice", "fui", "puse", "traje"].contains(word) { return true }
+            guard word.count > 3 else { continue }
+            if word.hasSuffix("é") && !ownActions.contains(word) && !nounsInE.contains(word) { return true }
+            if word.hasSuffix("aste") || word.hasSuffix("iste") { return true }
+        }
+        return false
+    }
+
+    static let ownActions: Set<String> = ["anoté", "agendé", "registré", "guardé", "programé", "apunté", "dejé",
+                                          "creé", "quedé", "recordaré", "avisaré", "preguntaré", "diré", "escribiré",
+                                          "enviaré", "mandaré", "haré"]
+    /// Sustantivos y nombres en -é que no son pretéritos.
+    static let nounsInE: Set<String> = ["café", "josé", "bebé", "puré", "canapé", "consomé", "chalé", "comité",
+                                        "paté", "bidé", "suflé", "frappé", "andré", "renée", "rené"]
+    static let ownParticiples: Set<String> = ["anotado", "agendado", "registrado", "guardado", "programado",
+                                              "apuntado", "creado", "dejado"]
+
+    static func fold(_ text: String) -> String {
+        text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
+    }
+
+    static let stopwords: Set<String> = ["para", "como", "este", "esta", "esto", "todos", "todas", "cada", "antes",
+                                         "despues", "sobre", "entre", "desde", "hasta", "porque", "cuando", "donde",
+                                         "nota", "programados"]
+
+    /// Raíces (4 letras) de las palabras con contenido: "llamar al banco" → ["llam", "banc"].
+    static func salientStems(_ text: String) -> [String] {
+        fold(text).components(separatedBy: CharacterSet.letters.inverted)
+            .filter { $0.count >= 4 && !stopwords.contains($0) }
+            .map { String($0.prefix(4)) }
+    }
+
+    /// Los ítems de una lista de la tool ("- llamar al banco — miércoles…" → "llamar al banco").
+    static func listedItems(_ text: String) -> [String] {
+        text.split(separator: "\n").compactMap { line in
+            guard line.hasPrefix("- ") else { return nil }
+            let item = line.dropFirst(2)
+            return String(item.components(separatedBy: " — ").first ?? String(item))
+        }
+    }
+
+    /// "Listo: <resultado>" sin ids internos: lo que el dueño lee si el modelo
+    /// no redacta la confirmación.
+    public static func confirmation(results: [String]) -> String {
+        let cleaned = results.map { result in
+            result.replacing(/\s*\(id [^)]*\)/, with: "")
+                .replacing(/\s*Id [A-Za-z0-9-]+\.?/, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")
+        let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
+        return (trimmed.first?.isLowercase == true ? "Listo, " : "Listo: ") + trimmed
+    }
+
+    /// ¿El contexto termina en resultados de tool con algún error?
+    static func endsInToolError(_ messages: [Message]) -> Bool {
+        guard let last = messages.last, last.role == .user else { return false }
+        return last.content.contains { if case .toolResult(_, _, true) = $0 { return true } else { return false } }
+    }
+
+    /// ¿El contexto termina en resultados de tool, todos exitosos?
+    static func endsInSuccessfulToolResults(_ messages: [Message]) -> Bool {
+        guard let last = messages.last, last.role == .user else { return false }
+        var sawResult = false
+        for block in last.content {
+            switch block {
+            case .toolResult(_, _, let isError):
+                if isError { return false }
+                sawResult = true
+            case .text, .thinking, .toolUse:
+                return false
+            case .image:
+                continue
+            }
+        }
+        return sawResult
     }
 
     /// Los números enteros llegan del framework como double (`7.0`): se
@@ -380,6 +698,9 @@ public enum OnDevicePromptBuilder {
 public struct OnDeviceProvider: Provider {
     /// El nombre de modelo de las rutas `on_device` en provider_config.
     public static let modelName = "system_language_model"
+    /// La única pregunta "¿esta ruta es el modelo local?" del harness (perfil de
+    /// tools, presupuesto de contexto, nombre visible, precio y selector).
+    public static func isOnDevice(model: String) -> Bool { model == modelName }
     /// `.fatal(status:)` cuando el modelo local no está disponible (el Híbrido
     /// cae a Claude ante este código).
     public static let unavailableStatus = -10
@@ -427,20 +748,30 @@ public struct OnDeviceProvider: Provider {
 
                 var tracker = SnapshotDeltaTracker()
                 var toolCall: (name: String, json: String)?
+                let buffered = request.fallbackText != nil || request.requiredQueryTool != nil
                 func usage() -> Usage {
                     Usage(inputTokens: inputTokens, outputTokens: Int(Double(tracker.text.count) / 3.6))
                 }
 
                 do {
-                    for try await element in session.stream(request) {
+                    // Listas (recordatorios, metas, agenda): el listado determinista, sin
+                    // llamar al modelo (medido: inventaba metas extra al resumir).
+                    let elements: AsyncThrowingStream<OnDeviceStreamElement, Error> = request.listIsDeterministic
+                        ? AsyncThrowingStream { $0.finish() } : session.stream(request)
+                    for try await element in elements {
                         switch element {
                         case .snapshot(let snapshot):
                             let delta = tracker.delta(for: snapshot)
-                            if !delta.isEmpty { continuation.yield(.textDelta(delta)) }
+                            if !delta.isEmpty, !buffered { continuation.yield(.textDelta(delta)) }
                         case .toolCall(let name, let json):
                             toolCall = (name, json)
                         }
                     }
+                } catch where buffered && !(error is CancellationError)
+                            && (error as? OnDeviceSessionError) != .exceededContextWindow {
+                    // Tras tools exitosas, un guardrail o fallo al redactar no
+                    // deshace lo hecho: la confirmación determinista.
+                    tracker = SnapshotDeltaTracker()
                 } catch let error as OnDeviceSessionError {
                     switch error {
                     case .guardrailViolation, .refusal:
@@ -462,6 +793,20 @@ public struct OnDeviceProvider: Provider {
                     return
                 }
 
+                if let query = request.requiredQueryTool {
+                    // Consulta sin tool: la consulta se hace igual; con tool, la del modelo.
+                    if toolCall == nil { toolCall = (query, "{}") }
+                    tracker = SnapshotDeltaTracker()
+                } else if buffered {
+                    let text = tracker.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    tracker = SnapshotDeltaTracker()
+                    let accepted = OnDevicePromptBuilder.acceptsConfirmation(text, salient: request.salientWords)
+                        && OnDevicePromptBuilder.agreesWithTheResult(text, fallback: request.fallbackText ?? "", now: Date())
+                    let chosen = accepted && !request.listIsDeterministic ? text : (request.fallbackText ?? "")
+                    _ = tracker.delta(for: chosen.replacingOccurrences(of: ".».", with: "»."))
+                    toolCall = nil
+                    continuation.yield(.textDelta(tracker.text))
+                }
                 var blockIndex = 0
                 if !tracker.text.isEmpty {
                     continuation.yield(.blockStop(index: blockIndex))
@@ -548,8 +893,13 @@ enum OnDeviceSchemaBridge {
                 return DynamicGenerationSchema(name: name, description: description, anyOf: choices)
             }
             return DynamicGenerationSchema(type: String.self)
+        case .patterned(_, let pattern):
+            guard let regex = try? Regex(pattern) else { return DynamicGenerationSchema(type: String.self) }
+            return DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])
         case .integer:
             return DynamicGenerationSchema(type: Int.self)
+        case .bounded(_, let range):
+            return DynamicGenerationSchema(type: Int.self, guides: [.range(range)])
         case .number:
             return DynamicGenerationSchema(type: Double.self)
         case .boolean:

@@ -41,6 +41,9 @@ public final class ChatViewModel: ObservableObject {
         public var photoSentAsText: Bool = false
         /// Cuándo se dijo: hora al pie y separador de día (como WhatsApp).
         public var sentAt = Date()
+        /// Una tool falló en el turno: el texto abre con "⚠️ No pude …" y la
+        /// card lleva el ícono de alerta.
+        public var toolFailure: Bool = false
 
         /// Tipo de card proactiva (nil si es un mensaje normal).
         public var proactiveKind: ProactiveMessage.Kind? {
@@ -126,6 +129,7 @@ public final class ChatViewModel: ObservableObject {
             }
             var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
                                          imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+            message.toolFailure = turn.role == .assistant && turn.text.hasPrefix(ToolFailureNotice.marker)
             if let createdAt = turn.createdAt { message.sentAt = createdAt }
             return message
         }
@@ -540,6 +544,12 @@ public final class ChatViewModel: ObservableObject {
                 index += 1
             case .context(let gauge):
                 contextGauge = gauge
+            case .toolFailure(let notice):
+                assistant.toolFailure = true
+                if !assistant.text.hasPrefix(notice) {
+                    let body = assistant.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    assistant.text = body.isEmpty ? notice : notice + "\n\n" + body
+                }
             case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
                 break
             }
@@ -850,6 +860,8 @@ public struct ChatView: View {
                         refusalCard(message)
                     } else if message.isError {
                         errorCard(message)
+                    } else if message.toolFailure {
+                        toolFailureCard(message)
                     } else {
                         streamedText(message)
                     }
@@ -860,6 +872,25 @@ public struct ChatView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Una tool falló en el turno: ícono de alerta + el texto (la línea
+    /// "⚠️ No pude …" sin el emoji, que ya es el ícono).
+    private func toolFailureCard(_ message: ChatViewModel.DisplayMessage) -> some View {
+        var shown = message
+        if shown.text.hasPrefix("⚠️ ") { shown.text = String(shown.text.dropFirst("⚠️ ".count)) }
+        return HStack(alignment: .top, spacing: Theme.Space.stack) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(Theme.Type_.body)
+                .foregroundStyle(Theme.Colors.accent)
+                .accessibilityLabel("No se pudo")
+            streamedText(shown)
+        }
+        .padding(Theme.Space.cardPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card)
+                .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
     }
 
     private func streamedText(_ message: ChatViewModel.DisplayMessage) -> some View {

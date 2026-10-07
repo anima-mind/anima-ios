@@ -3,11 +3,13 @@ import Testing
 @testable import AnimaKit
 
 // El modelo de Apple tiene 4096 tokens: el registro completo de tools costaba
-// 3797 (medido). El perfil local manda solo lo útil en Solo teléfono, mínimo.
+// 3797 (medido). El set local del adapter: una intención por tool, todo
+// obligatorio, un ejemplo literal.
 
 @Suite struct ToolProfileTests {
     static let measuredFullRegistryTokens = 3797
-    static let onDeviceToolCeiling = 1400
+    static let onDeviceToolCeiling = 900
+    static let onDeviceSystemCeiling = 1500
     static let onDeviceRoomFloor = 2000
 
     /// El system prompt bundled del modelo local + el mapa corto de la app.
@@ -28,12 +30,13 @@ import Testing
         #expect(ToolProfile.full.apply(tools + [server]) == tools + [server])
 
         let local = ToolProfile.onDevice.apply(tools + [server])
-        #expect(Set(local.map(\.name)) == ["anima_reminders", "goals", "calendar", "reminders", "notes"])
+        #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals",
+                                      "add_calendar_event", "list_events", "write_note", "read_note"])
         #expect(ToolProfile.onDevice.apply(local) == local)
         for name in ToolProfile.excludedOnDevice { #expect(!local.contains { $0.name == name }) }
     }
 
-    @Test func unknownToolNeverReachesTheLocalModel() throws {
+    @Test func onlyToolsWhoseRealToolIsRegisteredTravel() throws {
         let custom: ToolSpec = .client(name: "nueva_tool", description: String(repeating: "x", count: 4000),
                                        inputSchema: .object(["type": .string("object")]))
         #expect(ToolProfile.onDevice.apply([custom]).isEmpty)
@@ -41,7 +44,7 @@ import Testing
         let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("hola")]),
                                                     tools: [custom, CalendarTool().spec],
                                                     opts: try OnDeviceTestConfig.opts())
-        #expect(request.tools.map(\.name) == ["calendar"])
+        #expect(request.tools.map(\.name) == ["add_calendar_event", "list_events"])
     }
 
     @Test func compactGuideSaysWhatTheLocalModelCannotDo() {
@@ -53,53 +56,31 @@ import Testing
     /// Documentación: cada tool del registro tiene decisión explícita en local.
     @Test func everyRegisteredToolHasALocalDecision() throws {
         for spec in try RealToolSet.specs() {
-            #expect(ToolProfile.compact[spec.name] != nil || ToolProfile.excludedOnDevice.contains(spec.name),
+            #expect(LocalToolAdapter.realTools.contains(spec.name) || ToolProfile.excludedOnDevice.contains(spec.name),
                     "\(spec.name) sin decisión para el modelo local")
         }
+        #expect(LocalToolAdapter.realTools.isDisjoint(with: ToolProfile.excludedOnDevice))
     }
 
-    /// Una línea ≤ 120, sin enums (pistas de campo ≤ 30), y los mismos nombres
-    /// de parámetro que el schema completo (la ejecución no cambia).
-    @Test func compactSpecsAreMinimalAndCompatible() throws {
-        let full = Dictionary(uniqueKeysWithValues: try RealToolSet.specs().map { ($0.name, $0) })
-        for (name, spec) in ToolProfile.compact {
-            guard case .client(_, let description, let schema) = spec,
-                  case .client(_, _, let fullSchema)? = full[name] else {
-                Issue.record("\(name) no está en el registro"); continue
+    /// Una intención por tool: ≤ 3 parámetros, todos obligatorios, una línea con
+    /// un ejemplo literal (salvo la que no lleva parámetros).
+    @Test func localToolsAreSingleIntentAndAllRequired() throws {
+        for tool in LocalToolAdapter.tools {
+            guard case .client(let name, let description, let schema) = tool.spec else {
+                Issue.record("\(tool.name) no es client"); continue
             }
-            #expect(description.count <= 120 && !description.contains("\n"), "\(name): \(description.count)")
             let props = schema["properties"]?.objectValue ?? [:]
-            let fullProps = fullSchema["properties"]?.objectValue ?? [:]
-            #expect(props["action"] != nil)
-            for (key, value) in props {
-                #expect(fullProps[key] != nil, "\(name).\(key) no existe en el schema completo")
-                #expect(value["type"] == fullProps[key]?["type"], "\(name).\(key) cambió de tipo")
-                #expect(value["enum"] == nil)
-                #expect((value["description"]?.stringValue?.count ?? 0) <= 30, "\(name).\(key): pista larga")
+            let required = Set(schema["required"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+            #expect(props.count <= 3, "\(name): \(props.count) parámetros")
+            #expect(Set(props.keys) == required, "\(name): no todo es obligatorio")
+            #expect(props["action"] == nil)
+            #expect(description.count <= 150 && !description.contains("\n"), "\(name): \(description.count)")
+            if !props.isEmpty {
+                #expect(description.contains("Ej: " + tool.example), "\(name) sin ejemplo literal")
             }
+            #expect(name.allSatisfy { $0.isASCII && ($0.isLowercase || $0 == "_") })
         }
     }
-
-    /// Los vocabularios cerrados que el perfil quitó como enum siguen visibles.
-    @Test func closedVocabulariesSurviveWithoutEnums() throws {
-        func text(_ name: String) throws -> String {
-            guard case .client(_, let description, let schema)? = ToolProfile.compact[name],
-                  let data = try? JSONEncoder().encode(schema) else { throw ProfileError.missing(name) }
-            return description + " " + String(decoding: data, as: UTF8.self)
-        }
-        let reminders = try text("anima_reminders")
-        for value in ProactiveCadence.allCases.map(\.rawValue) + ["list", "create", "complete", "cancel", "snooze"] {
-            #expect(reminders.contains(value), "anima_reminders sin \(value)")
-        }
-        #expect(reminders.contains("fire_at ISO 8601"))
-        let goals = try text("goals")
-        for value in ProactiveCadence.allCases.map(\.rawValue) + CheckInAnswer.allCases.map(\.rawValue)
-            + ["0-23", "1-7", "list", "declare", "set_checkin", "clear_checkin", "record_checkin", "mark_achieved"] {
-            #expect(goals.contains(value), "goals sin \(value)")
-        }
-    }
-
-    enum ProfileError: Error { case missing(String) }
 
     @Test func onDeviceProfileFitsTheMeasuredBudget() async throws {
         let tools = try RealToolSet.specs()
@@ -107,7 +88,7 @@ import Testing
         let estimate = ContextBudget.onDevice.toolTokens(tools)
         #expect(estimate <= Self.onDeviceToolCeiling, "estimado \(estimate)")
         if let real = await RealToolSet.frameworkTokenCount(local) {
-            print("[tool-profile] tokenizer real: perfil local \(real) tokens; estimado \(estimate)")
+            print("[tool-profile] tokenizer real: set local \(real) tokens; estimado \(estimate)")
             #expect(real <= Self.onDeviceToolCeiling, "real \(real)")
             #expect(abs(estimate - real) <= max(real / 5, 60), "estimado \(estimate) vs real \(real)")
         }
@@ -115,20 +96,50 @@ import Testing
             #expect(abs(fullReal - Self.measuredFullRegistryTokens) <= Self.measuredFullRegistryTokens / 10)
         }
 
+        // System local completo: identidad + reglas + guía + reloj/semana + tools.
         let systemBase = try Self.onDeviceSystemBase()
-        let room = ContextProfile.onDevice.contextBudgetTokens
-            - ContextBudget.onDevice.fixedTokens(systemBase: systemBase, tools: tools)
+        let now = Date(timeIntervalSince1970: 1_791_300_600)
+        let clock = WorkingMemory.clockLine(for: now, timeZone: .current) + "\n"
+            + WorkingMemory.weekLine(for: now, timeZone: .current)
+        let fixed = ContextBudget.onDevice.fixedTokens(systemBase: systemBase + "\n\n" + clock, tools: tools)
+        #expect(fixed <= Self.onDeviceSystemCeiling, "system local \(fixed)")
+        if let instructions = await RealToolSet.frameworkInstructionTokens(systemBase + "\n\n" + clock),
+           let toolsReal = await RealToolSet.frameworkTokenCount(local) {
+            print("[tool-profile] tokenizer real: system \(instructions) + tools \(toolsReal) = \(instructions + toolsReal); "
+                  + "libres \(ContextProfile.onDevice.contextBudgetTokens - instructions - toolsReal)")
+            #expect(instructions + toolsReal <= Self.onDeviceSystemCeiling)
+            #expect(ContextProfile.onDevice.contextBudgetTokens - instructions - toolsReal >= Self.onDeviceRoomFloor)
+        }
+        let room = ContextProfile.onDevice.contextBudgetTokens - fixed
         #expect(room >= Self.onDeviceRoomFloor, "quedan \(room)")
     }
 
-    @Test func onDeviceProviderSendsTheCompactProfile() throws {
+    /// D: reglas del modelo local en código (Remote Config no las puede quitar).
+    @Test func localRulesTravelWithTheCompactGuide() throws {
+        let base = try Self.onDeviceSystemBase()
+        #expect(base.hasPrefix("Eres Anima"))
+        #expect(base.contains(AppGuide.localRules) && base.contains(AppGuide.compactBlock))
+        for rule in ["de tú", "1-3 frases", "placeholders", "Nunca digas que hiciste algo", "si falla, dilo"] {
+            #expect(AppGuide.localRules.contains(rule), "falta \(rule)")
+        }
+        #expect(!AppGuide.systemBase("B").contains(AppGuide.localRules))
+    }
+
+    @Test func onDeviceProviderSendsTheLocalSet() throws {
         let tools = try RealToolSet.specs()
         let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("hola")]), tools: tools,
                                                     opts: try OnDeviceTestConfig.opts())
-        #expect(request.tools.map(\.name).sorted() == ToolProfile.onDevice.apply(tools).map(\.name).sorted())
-        let reminders = try #require(request.tools.first { $0.name == "anima_reminders" })
-        guard case .object(_, _, let properties) = reminders.schema else { Issue.record("sin objeto"); return }
-        #expect(properties.allSatisfy { $0.description == nil })
-        #expect(properties.allSatisfy { if case .string(_, let choices) = $0.schema { choices == nil } else { true } })
+        #expect(request.tools.map(\.name) == ToolProfile.onDevice.apply(tools).map(\.name))
+        let remind = try #require(request.tools.first { $0.name == "remind_me" })
+        guard case .object(_, _, let properties) = remind.schema else { Issue.record("sin objeto"); return }
+        #expect(properties.allSatisfy { !$0.isOptional })
+        let byName = Dictionary(uniqueKeysWithValues: properties.map { ($0.name, $0.schema) })
+        #expect(byName["when"] == .patterned(description: nil, pattern: LocalToolAdapter.datePattern))
+        // Sin enum: con anyOf el 3B elegía "daily" para "mañana a las 9" (medido);
+        // el adapter normaliza el texto libre.
+        #expect(byName["repeat"] == .string(description: nil, choices: nil))
+        let goal = try #require(request.tools.first { $0.name == "declare_goal" })
+        guard case .object(_, _, let goalProps) = goal.schema else { Issue.record("sin objeto"); return }
+        #expect(goalProps.first { $0.name == "hour" }?.schema == .bounded(description: nil, range: 0...23))
     }
 }

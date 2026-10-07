@@ -291,7 +291,29 @@ public actor WorkingMemory {
 
     /// Reloj del harness: fija (o quita con nil) la línea "Ahora: …" del turno.
     public func updateClock(_ now: Date?, timeZone: TimeZone = .current) {
-        clockLine = now.map { Self.clockLine(for: $0, timeZone: timeZone) }
+        clockLine = now.map { now in
+            let line = Self.clockLine(for: now, timeZone: timeZone)
+            // El modelo local (~3B) no calcula fechas: la semana ya resuelta.
+            guard profile.reliefMode == .localMechanical else { return line }
+            return line + "\n" + Self.weekLine(for: now, timeZone: timeZone)
+        }
+    }
+
+    /// `Fechas: hoy martes 2026-10-06, mañana miércoles 2026-10-07, jueves 2026-10-08, …`
+    /// (7 días): "el jueves" se copia en vez de calcularse.
+    public static func weekLine(for date: Date, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let start = calendar.startOfDay(for: date)
+        let days = (0..<7).compactMap { offset -> String? in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: start) else { return nil }
+            let p = calendar.dateComponents([.year, .month, .day, .weekday], from: day)
+            let name = AnimaDateText.weekdays[(p.weekday ?? 1) - 1]
+            let iso = String(format: "%04d-%02d-%02d", p.year ?? 0, p.month ?? 0, p.day ?? 0)
+            let prefix = offset == 0 ? "hoy " : offset == 1 ? "mañana " : ""
+            return "\(prefix)\(name) \(iso)"
+        }
+        return "Fechas: " + days.joined(separator: ", ") + "."
     }
 
     /// `Ahora: lunes 5 de octubre 2026, 14:30 (America/Bogota, UTC-5)` en es_CO.

@@ -163,7 +163,7 @@ import Testing
         #expect(finished)
         #expect(text == "Hola, aquí estoy.")
         let request = try #require(session.requests.value.first)
-        #expect(request.tools.map(\.name) == ["calendar"])   // web_search fuera
+        #expect(request.tools.map(\.name) == ["add_calendar_event", "list_events"])   // web_search fuera
         #expect(request.instructions.hasPrefix(OnDeviceTestConfig.prompt))
     }
 }

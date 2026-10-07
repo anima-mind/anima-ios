@@ -56,6 +56,14 @@ jobs:
           APPEX=build/dd/Build/Products/Debug-iphonesimulator/Anima.app/PlugIns/AnimaWidgets.appex
           test -d "$APPEX" || { echo "Falta AnimaWidgets.appex en Anima.app/PlugIns" >&2; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist"
+      - name: La extensión no linkea GRDB (solo AnimaWidgetCore)
+        run: |
+          APPEX=build/dd/Build/Products/Debug-iphonesimulator/Anima.app/PlugIns/AnimaWidgets.appex
+          for bin in "$APPEX"/AnimaWidgets "$APPEX"/*.dylib; do
+            [ -f "$bin" ] || continue
+            count=$(nm "$bin" 2>/dev/null | grep -c GRDB || true)
+            [ "$count" = "0" ] || { echo "$bin trae $count símbolos de GRDB" >&2; exit 1; }
+          done
 
   ui-test:
     name: App shell — XCUITest (iOS Simulator)

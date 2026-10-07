@@ -55,6 +55,19 @@ enum UITestMode {
         await engine.recordProposal(goal: goal, text: seededProposal, sessionId: sessionId)
     }
 
+    /// Un turno de voz hecho desde las gafas (+ la respuesta), como lo persiste el loop (batch 8 #2).
+    static let seedsGlassesTurn = isActive && arguments.contains("--uitest-seed-glasses-turn")
+    static let seededGlassesTranscript = "¿qué tengo mañana?"
+
+    static func seedGlassesTurn(_ store: SymbolicStore, sessionId: SessionID) {
+        let turns = (try? store.historyPage().turns) ?? []
+        guard !turns.contains(where: { $0.surface == .glassesHUD }) else { return }
+        try? store.append(sessionId: sessionId, message: .user([AudioTool.transcriptBlock(seededGlassesTranscript)]),
+                          surface: .glassesHUD)
+        try? store.append(sessionId: sessionId, message: .assistant([.text("Mañana tienes el standup a las 9.")]),
+                          surface: .glassesHUD)
+    }
+
     /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
     static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
 

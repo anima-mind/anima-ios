@@ -514,6 +514,7 @@ final class AppModel: ObservableObject {
         // El chat abre con TODO lo vivido (campo batch 8 #3): el historial de todas
         // las sesiones, paginado hacia arriba. La sesión solo define el contexto del modelo.
         chat.historyStore = store
+        if UITestMode.seedsGlassesTurn { UITestMode.seedGlassesTurn(store, sessionId: sessionId) }
         if let page = try? store.historyPage() { chat.loadHistory(page: page) }
         // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
         chat.compactor = ConversationCompactor(selector: selector, store: store, telemetry: telemetry)

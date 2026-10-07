@@ -33,6 +33,16 @@ public final class ChatViewModel: ObservableObject {
         public var goalStatement: String?
         /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
         public var isVoice: Bool = false
+        /// Por dónde llegó el turno del dueño: gafas ⇒ chip "gafas" (batch 8 #2).
+        public var surface: SurfaceID?
+
+        /// El chip del canal del turno del dueño: "gafas" gana a "voz".
+        public var channelChip: (label: String, glyph: String, id: String)? {
+            guard role == .user else { return nil }
+            if surface == .glassesHUD { return ("gafas", "eyeglasses", "chat.userMessage.glasses") }
+            if isVoice { return ("voz", "waveform", "chat.userMessage.voice") }
+            return nil
+        }
         /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
         public var isSessionDivider: Bool = false
         /// Foto del turno del dueño (JPEG ya reducido): thumb sobre la burbuja.
@@ -126,6 +136,7 @@ public final class ChatViewModel: ObservableObject {
         var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
                                      imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
         message.toolFailure = turn.role == .assistant && ToolFailureNotice.isNotice(turn.text)
+        message.surface = turn.role == .user ? turn.surface : nil
         if let createdAt = turn.createdAt { message.sentAt = createdAt }
         return message
     }
@@ -698,7 +709,9 @@ extension ChatViewModel: PhoneChatSurface {
     public func render(_ content: SurfaceContent) async {
         switch content {
         case .userTurn(let text, let origin) where origin != .phoneChat:
-            messages.append(DisplayMessage(role: .user, text: text))
+            var message = DisplayMessage(role: .user, text: text)
+            message.surface = origin
+            messages.append(message)
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
             let message = DisplayMessage(role: .assistant, text: text)
             messages.append(message)
@@ -947,11 +960,11 @@ public struct ChatView: View {
                             .accessibilityIdentifier("chat.userMessage.photoAsText")
                     }
                 }
-                if message.isVoice {
-                    Label("voz", systemImage: "waveform")
+                if let chip = message.channelChip {
+                    Label(chip.label, systemImage: chip.glyph)
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
-                        .accessibilityIdentifier("chat.userMessage.voice")
+                        .accessibilityIdentifier(chip.id)
                 }
                 if !message.text.isEmpty {
                     Text(message.text)

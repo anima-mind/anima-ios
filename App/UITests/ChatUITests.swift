@@ -114,6 +114,34 @@ final class ChatUITests: AnimaUITestCase {
         XCTAssertEqual(again.staticTexts.matching(NSPredicate(format: "label == %@", proposal)).count, 1)
     }
 
+    /// Batch 8 #2: lo hablado en las gafas aparece en el historial con el chip
+    /// "gafas" (glifo eyeglasses), no con el de "voz".
+    @MainActor
+    func testGlassesTurnShowsGlassesChip() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-glasses-turn")
+        app.launch()
+        onboard(app)
+        send(app, "y desde el teléfono")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+        app.terminate()
+
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-glasses-turn")
+        again.launch()
+        waitForChat(again)
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == '¿qué tengo mañana?'")).firstMatch)
+        let chip = element(again, "chat.userMessage.glasses")
+        waitFor(chip)
+        XCTAssertTrue(again.staticTexts.matching(NSPredicate(format: "label == 'gafas'")).firstMatch.exists)
+        XCTAssertFalse(element(again, "chat.userMessage.voice").exists, "un turno de gafas no es 'voz'")
+        let shot = XCTAttachment(screenshot: again.screenshot())
+        shot.name = "batch8-02-gafas"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
     @MainActor
     func testPlasticityBadgeOpensMindSheet() {

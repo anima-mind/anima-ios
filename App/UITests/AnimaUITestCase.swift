@@ -112,6 +112,36 @@ class AnimaUITestCase: XCTestCase {
         }
     }
 
+    // MARK: Sheets (batch 8 #4)
+
+    /// La X del sheet vive DENTRO de su padding: en la fila del título (no
+    /// pegada al borde ni al drag indicator) y con 44 pt de área táctil.
+    @MainActor
+    func assertSheetClose(_ app: XCUIApplication, _ screen: String,
+                          file: StaticString = #filePath, line: UInt = #line) {
+        let close = app.buttons["nav.close.\(screen)"]
+        let header = element(app, "sheet.header.\(screen)")
+        waitFor(close, file: file, line: line)
+        waitFor(header, file: file, line: line)
+        let x = close.frame, row = header.frame, window = app.windows.firstMatch.frame
+        // 44 pt en el espacio del sheet; iOS 26 presenta los sheets escalados
+        // (~0.96 en pantalla, medido: 42.25), de ahí la tolerancia.
+        let minTarget = 44 * 0.95
+        XCTAssertGreaterThanOrEqual(x.width, minTarget, "área táctil", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(x.height, minTarget, "área táctil", file: file, line: line)
+        XCTAssertLessThanOrEqual(x.maxX, window.maxX - 4, "la X no toca el borde", file: file, line: line)
+        XCTAssertEqual(x.midY, row.midY, accuracy: 2, "alineada con la primera fila", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(x.minY - window.minY, 0, file: file, line: line)
+    }
+
+    @MainActor
+    func screenshot(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     // MARK: Tabs
 
     @MainActor

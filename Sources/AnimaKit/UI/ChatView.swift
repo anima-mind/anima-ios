@@ -1658,6 +1658,14 @@ public struct MindSheet: View {
     public var body: some View {
         ZStack {
             Theme.Colors.bg.ignoresSafeArea()
+            VStack(spacing: 0) {
+            // La fila de la X queda fija arriba, dentro del padding; el resto
+            // scrollea si no cabe en el detent .medium (antes desbordaba y
+            // empujaba la primera fila fuera del sheet).
+            SheetHeader("Mente", screen: "mind") { dismiss() }
+                .padding(.horizontal, Theme.Space.screenInset)
+                .padding(.top, Theme.Space.sectionGap)
+            ScrollView {
             VStack(spacing: Theme.Space.stack) {
                 BreathMark(size: 104, p: mind.p, phase: .breathing)
                     .accessibilityElement()
@@ -1698,11 +1706,11 @@ public struct MindSheet: View {
                     MindGlassesAction(model: glasses)
                         .padding(.top, 4)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.top, Theme.Space.sectionGap)
+            .padding(.bottom, Theme.Space.sectionGap)
+            }
+            }
         }
-        .overlay(alignment: .topTrailing) { NavCloseButton("mind") { dismiss() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mind.sheet")
     }

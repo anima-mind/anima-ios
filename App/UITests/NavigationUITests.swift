@@ -35,6 +35,31 @@ final class NavigationUITests: AnimaUITestCase {
         waitUntil(settingsTab, "isHittable == true")
     }
 
+    /// Batch 8 #4: la X de los sheets (Mind, Contexto) dentro del padding,
+    /// alineada con la primera fila, 44 pt; cierra.
+    @MainActor
+    func testSheetCloseSitsInsideThePadding() {
+        let app = launch()
+        onboard(app)
+
+        tap(app.buttons["chat.plasticityBadge"])
+        waitFor(element(app, "mind.sheet"))
+        assertSheetClose(app, "mind")
+        let mindSheet = element(app, "mind.sheet")
+        XCTAssertGreaterThan(app.buttons["nav.close.mind"].frame.minY, mindSheet.frame.minY + 8,
+                             "no pegada al drag indicator")
+        screenshot(app, "batch8-04-mind")
+        tap(app.buttons["nav.close.mind"])
+        waitUntil(mindSheet, "exists == false")
+
+        tap(element(app, "chat.contextMeter"))
+        waitFor(element(app, "context.sheet"))
+        assertSheetClose(app, "context")
+        screenshot(app, "batch8-04-context")
+        tap(app.buttons["nav.close.context"])
+        waitUntil(element(app, "context.sheet"), "exists == false")
+    }
+
     /// Cada superficie alcanzable tiene salida y el TabView sigue accesible.
     @MainActor
     func testEverySurfaceHasAVisibleExit() {

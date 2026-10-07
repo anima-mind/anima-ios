@@ -38,20 +38,27 @@ import GRDB
         #expect(WidgetActionInbox.shared()?.directory.lastPathComponent == "Actions" || WidgetActionInbox.shared() == nil)
     }
 
-    @Test func drainAppliesEachOnceAndEmptiesTheQueue() async throws {
+    @Test func drainAppliesEachOnceAndKeepsOnlyTheFailedOnes() async throws {
         let inbox = Self.inbox()
-        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: "ok")))
-        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: "gone")))
+        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: "ok"), createdAt: Date(timeIntervalSince1970: 1)))
+        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: "gone"), createdAt: Date(timeIntervalSince1970: 2)))
+        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: "busy"), createdAt: Date(timeIntervalSince1970: 3)))
         let seen = Locked<[String]>([])
         let applied = await inbox.drain { action in
-            guard case .reminderDone(let id) = action.kind else { return false }
+            guard case .reminderDone(let id) = action.kind else { return .failed }
             seen.mutate { $0.append(id) }
-            return id == "ok"
+            switch id {
+            case "ok": return .applied
+            case "gone": return .obsolete
+            default: return .failed
+            }
         }
         #expect(applied == 1)
-        #expect(Set(seen.value) == ["ok", "gone"])
+        #expect(seen.value == ["ok", "gone", "busy"])
+        #expect(inbox.pending().map(\.action.kind) == [.reminderDone(reminderId: "busy")])
+        #expect(await inbox.drain { _ in .applied } == 1)
         #expect(inbox.pending().isEmpty)
-        #expect(await inbox.drain { _ in true } == 0)
+        #expect(await inbox.drain { _ in .applied } == 0)
     }
 
     @Test func drainRunsTheSameProactiveHandlerAsNotifications() async throws {
@@ -165,10 +172,10 @@ extension WidgetActionInboxTests {
         let tapped = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
         let tap = WidgetAction(kind: .checkInProgress(goalId: goalId), createdAt: tapped)
 
-        #expect(await handler.handle(tap))
-        #expect(await handler.handle(tap))
+        #expect(await handler.handle(tap) == .applied)
+        #expect(await handler.handle(tap) == .applied)
         #expect(await handler.handle(WidgetAction(kind: .checkInProgress(goalId: goalId),
-                                                  createdAt: tapped.addingTimeInterval(60))))
+                                                  createdAt: tapped.addingTimeInterval(60))) == .applied)
 
         let checkIns = await other.checkIns(goalId: goalId)
         #expect(checkIns.count == 1)
@@ -177,10 +184,12 @@ extension WidgetActionInboxTests {
         #expect(await other.streak(goalId: goalId) == 1)
         // Un tap de otro día sí cuenta.
         let yesterday = WidgetAction(kind: .checkInProgress(goalId: goalId), createdAt: tapped.addingTimeInterval(-86_400))
-        #expect(await handler.handle(yesterday))
+        #expect(await handler.handle(yesterday) == .applied)
         #expect(await other.checkIns(goalId: goalId).count == 2)
         // Meta borrada: no aplica.
-        #expect(await !handler.handle(WidgetAction(kind: .checkInProgress(goalId: "nope"))))
+        #expect(await handler.handle(WidgetAction(kind: .checkInProgress(goalId: "nope"))) == .obsolete)
+        #expect(await ProactiveActionHandler(reminders: nil, otherModel: nil, scheduler: nil)
+            .handle(tap) == .failed)
     }
 
     @Test func checkInsFromTheChatStillAddRowsTheSameDay() async throws {
@@ -191,5 +200,72 @@ extension WidgetActionInboxTests {
         _ = await other.recordCheckIn(goalId: goalId, answer: .yes, note: "widget", oncePerDay: true)
         _ = await other.recordCheckIn(goalId: goalId, answer: .yes, note: "leí 30 páginas")
         #expect(await other.checkIns(goalId: goalId).count == 2)
+    }
+}
+
+extension WidgetActionInboxTests {
+    /// La base falla de verdad (otra conexión con lock EXCLUSIVE: SQLITE_BUSY,
+    /// lo mismo que ve un tap aplicado con la base ocupada): el tap NO se pierde,
+    /// el recordatorio sigue abierto y el próximo drenaje lo aplica.
+    @Test func aDatabaseFailureKeepsTheTapForTheNextDrain() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("busy-\(UUID().uuidString).sqlite")
+        let queue = try AnimaDatabase.makeQueue(path: url.path)
+        let reminders = AnimaReminderStore(queue: queue)
+        let other = OtherModel(queue: queue)
+        let reminder = try await reminders.create(text: "Pagar la luz", fireAt: Date().addingTimeInterval(3600))
+        let goalId = await other.ingestStated(statement: "Leer", desiredState: .progressCheckIn(everyDays: 1),
+                                              evidence: "t")
+        let inbox = Self.inbox()
+        try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: reminder.id)))
+        try inbox.enqueue(WidgetAction(kind: .checkInProgress(goalId: goalId)))
+        let handler = ProactiveActionHandler(reminders: reminders, otherModel: other, scheduler: nil)
+
+        let locker = try DatabaseQueue(path: url.path)
+        let release = DispatchSemaphore(value: 0)
+        let holding = Task.detached {
+            try? locker.inTransaction(.exclusive) { _ in
+                release.wait()
+                return .commit
+            }
+        }
+        while await reminders.reminder(id: reminder.id) != nil { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(await inbox.drain { await handler.handle($0) } == 0)
+        #expect(inbox.pending().count == 2)
+        release.signal()
+        await holding.value
+        try locker.close()
+
+        #expect(await reminders.reminder(id: reminder.id)?.status == .scheduled)
+        #expect(await other.checkIns(goalId: goalId).isEmpty)
+        #expect(await inbox.drain { await handler.handle($0) } == 2)
+        #expect(inbox.pending().isEmpty)
+        #expect(await reminders.reminder(id: reminder.id)?.status == .done)
+        #expect(await other.checkIns(goalId: goalId).count == 1)
+        try queue.close()
+    }
+
+    /// "Hecho" reaplicado: obsoleto la segunda vez; en uno que se repite, done_at
+    /// queda en la hora del tap y nunca retrocede.
+    @Test func reminderDoneFromTheWidgetIsIdempotent() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let reminders = AnimaReminderStore(queue: queue)
+        let handler = ProactiveActionHandler(reminders: reminders, otherModel: nil, scheduler: nil)
+        let once = try await reminders.create(text: "Banco", fireAt: Date().addingTimeInterval(3600))
+        let tap = WidgetAction(kind: .reminderDone(reminderId: once.id), createdAt: Date().addingTimeInterval(-120))
+        #expect(await handler.handle(tap) == .applied)
+        #expect(await handler.handle(tap) == .obsolete)
+        let done = await reminders.reminder(id: once.id)
+        #expect(done?.status == .done)
+        #expect(done?.doneAt.map { abs($0.timeIntervalSince(tap.createdAt)) < 0.001 } == true)
+        #expect(await handler.handle(WidgetAction(kind: .reminderDone(reminderId: "nope"))) == .obsolete)
+
+        let daily = try await reminders.create(text: "Agua", fireAt: Date().addingTimeInterval(3600), repeat: .daily)
+        let later = WidgetAction(kind: .reminderDone(reminderId: daily.id), createdAt: Date().addingTimeInterval(-60))
+        let earlier = WidgetAction(kind: .reminderDone(reminderId: daily.id), createdAt: Date().addingTimeInterval(-600))
+        #expect(await handler.handle(later) == .applied)
+        #expect(await handler.handle(earlier) == .applied)
+        let rolled = await reminders.reminder(id: daily.id)
+        #expect(rolled?.status == .scheduled)
+        #expect(rolled?.doneAt.map { abs($0.timeIntervalSince(later.createdAt)) < 0.001 } == true)
     }
 }

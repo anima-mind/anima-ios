@@ -64,20 +64,28 @@ public struct ProactiveActionHandler: Sendable {
         return handled
     }
 
-    /// Un botón de widget de la cola: con la hora del tap y sin duplicar el
-    /// check-in si se reaplica (idempotente por día).
+    /// Un botón de widget de la cola: con la hora del tap, idempotente al
+    /// reaplicarse ("Hecho" sobre uno cerrado = obsoleta; check-in una vez por
+    /// día) y `.failed` si la base falló (el tap queda en la cola).
     @discardableResult
-    public func handle(_ action: WidgetAction) async -> Bool {
-        switch action.kind {
-        case .reminderDone:
-            return await handle(action.proactiveAction, note: Self.widgetNote)
-        case .checkInProgress(let goalId):
-            let recorded = await otherModel?.recordCheckIn(goalId: goalId, answer: .yes, note: Self.widgetNote,
-                                                           answeredAt: action.createdAt, oncePerDay: true)
-            guard recorded != nil else { return false }
-            await scheduler?.sync()
-            return true
+    public func handle(_ action: WidgetAction) async -> WidgetActionOutcome {
+        let outcome: WidgetActionOutcome
+        do {
+            switch action.kind {
+            case .reminderDone(let id):
+                guard let reminders else { return .failed }
+                outcome = try await reminders.completeFromWidget(id: id, at: action.createdAt) ? .applied : .obsolete
+            case .checkInProgress(let goalId):
+                guard let otherModel else { return .failed }
+                let recorded = try await otherModel.applyCheckIn(goalId: goalId, answer: .yes, note: Self.widgetNote,
+                                                                 answeredAt: action.createdAt, oncePerDay: true)
+                outcome = recorded == nil ? .obsolete : .applied
+            }
+        } catch {
+            return .failed
         }
+        if outcome == .applied { await scheduler?.sync() }
+        return outcome
     }
 }
 

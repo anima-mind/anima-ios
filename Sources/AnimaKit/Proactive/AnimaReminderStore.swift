@@ -169,6 +169,28 @@ public actor AnimaReminderStore {
         return try found(id)
     }
 
+    /// "Hecho" desde la cola de los widgets, reaplicable: true si lo cerró,
+    /// false si ya no aplica (no existe, ya cerrado o cancelado). done_at = la
+    /// hora del tap (nunca retrocede). Lanza SOLO si la base falló: el tap se
+    /// conserva para reintentar.
+    public func completeFromWidget(id: String, at tappedAt: Date) throws -> Bool {
+        let ts = tappedAt.timeIntervalSince1970
+        return try queue.write { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT status, repeat, done_at FROM anima_reminder WHERE id=?",
+                                             arguments: [id]),
+                  let status = AnimaReminder.Status(rawValue: row["status"] ?? ""),
+                  status == .scheduled || status == .fired else { return false }
+            let doneAt = max(ts, (row["done_at"] as Double?) ?? ts)
+            if (ProactiveCadence(rawValue: row["repeat"] ?? "none") ?? ProactiveCadence.none) == ProactiveCadence.none {
+                try db.execute(sql: "UPDATE anima_reminder SET status='done', done_at=? WHERE id=?",
+                               arguments: [doneAt, id])
+            } else {
+                try db.execute(sql: "UPDATE anima_reminder SET done_at=? WHERE id=?", arguments: [doneAt, id])
+            }
+            return true
+        }
+    }
+
     @discardableResult
     public func cancel(id: String) throws -> AnimaReminder {
         _ = try active(id)

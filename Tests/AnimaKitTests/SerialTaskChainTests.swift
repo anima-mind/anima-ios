@@ -59,7 +59,7 @@ import Testing
                     await inbox.drain { action in
                         if case .reminderDone(let id) = action.kind { applied.mutate { $0.append(id) } }
                         try? await Task.sleep(for: .milliseconds(5))
-                        return true
+                        return .applied
                     }
                     if call == 0 { try? await Task.sleep(for: .milliseconds(10)) }
                     recorder.log.append("end")

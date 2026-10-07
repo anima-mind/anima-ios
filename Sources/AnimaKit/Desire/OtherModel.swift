@@ -242,13 +242,22 @@ public actor OtherModel {
     ///   (la cola de botones puede reaplicar una acción ya aplicada).
     public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "",
                               answeredAt: Date? = nil, oncePerDay: Bool = false) -> GoalCheckIn? {
-        guard goal(id: goalId) != nil else { return nil }
+        (try? applyCheckIn(goalId: goalId, answer: answer, note: note, answeredAt: answeredAt,
+                           oncePerDay: oncePerDay)) ?? nil
+    }
+
+    /// Como `recordCheckIn`, pero distingue "la meta ya no existe" (nil) de "la
+    /// base falló" (lanza): la cola de los widgets conserva el tap en el segundo.
+    public func applyCheckIn(goalId: String, answer: CheckInAnswer, note: String = "",
+                             answeredAt: Date? = nil, oncePerDay: Bool = false) throws -> GoalCheckIn? {
         let at = answeredAt ?? now()
         let ts = at.timeIntervalSince1970
         let dayStart = calendar.startOfDay(for: at).timeIntervalSince1970
         let dayEnd = (calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: at)) ?? at)
             .timeIntervalSince1970
-        let id = try? queue.write { db -> String in
+        let id = try queue.write { db -> String? in
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM goal WHERE id=?)",
+                                    arguments: [goalId]) == true else { return nil }
             if oncePerDay, let existing = try String.fetchOne(db, sql: """
                 SELECT id FROM goal_checkin WHERE goal_id=? AND answer=? AND answered_at >= ? AND answered_at < ?
                 ORDER BY answered_at LIMIT 1
@@ -269,7 +278,10 @@ public actor OtherModel {
                 """, arguments: [fresh, goalId, ts, ts, answer.rawValue, note])
             return fresh
         }
-        return id.flatMap { checkIn(id: $0) }
+        guard let id else { return nil }
+        return try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM goal_checkin WHERE id=?", arguments: [id]).map(Self.checkIn(from:))
+        }
     }
 
     public func lastCheckIn(goalId: String) -> GoalCheckIn? {

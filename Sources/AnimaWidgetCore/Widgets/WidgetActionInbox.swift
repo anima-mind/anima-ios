@@ -28,6 +28,16 @@ public struct WidgetAction: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// Qué pasó al aplicar una acción de la cola.
+public enum WidgetActionOutcome: Sendable, Equatable {
+    /// Aplicada: sale de la cola.
+    case applied
+    /// Ya no aplica (recordatorio cerrado, meta borrada): sale de la cola.
+    case obsolete
+    /// No se pudo (base suspendida u ocupada, disco lleno…): queda para reintentar.
+    case failed
+}
+
 public struct WidgetActionInbox: Sendable {
     public let directory: URL
 
@@ -77,15 +87,22 @@ public struct WidgetActionInbox: Sendable {
             }
     }
 
-    /// Aplica cada pendiente con `apply` y lo saca de la cola. Una acción que
-    /// ya no aplica (recordatorio cerrado, meta borrada) también sale: reaplicar
-    /// es idempotente del lado de los stores. Devuelve cuántas se aplicaron.
+    /// Aplica cada pendiente con `apply`. Aplicada u obsoleta sale de la cola;
+    /// si falló, el archivo queda y se reintenta en el próximo drenaje (reaplicar
+    /// es idempotente del lado de los stores). Devuelve cuántas se aplicaron.
     @discardableResult
-    public func drain(_ apply: @Sendable (WidgetAction) async -> Bool) async -> Int {
+    public func drain(_ apply: @Sendable (WidgetAction) async -> WidgetActionOutcome) async -> Int {
         var applied = 0
         for item in pending() {
-            if await apply(item.action) { applied += 1 }
-            try? FileManager.default.removeItem(at: item.url)
+            switch await apply(item.action) {
+            case .applied:
+                applied += 1
+                try? FileManager.default.removeItem(at: item.url)
+            case .obsolete:
+                try? FileManager.default.removeItem(at: item.url)
+            case .failed:
+                continue
+            }
         }
         return applied
     }

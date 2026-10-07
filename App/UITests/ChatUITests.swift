@@ -42,6 +42,43 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(assistantMessage(relaunched, labelContains: fixedReply))
     }
 
+    /// Batch 8 #3: el historial queda fijo en el teléfono. Relanzar con sesión
+    /// nueva (>8 h) y volver a relanzar (reanuda la sesión nueva VACÍA: la causa
+    /// del historial perdido) sigue mostrando lo viejo, con el separador.
+    @MainActor
+    func testHistorySurvivesNewSessionsAcrossRelaunches() {
+        let app = launch()
+        onboard(app)
+        send(app, "historial fijo")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+        app.terminate()
+
+        let fresh = makeApp(reset: false)
+        fresh.launchArguments.append("--uitest-fresh-session")
+        fresh.launch()
+        waitForChat(fresh)
+        let old = fresh.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'historial fijo'")).firstMatch
+        waitFor(old)
+        waitFor(assistantMessage(fresh, labelContains: fixedReply))
+        fresh.terminate()
+
+        let again = launch(reset: false)
+        waitForChat(again)
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'historial fijo'")).firstMatch)
+        // Un turno nuevo en la sesión nueva: lo viejo arriba, separador de conversación en medio.
+        send(again, "seguimos")
+        waitFor(assistantMessage(again, value: "done", labelContains: fixedReply), timeout: 15)
+        let divider = again.staticTexts.matching(identifier: "chat.sessionDivider")
+            .matching(NSPredicate(format: "label == '— nueva conversación —'")).firstMatch
+        waitFor(divider)
+        let shot = XCTAttachment(screenshot: again.screenshot())
+        shot.name = "batch8-03-historial"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
     @MainActor
     func testPlasticityBadgeOpensMindSheet() {
@@ -159,7 +196,8 @@ final class ChatUITests: AnimaUITestCase {
 }
 
 /// Batch 5b #4/#5: el medidor de contexto abre su sheet; "Nueva conversación"
-/// deja el chat limpio con su separador (la memoria no se toca).
+/// agrega su separador (la memoria no se toca). Batch 8 #3: lo visible NO se
+/// borra — solo cambia lo que entra al contexto del modelo.
 final class ContextUITests: AnimaUITestCase {
     @MainActor
     func testContextMeterOpensSheetAndStartsANewConversation() {
@@ -175,7 +213,8 @@ final class ContextUITests: AnimaUITestCase {
         tap(element(app, "context.newConversation"))
         waitUntil(element(app, "context.sheet"), "exists == false")
         waitFor(text(app, "— nueva conversación —"))
-        XCTAssertFalse(app.staticTexts.matching(identifier: "chat.userMessage").firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'hola'")).firstMatch.exists)
     }
 }
 

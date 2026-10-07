@@ -42,6 +42,9 @@ enum UITestMode {
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
     }
 
+    /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
+    static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
+
     /// Sin red forzado (pill "Sin conexión" + turno encolado).
     static let forcesOffline = isActive && arguments.contains("--uitest-offline")
     static let shouldReset = isActive && arguments.contains(resetFlag)

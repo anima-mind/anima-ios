@@ -293,8 +293,12 @@ import Testing
         #expect(history.contains { $0.isSessionDivider && $0.text == "Recorté la conversación para caber en Modelo local (Apple)" })
         #expect(ContextBoundary(kind: .compaction, fromSeq: 0, createdAt: Date()).dividerText == "Conversación compactada")
         #expect(ContextBoundary(kind: .trim, fromSeq: 0, createdAt: Date()).dividerText.hasSuffix("el modelo"))
+        // Nueva conversación: el historial queda visible; solo se agrega el separador (idempotente).
+        let shown = chat.messages.count
         chat.markNewConversation()
-        #expect(chat.messages.map(\.text) == [ChatViewModel.newConversationText])
+        chat.markNewConversation()
+        #expect(chat.messages.count == shown + 1)
+        #expect(chat.messages.last?.text == ChatViewModel.newConversationText)
     }
 
     @MainActor

@@ -113,29 +113,78 @@ public final class ChatViewModel: ObservableObject {
 
     public static let photosNeedRemoteNote = "Las fotos necesitan un modelo remoto (Claude, OpenAI o Gemini)."
 
-    public static let sessionDividerText = "— nueva sesión —"
+    /// Separador entre conversaciones (sesiones) en el historial del chat.
+    public static let sessionDividerText = newConversationText
 
-    /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
-    /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
-    /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
+    static func message(_ turn: VisibleTurn) -> DisplayMessage {
+        if turn.role == .assistant, let tag = turn.proactive,
+           let proactive = ProactiveMessage(tag: tag, text: turn.text) {
+            var card = DisplayMessage.proactive(proactive)
+            if let createdAt = turn.createdAt { card.sentAt = createdAt }
+            return card
+        }
+        var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                                     imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+        message.toolFailure = turn.role == .assistant && turn.text.hasPrefix(ToolFailureNotice.marker)
+        if let createdAt = turn.createdAt { message.sentAt = createdAt }
+        return message
+    }
+
+    static func divider(_ text: String) -> DisplayMessage {
+        DisplayMessage(role: .assistant, text: text, isSessionDivider: true)
+    }
+
+    /// Una página del historial de TODAS las sesiones → mensajes, con
+    /// "— nueva conversación —" entre sesiones y las fronteras de contexto
+    /// ("Conversación compactada", recortes) donde cayeron. `following` es el
+    /// primer turno ya cargado (al prepender una página más vieja); `leadingCut`
+    /// dice que hay turnos más viejos sin cargar (sus fronteras las pinta esa página).
+    public static func history(turns: [VisibleTurn], boundaries: [SessionID: [ContextBoundary]],
+                               following: VisibleTurn? = nil, leadingCut: Bool = false) -> [DisplayMessage] {
+        var out: [DisplayMessage] = []
+        var session: SessionID?
+        var started = false
+        var pending: [ContextBoundary] = []
+        for turn in turns {
+            if !started || turn.sessionId != session {
+                if started {
+                    out += pending.map { divider($0.dividerText) }
+                    out.append(divider(newConversationText))
+                }
+                pending = (turn.sessionId.flatMap { boundaries[$0] } ?? []).sorted { $0.fromSeq < $1.fromSeq }
+                // Página cortada a mitad de sesión: lo de antes de su primer turno es de la página anterior.
+                if !started, leadingCut, let first = turn.seq { pending.removeAll { $0.fromSeq <= first } }
+                session = turn.sessionId
+                started = true
+            }
+            while let next = pending.first, let seq = turn.seq, seq >= next.fromSeq {
+                out.append(divider(next.dividerText))
+                pending.removeFirst()
+            }
+            out.append(message(turn))
+        }
+        guard started else { return out }
+        if let following {
+            if following.sessionId == session {
+                let upTo = following.seq ?? Int.max
+                out += pending.filter { $0.fromSeq <= upTo }.map { divider($0.dividerText) }
+            } else {
+                out += pending.map { divider($0.dividerText) }
+                out.append(divider(newConversationText))
+            }
+        } else {
+            out += pending.map { divider($0.dividerText) }
+        }
+        return out
+    }
+
+    /// Historial de la sesión actual (y la anterior) — API previa al historial
+    /// completo; la usan tests y superficies sin store.
     public static func history(current: [VisibleTurn], previous: [VisibleTurn] = [],
                                boundaries: [ContextBoundary] = []) -> [DisplayMessage] {
-        func message(_ turn: VisibleTurn) -> DisplayMessage {
-            if turn.role == .assistant, let tag = turn.proactive,
-               let proactive = ProactiveMessage(tag: tag, text: turn.text) {
-                var card = DisplayMessage.proactive(proactive)
-                if let createdAt = turn.createdAt { card.sentAt = createdAt }
-                return card
-            }
-            var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
-                                         imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
-            message.toolFailure = turn.role == .assistant && turn.text.hasPrefix(ToolFailureNotice.marker)
-            if let createdAt = turn.createdAt { message.sentAt = createdAt }
-            return message
-        }
         var out = previous.map(message)
         if !out.isEmpty {
-            out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
+            out.append(divider(sessionDividerText))
         }
         var pending = boundaries.sorted { $0.fromSeq < $1.fromSeq }
         for turn in current {
@@ -152,8 +201,62 @@ public final class ChatViewModel: ObservableObject {
     /// Carga el historial al cablearse (antes de cualquier turno nuevo).
     public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = [], boundaries: [ContextBoundary] = []) {
         let restored = Self.history(current: current, previous: previous, boundaries: boundaries)
+        register(restored)
         guard !restored.isEmpty else { return }
         messages = restored + messages
+    }
+
+    // MARK: Historial completo (campo batch 8 #3): fijo en el teléfono
+
+    /// El transcript de TODAS las sesiones (paginado hacia arriba). Compactar o
+    /// abrir conversación nueva solo cambia el contexto del modelo, jamás esto.
+    public var historyStore: SymbolicStore?
+    @Published public private(set) var hasOlderHistory = false
+    private var oldestTurn: VisibleTurn?
+    private var isLoadingOlder = false
+
+    /// Primera página (la más reciente) del historial completo.
+    public func loadHistory(page: SymbolicStore.HistoryPage) {
+        var restored = Self.history(turns: page.turns, boundaries: page.boundaries, leadingCut: page.hasMore)
+        // La sesión activa es otra (nueva tras >8 h o "Nueva conversación"): el
+        // separador marca desde dónde arranca el contexto del modelo.
+        if let last = page.turns.last, let lastSession = last.sessionId, lastSession != sessionId,
+           restored.last?.isSessionDivider != true || restored.last?.text != Self.newConversationText {
+            restored.append(Self.divider(Self.newConversationText))
+        }
+        oldestTurn = page.turns.first
+        hasOlderHistory = page.hasMore
+        register(restored)
+        guard !restored.isEmpty else { return }
+        messages = restored + messages
+    }
+
+    /// Scroll al tope: la página anterior va arriba. Devuelve el mensaje que
+    /// estaba primero (la vista lo re-ancla para que nada salte).
+    @discardableResult
+    public func loadOlderHistory() async -> UUID? {
+        guard hasOlderHistory, !isLoadingOlder, let historyStore, let cursor = oldestTurn?.rowId else { return nil }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        guard let page = try? historyStore.historyPage(before: cursor), !page.turns.isEmpty else {
+            hasOlderHistory = false
+            return nil
+        }
+        var older = Self.history(turns: page.turns, boundaries: page.boundaries, following: oldestTurn,
+                                 leadingCut: page.hasMore)
+        // Una propuesta ya pintada abajo (pendiente) no se repite al subir.
+        older.removeAll { message in message.intentionId.map { shownIntentionIds.contains($0) } ?? false }
+        register(older)
+        oldestTurn = page.turns.first
+        hasOlderHistory = page.hasMore
+        let anchor = messages.first?.id
+        messages = older + messages
+        return anchor
+    }
+
+    /// Las propuestas restauradas del historial ya están pintadas (no se duplican).
+    private func register(_ restored: [DisplayMessage]) {
+        for id in restored.compactMap(\.intentionId) { shownIntentionIds.insert(id) }
     }
 
     /// Estado de la mente para el badge y el Mind sheet.
@@ -500,9 +603,11 @@ public final class ChatViewModel: ObservableObject {
 
     public static let newConversationText = "— nueva conversación —"
 
-    /// El chat recién abierto por "Nueva conversación": solo el separador.
+    /// "Nueva conversación": el historial queda visible; el separador marca
+    /// desde dónde arranca el contexto nuevo del modelo.
     public func markNewConversation() {
-        messages = [DisplayMessage(role: .assistant, text: Self.newConversationText, isSessionDivider: true)]
+        guard !(messages.last?.isSessionDivider == true && messages.last?.text == Self.newConversationText) else { return }
+        messages.append(Self.divider(Self.newConversationText))
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
@@ -636,6 +741,20 @@ public struct ChatView: View {
                     ScrollView {
                         let headers = model.dayHeaders()
                         LazyVStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                            if model.hasOlderHistory {
+                                // Al llegar al tope: la página anterior (50 turnos) y re-ancla.
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Theme.Colors.textFaint)
+                                    .frame(maxWidth: .infinity)
+                                    .accessibilityIdentifier("chat.loadOlder")
+                                    .onAppear {
+                                        Task {
+                                            let anchor = await model.loadOlderHistory()
+                                            if let anchor, !followsBottom { proxy.scrollTo(anchor, anchor: .top) }
+                                        }
+                                    }
+                            }
                             ForEach(model.messages) { message in
                                 VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
                                     if let header = headers[message.id] {

@@ -478,7 +478,7 @@ final class AppModel: ObservableObject {
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
-        let (sessionId, previousSession) = resolveSession(store)
+        let (sessionId, _) = resolveSession(store)
         var desireEngine: DesireEngine?
         if let otherModel {
             let engine = DesireEngine(otherModel: otherModel,
@@ -499,10 +499,10 @@ final class AppModel: ObservableObject {
         // El SelfModel vivo alimenta el badge, el Mind sheet ("noches") y el nombre del header.
         let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine,
                                  selfModel: selfModel)
-        // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
-        chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
-                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [],
-                         boundaries: (try? store.boundaries(sessionId: sessionId)) ?? [])
+        // El chat abre con TODO lo vivido (campo batch 8 #3): el historial de todas
+        // las sesiones, paginado hacia arriba. La sesión solo define el contexto del modelo.
+        chat.historyStore = store
+        if let page = try? store.historyPage() { chat.loadHistory(page: page) }
         // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
         chat.compactor = ConversationCompactor(selector: selector, store: store, telemetry: telemetry)
         chat.onNewConversation = { [weak self] in self?.startNewConversation() }
@@ -573,7 +573,8 @@ final class AppModel: ObservableObject {
     private func resolveSession(_ store: SymbolicStore) -> (SessionID, SessionID?) {
         if let activeSessionId { return (activeSessionId, previousSessionId) }
         let recovery = Recovery(queue: store.database, store: store)
-        let decision = (try? recovery.decideLaunch()) ?? .fresh(previous: nil)
+        let idle = UITestMode.forcesFreshSession ? 0 : Recovery.idleLimit
+        let decision = (try? recovery.decideLaunch(idleLimit: idle)) ?? .fresh(previous: nil)
         let resolved: (SessionID, SessionID?)
         switch decision {
         case .resume(let id):

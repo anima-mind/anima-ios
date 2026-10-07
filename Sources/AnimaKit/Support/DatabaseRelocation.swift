@@ -8,9 +8,15 @@
 //      backup de SQLite a un temporal, `PRAGMA integrity_check` + conteo de filas
 //      de TODAS las tablas igual al origen (turnos, memorias, metas, …) + mismo
 //      esquema; recién entonces rename atómico al nombre final y la vieja (y sus
-//      sidecars) se renombran a `.migrated` — NUNCA se borran.
+//      sidecars) se renombran a `.migrated` (solo la purga del paso 5 los borra).
 //   Cualquier fallo antes de instalar ⇒ se borra el temporal, se loguea y se
 //   sigue con la base vieja intacta (se reintenta en el próximo arranque).
+//   4. Si la base ya vivía en el grupo y el grupo desaparece (build sin el
+//      entitlement) ⇒ NO se abre nada: ni una base vacía en Documents (mente
+//      vacía y escrituras que luego quedarían escondidas) ni la `.migrated`
+//      (vieja: divergiría de la del grupo). La app muestra el error.
+//   5. El `.migrated` se purga tras `purgeAfterOpens` aperturas buenas de la
+//      base del grupo en arranques posteriores (nunca en el de la mudanza).
 
 import Foundation
 import GRDB
@@ -35,20 +41,37 @@ public struct DatabaseRelocation: Sendable {
         case keptLegacy(reason: String)
         /// El binario no tiene contenedor del grupo (build sin firma): sandbox.
         case noGroupContainer
+        /// La base vive en el grupo pero este binario no lo alcanza: no se abre.
+        case groupUnavailable
     }
 
     public struct Resolution: Sendable, Equatable {
         public var path: String
         public var outcome: Outcome
+
+        public init(path: String, outcome: Outcome) {
+            self.path = path
+            self.outcome = outcome
+        }
+
+        /// La ruta a abrir; con el grupo inalcanzable, error (jamás una base vacía).
+        public func openablePath() throws -> String {
+            if outcome == .groupUnavailable { throw RelocationError.groupUnavailable }
+            return path
+        }
     }
 
     public enum RelocationError: Error, Equatable, LocalizedError {
         case integrity(String)
         case rowCountMismatch(table: String, source: Int, copy: Int)
         case schemaMismatch
+        case groupUnavailable
 
         public var errorDescription: String? {
             switch self {
+            case .groupUnavailable:
+                return "tu memoria vive en el contenedor compartido de la app y esta instalación no tiene acceso a él. "
+                    + "No se abre una base vacía para no perder nada: reinstala la versión de TestFlight."
             case .integrity(let detail): return "integrity_check de la copia: \(detail)"
             case .rowCountMismatch(let table, let source, let copy):
                 return "conteo distinto en \(table): origen \(source), copia \(copy)"
@@ -60,6 +83,10 @@ public struct DatabaseRelocation: Sendable {
     public static let fileName = "anima.sqlite"
     public static let migratingSuffix = ".migrating"
     public static let retiredSuffix = ".migrated"
+    /// Marca en Documents: "la base vive en el grupo" + aperturas buenas desde la mudanza.
+    public static let groupMarkerSuffix = ".in-app-group"
+    /// Aperturas buenas de la base del grupo antes de purgar el `.migrated`.
+    public static let purgeAfterOpens = 3
     /// Sidecars de SQLite que viajan con la base (WAL o rollback journal).
     public static let sidecars = ["-wal", "-shm", "-journal"]
 
@@ -86,6 +113,8 @@ public struct DatabaseRelocation: Sendable {
 
     public var targetURL: URL? { groupDirectory?.appendingPathComponent(Self.fileName) }
 
+    var markerURL: URL { URL(fileURLWithPath: legacyURL.path + Self.groupMarkerSuffix) }
+
     private var fileManager: FileManager { .default }
 
     // MARK: - Resolución
@@ -94,6 +123,10 @@ public struct DatabaseRelocation: Sendable {
     /// abrir cualquier conexión).
     public func resolve() -> Resolution {
         guard let groupDirectory, let target = targetURL else {
+            if exists(markerURL) || !retiredFiles().isEmpty {
+                log("db-relocation: la base vive en el App Group y este binario no lo alcanza; no se abre")
+                return Resolution(path: legacyURL.path, outcome: .groupUnavailable)
+            }
             return Resolution(path: legacyURL.path, outcome: .noGroupContainer)
         }
         if fileManager.fileExists(atPath: target.path) {
@@ -101,12 +134,15 @@ public struct DatabaseRelocation: Sendable {
                 // Arranque previo interrumpido entre instalar y retirar.
                 do { try retireLegacy() } catch { log("db-relocation: retiro pendiente falló: \(error)") }
             }
+            markInGroup()
+            purgeRetiredIfSafe()
             return Resolution(path: target.path, outcome: .alreadyMigrated)
         }
         guard exists(legacyURL) else {
             do {
                 try fileManager.createDirectory(at: groupDirectory, withIntermediateDirectories: true)
                 protect(groupDirectory)
+                markInGroup()
                 return Resolution(path: target.path, outcome: .fresh)
             } catch {
                 log("db-relocation: no se pudo crear el directorio del grupo: \(error)")
@@ -116,6 +152,7 @@ public struct DatabaseRelocation: Sendable {
         do {
             let rows = try migrate(to: target, in: groupDirectory)
             log("db-relocation: base mudada al App Group (\(rows.values.reduce(0, +)) filas verificadas)")
+            markInGroup(resetOpens: true)
             do {
                 try step(.retireLegacy, target)
                 try retireLegacy()
@@ -129,6 +166,54 @@ public struct DatabaseRelocation: Sendable {
             log("db-relocation: se sigue con la base de Documents (intacta): \(error)")
             return Resolution(path: legacyURL.path, outcome: .keptLegacy(reason: "\(error)"))
         }
+    }
+
+    /// La app abrió (y migró) la base del grupo de esta resolución: cuenta para
+    /// la purga del `.migrated`. La apertura del arranque de la mudanza no cuenta.
+    public func confirmOpened(_ resolution: Resolution) {
+        guard resolution.outcome == .alreadyMigrated, exists(markerURL) else { return }
+        writeOpens(opens() + 1)
+    }
+
+    // MARK: - Marca y purga
+
+    private func markInGroup(resetOpens: Bool = false) {
+        guard resetOpens || !exists(markerURL) else { return }
+        writeOpens(0)
+    }
+
+    func opens() -> Int {
+        (try? String(contentsOf: markerURL, encoding: .utf8))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+    }
+
+    private func writeOpens(_ count: Int) {
+        do {
+            try Data("\(count)".utf8).write(to: markerURL, options: .atomic)
+        } catch {
+            log("db-relocation: no se pudo escribir la marca del grupo: \(error)")
+        }
+    }
+
+    /// `anima.sqlite.migrated*` (con sufijos `.2`, `.3`… y sidecars).
+    func retiredFiles() -> [URL] {
+        let directory = legacyURL.deletingLastPathComponent()
+        let prefix = legacyURL.lastPathComponent + Self.retiredSuffix
+        let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.filter { $0.hasPrefix(prefix) }.sorted().map { directory.appendingPathComponent($0) }
+    }
+
+    private func purgeRetiredIfSafe() {
+        let retired = retiredFiles()
+        guard !retired.isEmpty, opens() >= Self.purgeAfterOpens else { return }
+        for url in retired {
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                log("db-relocation: purga de \(url.lastPathComponent) falló: \(error)")
+            }
+        }
+        log("db-relocation: copia .migrated purgada tras \(opens()) aperturas buenas de la base del grupo")
     }
 
     // MARK: - Mudanza
@@ -169,6 +254,7 @@ public struct DatabaseRelocation: Sendable {
 
         try step(.install, temporary)
         try fileManager.moveItem(at: temporary, to: target)
+        cleanTemporary(in: directory)
         protect(target)
         return sourceRows
     }
@@ -212,7 +298,7 @@ public struct DatabaseRelocation: Sendable {
             """)
     }
 
-    // MARK: - Retiro (renombrar, nunca borrar)
+    // MARK: - Retiro (renombrar; solo la purga borra)
 
     /// `anima.sqlite` → `anima.sqlite.migrated` (+ sidecars). Si ya hay un
     /// `.migrated` (no debería), se usa `.migrated.2`, `.3`… — nada se pisa.

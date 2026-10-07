@@ -134,7 +134,7 @@ import GRDB
         #expect(third.outcome == .alreadyMigrated)
         #expect(try box.turnTexts(at: box.target) == before)
         let documents = try FileManager.default.contentsOfDirectory(atPath: box.documents.path).sorted()
-        #expect(documents == ["anima.sqlite.migrated"])
+        #expect(documents == ["anima.sqlite.in-app-group", "anima.sqlite.migrated"])
     }
 
     @Test func alreadyMigratedDoesNotTouchTheGroupDatabase() async throws {
@@ -310,6 +310,7 @@ import GRDB
         #expect(DatabaseRelocation.RelocationError.schemaMismatch.errorDescription?.contains("esquema") == true)
         #expect(DatabaseRelocation.RelocationError.rowCountMismatch(table: "goal", source: 1, copy: 0)
             .errorDescription?.contains("goal") == true)
+        #expect(DatabaseRelocation.RelocationError.groupUnavailable.errorDescription?.contains("vacía") == true)
         DatabaseRelocation.systemLog("db-relocation: prueba de log")
         #expect(AppGroup.identifier == "group.com.joshuamoreno1.anima.widgets")
         _ = AppGroup.databaseDirectory()
@@ -329,5 +330,90 @@ extension DatabaseRelocationTests {
         let mode = try await copy.read { db in try String.fetchOne(db, sql: "PRAGMA journal_mode") }
         #expect(mode == "delete")
         try copy.close()
+    }
+}
+
+// MARK: - Grupo que desaparece, sidecars huérfanos y purga del .migrated
+
+extension DatabaseRelocationTests {
+    @Test func groupVanishedAfterMigratingNeverOpensAnEmptyDatabase() async throws {
+        let box = try Sandbox()
+        try await box.seedLegacy(turns: 6)
+        _ = box.relocation().resolve()
+
+        let resolution = box.relocation(group: false).resolve()
+        #expect(resolution.outcome == .groupUnavailable)
+        #expect(throws: DatabaseRelocation.RelocationError.groupUnavailable) { try resolution.openablePath() }
+        // Ni base vacía en Documents ni la .migrated tocada: nada que esconder después.
+        #expect(!box.exists(box.legacy))
+        #expect(try box.count("turn_event", at: box.retired) == 6)
+
+        // El grupo vuelve: la base del grupo, intacta, y sin .migrated.2.
+        let back = box.relocation().resolve()
+        #expect(back.outcome == .alreadyMigrated)
+        #expect(try back.openablePath() == box.target.path)
+        #expect(try box.count("turn_event", at: box.target) == 6)
+        #expect(!box.exists(URL(fileURLWithPath: box.retired.path + ".2")))
+    }
+
+    @Test func groupVanishedAfterAFreshInstallInTheGroupIsAlsoUnavailable() throws {
+        let box = try Sandbox()
+        #expect(box.relocation().resolve().outcome == .fresh)
+        let resolution = box.relocation(group: false).resolve()
+        #expect(resolution.outcome == .groupUnavailable)
+        #expect(!box.exists(box.legacy))
+    }
+
+    @Test func retiredFileAloneAlsoMarksTheGroupAsHome() throws {
+        let box = try Sandbox()
+        try Data("retirada".utf8).write(to: box.retired)
+        #expect(box.relocation(group: false).resolve().outcome == .groupUnavailable)
+    }
+
+    @Test func noOrphanSidecarsOfTheTemporaryAfterMigratingFromWAL() async throws {
+        let box = try Sandbox()
+        try await box.seedLegacy(turns: 2)
+        let writer = try DatabaseQueue(path: box.legacy.path)
+        try await writer.writeWithoutTransaction { db in try db.execute(sql: "PRAGMA journal_mode=WAL") }
+        try writer.close()
+        guard case .migrated = box.relocation().resolve().outcome else { Issue.record("no migró"); return }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: box.group.path) == ["anima.sqlite"])
+    }
+
+    @Test func retiredCopyIsPurgedOnlyAfterEnoughGoodOpensInLaterLaunches() async throws {
+        let box = try Sandbox()
+        try await box.seedLegacy(turns: 3)
+        try Data("retiro anterior".utf8).write(to: box.retired)
+        let migration = box.relocation().resolve()
+        guard case .migrated = migration.outcome else { Issue.record("\(migration.outcome)"); return }
+        // La apertura del arranque de la mudanza no cuenta.
+        box.relocation().confirmOpened(migration)
+        #expect(box.relocation().opens() == 0)
+
+        for launch in 1...DatabaseRelocation.purgeAfterOpens {
+            let resolution = box.relocation().resolve()
+            #expect(resolution.outcome == .alreadyMigrated)
+            #expect(box.exists(box.retired), "arranque \(launch): aún no se purga")
+            #expect(box.relocation().retiredFiles().count == 2)
+            box.relocation().confirmOpened(resolution)
+        }
+        #expect(box.relocation().opens() == DatabaseRelocation.purgeAfterOpens)
+
+        let purged = box.relocation().resolve()
+        #expect(purged.outcome == .alreadyMigrated)
+        #expect(box.relocation().retiredFiles().isEmpty)
+        #expect(try box.count("turn_event", at: box.target) == 3)
+        // Purgada la copia, la marca sigue diciendo dónde vive la base.
+        #expect(box.relocation(group: false).resolve().outcome == .groupUnavailable)
+    }
+
+    @Test func opensAreOnlyCountedForTheGroupDatabase() throws {
+        let box = try Sandbox()
+        let legacyOnly = box.relocation(group: false).resolve()
+        box.relocation(group: false).confirmOpened(legacyOnly)
+        #expect(!box.exists(URL(fileURLWithPath: box.legacy.path + DatabaseRelocation.groupMarkerSuffix)))
+        let fresh = box.relocation().resolve()
+        box.relocation().confirmOpened(fresh)
+        #expect(box.relocation().opens() == 0)
     }
 }

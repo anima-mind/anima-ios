@@ -204,9 +204,11 @@ final class AppModel: ObservableObject {
         // Base de datos única (GRDB) en el contenedor del App Group (mudanza
         // única y verificada desde Documents; ante cualquier fallo, la vieja).
         do {
-            let dbPath = Self.databasePath()
+            let (relocation, resolution) = Self.resolveDatabase()
+            let dbPath = try resolution.openablePath()
             let queue = try AnimaDatabase.makeQueue(path: dbPath)
             Self.protect(path: dbPath)
+            relocation?.confirmOpened(resolution)
             let store = SymbolicStore(queue: queue)
             let telemetry = Telemetry(queue: queue)
             self.store = store
@@ -946,15 +948,18 @@ final class AppModel: ObservableObject {
 
     /// `--uitest`: su base aislada en Documents. Dueño: la del App Group, con la
     /// mudanza única y verificada desde Documents (DatabaseRelocation); si algo
-    /// falla, la de Documents intacta (se reintenta en el próximo arranque).
-    private static func databasePath() -> String {
+    /// falla, la de Documents intacta (se reintenta en el próximo arranque). Si la
+    /// base ya vivía en el grupo y este binario no lo alcanza, no se abre nada.
+    private static func resolveDatabase() -> (DatabaseRelocation?, DatabaseRelocation.Resolution) {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        if UITestMode.isActive { return dir.appendingPathComponent(UITestMode.databaseName).path }
+        if UITestMode.isActive {
+            return (nil, .init(path: dir.appendingPathComponent(UITestMode.databaseName).path, outcome: .noGroupContainer))
+        }
         let relocation = DatabaseRelocation(legacyURL: dir.appendingPathComponent(DatabaseRelocation.fileName),
                                             groupDirectory: AppGroup.databaseDirectory(),
                                             protect: { protect(path: $0.path) })
-        return relocation.resolve().path
+        return (relocation, relocation.resolve())
     }
 
     /// Protección del .sqlite alineada con el token del Keychain (AfterFirstUnlock):

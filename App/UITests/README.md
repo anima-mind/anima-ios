@@ -25,6 +25,13 @@ el argumento nada de esto se activa:
 - `--uitest-seed-goal`: siembra una meta declarada (Metas, check-ins).
 - `--uitest-seed-inferred-goal`: siembra una meta inferida por confirmar
   (aviso sobre el chat → Ajustes → Mente → "Por aprobar").
+- `--uitest-seed-intention`: siembra una propuesta del deseo pendiente (card
+  con "Hagámoslo / Ahora no", sin texto duplicado).
+- `--uitest-seed-glasses-turn`: siembra un turno de voz hecho desde las gafas
+  (chip "gafas" en el historial).
+- `--uitest-seed-long-history`: 60 turnos previos (el chat abre anclado al último).
+- `--uitest-fresh-session`: el lanzamiento abre sesión nueva (simula >8 h sin
+  actividad) — el historial completo debe seguir visible.
 - `--uitest-seed-reminder=N`: siembra un recordatorio de Anima a +N s.
 - `--uitest-sticky` (solo DEBUG + simulador): notificaciones REALES y el modo
   UI-test persiste en `Library/uitest-sticky.plist`, para que el lanzamiento

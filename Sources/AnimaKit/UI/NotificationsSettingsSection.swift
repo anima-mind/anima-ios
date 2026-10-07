@@ -15,6 +15,11 @@ public final class NotificationsSettingsModel: ObservableObject {
     private let scheduler: any LocalNotificationScheduler
     private let reminders: AnimaReminderStore?
     private let preference: ProactivePreference?
+    private let wake: WakePreference?
+    /// "Avisarme cuando despierte" (batch 8 #7): un push al terminar el sueño.
+    @Published public private(set) var wakeEnabled = true
+    /// Apagarlo cancela el aviso pendiente (lo cablea el shell).
+    public var onWakeChanged: (@Sendable (Bool) async -> Void)?
     /// El shell abre los ajustes de notificaciones de iOS (UIApplication).
     public var openSystemSettings: (() -> Void)?
     /// "N programados" → la tab Recordatorios (la cablea el shell).
@@ -23,17 +28,30 @@ public final class NotificationsSettingsModel: ObservableObject {
     public var onEnabledChanged: (@Sendable () async -> Void)?
 
     public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?,
-                preference: ProactivePreference? = nil) {
+                preference: ProactivePreference? = nil, wake: WakePreference? = nil) {
         self.scheduler = scheduler
         self.reminders = reminders
         self.preference = preference
+        self.wake = wake
         enabled = preference?.isEnabled ?? true
+        wakeEnabled = wake?.isEnabled ?? true
     }
+
+    public func setWakeEnabled(_ on: Bool) async {
+        wake?.isEnabled = on
+        wakeEnabled = on
+        await onWakeChanged?(on)
+    }
+
+    /// Respeta el toggle general: sin avisos de Anima, tampoco el de despertar.
+    public var wakeToggleIsOn: Bool { wakeEnabled && toggleIsOn }
+    public var wakeToggleIsEnabled: Bool { toggleIsOn }
 
     public func refresh() async {
         status = await scheduler.authorizationStatus()
         scheduledCount = await reminders?.scheduledCount() ?? 0
         enabled = preference?.isEnabled ?? true
+        wakeEnabled = wake?.isEnabled ?? true
     }
 
     public func requestPermission() async {
@@ -120,6 +138,27 @@ public struct NotificationsSettingsSection: View {
                         .tint(Theme.Colors.accent)
                         .disabled(!model.toggleIsEnabled)
                         .accessibilityIdentifier("settings.notifications.toggle")
+                }
+                .padding(.vertical, Theme.Space.unit * 2.5)
+                divider
+                HStack(alignment: .center, spacing: Theme.Space.stack) {
+                    VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
+                        Text("Avisarme cuando despierte")
+                            .font(Theme.Type_.body)
+                            .foregroundStyle(model.wakeToggleIsEnabled ? Theme.Colors.text : Theme.Colors.textFaint)
+                        Text("Un aviso en la mañana cuando termine de dormir y ordenar lo del día anterior.")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Toggle("Avisarme cuando despierte", isOn: Binding(
+                        get: { model.wakeToggleIsOn },
+                        set: { on in Task { await model.setWakeEnabled(on) } }))
+                        .labelsHidden()
+                        .tint(Theme.Colors.accent)
+                        .disabled(!model.wakeToggleIsEnabled)
+                        .accessibilityIdentifier("settings.notifications.wake")
                 }
                 .padding(.vertical, Theme.Space.unit * 2.5)
                 switch model.status {

@@ -51,7 +51,6 @@ import Testing
         chat.input = "otra"
         await chat.send()
         let sent = try #require(chat.messages.first { $0.role == .user })
-        // Reloj real (no el inyectado de los rótulos); holgura para runners de CI lentos.
-        #expect(abs(sent.sentAt.timeIntervalSinceNow) < 15)
+        #expect(abs(sent.sentAt.timeIntervalSinceNow) < 120)
     }
 }

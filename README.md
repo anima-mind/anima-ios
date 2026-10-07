@@ -1,27 +1,94 @@
-# anima-ios
+<p align="center">
+  <img src="docs/brand/anima-icon.png" alt="Anima" width="120" />
+</p>
 
-**Perfil edge del harness [Anima](https://github.com/anima-mind/anima)** — un asistente personal iOS modelado sobre cómo el lenguaje forma la mente. La mente vive en el teléfono; las [gafas Meta son un segundo cuerpo opcional](https://github.com/anima-mind/anima/blob/main/docs/05-meta-glasses-plan.md).
+<h1 align="center">Anima para iOS</h1>
+
+<p align="center">
+  <b>Tu asistente personal con forma de mente — recuerda, duerme, desea y cambia con el tiempo.</b><br/>
+  <i>Runtime edge (Swift) del harness <a href="https://github.com/anima-mind/anima">Anima</a>.</i>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/estado-pruebas%20de%20campo-6aa8ff" alt="estado"/>
+  <img src="https://img.shields.io/badge/iOS-26%2B-1f2a3a" alt="iOS 26+"/>
+  <img src="https://img.shields.io/badge/Swift-6-1f2a3a" alt="Swift 6"/>
+  <img src="https://github.com/anima-mind/anima-ios/actions/workflows/ci.yml/badge.svg" alt="CI"/>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/chat.png" alt="Chat" width="15%" />
+  <img src="docs/screenshots/propuesta.png" alt="Propuesta" width="15%" />
+  <img src="docs/screenshots/recordatorios.png" alt="Recordatorios" width="15%" />
+  <img src="docs/screenshots/memoria.png" alt="Memoria" width="15%" />
+  <img src="docs/screenshots/mente.png" alt="Mente" width="15%" />
+  <img src="docs/screenshots/gafas.png" alt="Gafas" width="15%" />
+</p>
 
 > Una mente = LLM (dotación) + harness (desarrollo) + historia (experiencia).
 
-## Estado
+Anima no es un chat con memoria: es la implementación en el teléfono de un **spec de arquitectura cognitiva** construido a partir de la lingüística de Chomsky, el psicoanálisis de Lacan y la neurociencia de la memoria de Kandel. El diseño, la investigación y sus límites viven en el blueprint: **[anima-mind/anima](https://github.com/anima-mind/anima)**.
 
-**Pre-Fase 0.** Este repo contiene `AnimaKit` (SPM package — el core puro y testeable) arrancando por el primer invariante cross-runtime del blueprint: la [fórmula de plasticidad](Sources/AnimaKit/Plasticity.swift) del SelfModel (spec §B.4). Los mismos valores canónicos se assertan en [`animad`](https://github.com/anima-mind/animad) (Go) — la prueba viva de la matriz de portabilidad (spec §C.1).
+## Qué hace
 
-## Mapa
+- **Conversa y te conoce.** Chat con texto, voz y fotos; markdown real (tablas, listas, títulos).
+- **Duerme y consolida.** Cada noche, mientras cargas el teléfono, destila el día en memorias durables, reconsolida las viejas y reflexiona. Al despertar te cuenta qué ordenó.
+- **Tiene identidad con plasticidad.** Al principio se moldea libremente; con las noches se estabiliza y los cambios de identidad requieren tu aprobación (`p(n) = 0.05 + 0.95·e^(−n/30)`).
+- **Desea lo que tú deseas.** Tus metas (declaradas o inferidas, sin duplicados) motivan propuestas y **seguimientos** proactivos acotados.
+- **Te recuerda en su voz.** Recordatorios propios de Anima —distintos de la agenda del iPhone— con notificaciones locales, acciones "Hecho / En 1 hora" y seguimiento en el chat.
+- **Actúa con permiso.** Calendario, recordatorios, notas, cámara… cada acción que toca el mundo pide confirmación (o "Autorizar siempre", revocable). **Nunca afirma haber hecho algo que no ejecutó.**
+- **Aprende skills** conversando ("Enséñame algo") y las automatiza con la práctica.
+- **Un segundo cuerpo, opcional:** gafas **Meta Ray-Ban Display** (DAT SDK 1.0) con HUD, voz manos libres y cámara.
 
-- **Blueprint (el contrato)**: [anima-mind/anima](https://github.com/anima-mind/anima) — spec (doc 03) y plan de implementación iOS (doc 04, fases 0→4).
-- **Arquitectura objetivo**: `AnimaKit` (dominio puro, sin UI ni IO — testeable en CI de macOS) + app shell SwiftUI (Xcode, se agrega en Fase 0) + capa DAT humilde para gafas (track G).
-- **Runtime hermano**: [`animad`](https://github.com/anima-mind/animad) — perfil server en Go.
+## Modos de mente
 
-## Dev
+| Modo | Dónde piensa | Costo |
+|---|---|---|
+| **Solo teléfono** | 100 % en el dispositivo con Apple Foundation Models (tools adaptadas a un modelo de 3B) | Gratis, sin red |
+| **Claude / OpenAI / Gemini** | El proveedor que elijas, con **tu propia key** | Lo que consumas |
+| **Híbrido** | Conversación en la nube; sueño y pulsos en el teléfono | Menor |
 
-```bash
-swift build && swift test
+Tus keys viven en el **Keychain** del teléfono; no hay backend propio. La memoria, las metas y las skills son locales.
+
+## Arquitectura
+
+```
+AnimaKit (Swift Package, dominio puro y testeable)
+├── Loop / WorkingMemory      el agent loop, contexto con presupuesto por modelo
+├── Provider                  Claude · OpenAI-compat (OpenAI, Gemini) · Foundation Models
+├── Symbolic · Real · Brain   historial, fallos que insisten, memoria y sueño (Consolidator)
+├── SelfModel                 identidad con plasticidad decreciente + aprobaciones
+├── Desire · Proactive        metas, intenciones, recordatorios, seguimientos, pulso en background
+├── Sensorimotor / Tools      tools tipadas con permisos, skills, perfiles por proveedor
+├── Glasses                   cuerpo DAT: HUD, voz HFP, cámara, diagnóstico
+└── UI · Design               SwiftUI + tokens de diseño
+App/                          shell iOS (XcodeGen): notificaciones, BGTasks, Firebase, gafas
 ```
 
-- Stack: Swift 6 / SwiftUI · GRDB · NLEmbedding · BGTaskScheduler · Claude API directa (URLSession + SSE).
-- **La API key jamás entra al repo** — vive en Keychain (plan doc 04 §8). CD a TestFlight: pendiente (requiere certs de Apple; ver plan).
+Mapeo detallado subsistema por subsistema: [plan de implementación (doc 04)](https://github.com/anima-mind/anima/blob/main/docs/04-swift-implementation-plan.md).
+
+## Calidad
+
+- **~1 000 tests** del paquete (Swift Testing) con gate de cobertura **≥ 90 %** en CI.
+- **XCUITests** de los flujos principales en simulador.
+- **Smoke con modelos reales** (opt-in): Claude, OpenAI, Gemini y el modelo de Apple — decenas de frases reales ("recuérdame mañana a las 9…", "¿qué tengo pendiente?") verificadas contra lo que de verdad se guarda.
+- Cada lote de cambios pasa por una **review independiente** que prueba en simulador antes de mergear.
+- CD: cada merge a `main` sube un build a TestFlight.
+
+## Desarrollo
+
+```bash
+swift build && swift test                     # el paquete
+./scripts/coverage-gate.sh                     # tests + gate de cobertura
+cd App && xcodegen generate && open Anima.xcodeproj   # la app
+./scripts/ui-test.sh <UDID>                    # XCUITests en un simulador
+```
+
+Requisitos: Xcode 26, iOS 26. Las credenciales (keys de proveedores, Firebase, Meta) **nunca entran al repo**: plantilla de Firebase en `App/GoogleService-Info.template.plist` y `App/Secrets.xcconfig` (gitignored).
+
+## Estado
+
+🧪 **En pruebas de campo** (TestFlight interno). Próximo: widgets, CarPlay (voz) y App Store.
 
 ## Widgets y App Group
 
@@ -33,4 +100,6 @@ swift build && swift test
 
 ## Licencia
 
-MIT
+Código bajo **[PolyForm Noncommercial 1.0.0](LICENSE)**: puedes leerlo, estudiarlo y usarlo con fines no comerciales; el uso comercial requiere permiso. Las versiones publicadas antes de este cambio siguen bajo MIT. **Anima** y su logo son marcas de Joshua Moreno; la licencia no otorga derechos sobre ellas.
+
+<p align="center"><sub>Un proyecto de <a href="https://github.com/anima-mind">anima-mind</a> · Joshua Moreno · 2026</sub></p>

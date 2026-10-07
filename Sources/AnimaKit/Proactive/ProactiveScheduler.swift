@@ -81,7 +81,7 @@ public actor ProactiveScheduler {
 
     private func syncNotifications() async -> [String] {
         guard isEnabled else {
-            let managed = await scheduler.pendingIds().filter(Self.isManaged)
+            let managed = await scheduler.pendingIds().filter { Self.isManaged($0) || $0.hasPrefix(WakeNotice.prefix) }
             if !managed.isEmpty { await scheduler.cancel(ids: managed) }
             return []
         }

@@ -23,6 +23,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case reminders
     /// Widgets: tab Metas (con foco en una meta si viene el id).
     case goals(id: String?)
+    /// El aviso de despertar (batch 8 #7): abre el Mind sheet.
+    case mind
 
     public static let scheme = "anima"
 
@@ -52,6 +54,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case .goals(let id):
             components.host = "goals"
             if let id { components.queryItems = [URLQueryItem(name: "id", value: id)] }
+        case .mind:
+            components.host = "mind"
         }
         return components.url!
     }
@@ -79,6 +83,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
             return .reminders
         case "goals":
             return .goals(id: id)
+        case "mind":
+            return .mind
         default:
             return nil
         }

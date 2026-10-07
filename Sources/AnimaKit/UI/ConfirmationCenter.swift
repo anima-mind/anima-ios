@@ -61,11 +61,8 @@ public struct ConfirmationSheet: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            Text("Confirmar acción")
-                .font(Theme.Type_.label)
-                .textCase(.uppercase)
-                .kerning(0.66)
-                .foregroundStyle(Theme.Colors.textMuted)
+            // La X = Cancelar (fail-closed: cerrar nunca autoriza).
+            SheetHeader("Confirmar acción", screen: "confirm") { onDecision(.cancel) }
             Text(request.summary)
                 .font(Theme.Type_.body)
                 .foregroundStyle(Theme.Colors.text)
@@ -114,7 +111,7 @@ public struct ConfirmationSheet: View {
             .padding(.top, Theme.Space.unit)
         }
         .padding(.horizontal, Theme.Space.screenInset)
-        .padding(.top, Theme.Space.sectionGap + 4)
+        .padding(.top, Theme.Space.sectionGap)
         .padding(.bottom, Theme.Space.stack)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)

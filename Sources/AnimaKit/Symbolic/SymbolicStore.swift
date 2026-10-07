@@ -133,27 +133,88 @@ public final class SymbolicStore: Sendable {
     /// la mente respondió, con sus marcas (voz, foto, superficie). Los
     /// tool_use/tool_result crudos y el razonamiento no se pintan.
     public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
-        let rows: [(String, String, String?, String?, Double?, Int)] = try queue.read { db in
+        let rows: [Row] = try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT role, content_json, surface, proactive_json, created_at, seq FROM turn_event
+                SELECT id, session_id, role, content_json, surface, proactive_json, created_at, seq FROM turn_event
                 WHERE session_id=? ORDER BY seq ASC
                 """, arguments: [sessionId])
-                .compactMap { row in
-                    guard let role: String = row["role"], let json: String = row["content_json"] else { return nil }
-                    return (role, json, row["surface"], row["proactive_json"], row["created_at"], row["seq"])
-                }
         }
-        return try rows.compactMap { role, json, surfaceRaw, proactiveRaw, createdAt, seq in
-            guard let role = Message.Role(rawValue: role), role == .user || role == .assistant else { return nil }
-            var turn = VisibleTurn(role: role, blocks: try Self.decodeBlocks(json),
-                                   surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
-            if let raw = proactiveRaw, let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
-                turn?.proactive = tag
+        return try rows.compactMap(Self.visibleTurn(from:))
+    }
+
+    // MARK: - Historial completo del chat (campo batch 8 #3)
+
+    /// Una página del historial VISIBLE de todas las sesiones, de la más vieja a
+    /// la más nueva. El chat la pinta entera; el contexto del modelo es otra cosa
+    /// (la ventana de la sesión activa desde su frontera).
+    public struct HistoryPage: Sendable, Equatable {
+        public var turns: [VisibleTurn]
+        /// Fronteras de contexto (recorte/compactación) de las sesiones de la página.
+        public var boundaries: [SessionID: [ContextBoundary]]
+        /// Cursor para la página anterior (rowid del turno más viejo de esta).
+        public var oldestRowId: Int64?
+        /// ¿Quedan turnos más viejos?
+        public var hasMore: Bool
+    }
+
+    public static let historyPageSize = 50
+
+    /// Los `limit` turnos visibles anteriores a `before` (rowid), cruzando
+    /// sesiones. Los eventos no visibles (tool_use/tool_result) no cuentan.
+    public func historyPage(before: Int64? = nil, limit: Int = SymbolicStore.historyPageSize) throws -> HistoryPage {
+        var collected: [VisibleTurn] = []
+        var cursor = before ?? Int64.max
+        var exhausted = false
+        let batch = max(limit * 2, 64)
+        while collected.count < limit, !exhausted {
+            let rows: [Row] = try queue.read { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT id, session_id, role, content_json, surface, proactive_json, created_at, seq
+                    FROM turn_event WHERE id < ? ORDER BY id DESC LIMIT ?
+                    """, arguments: [cursor, batch])
             }
-            turn?.createdAt = createdAt.map(Date.init(timeIntervalSince1970:))
-            turn?.seq = seq
-            return turn
+            if rows.count < batch { exhausted = true }
+            for row in rows {
+                let rowId: Int64 = row["id"]
+                cursor = rowId
+                guard let turn = try Self.visibleTurn(from: row) else { continue }
+                collected.append(turn)
+                if collected.count == limit { break }
+            }
+            if rows.isEmpty { exhausted = true }
         }
+        let turns = Array(collected.reversed())
+        let oldest = turns.first?.rowId
+        let hasMore: Bool = try oldest.map { id in
+            try queue.read { db in
+                try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM turn_event WHERE id < ? AND role IN ('user','assistant'))
+                    """, arguments: [id]) ?? false
+            }
+        } ?? false
+        var boundaries: [SessionID: [ContextBoundary]] = [:]
+        for sid in Set(turns.compactMap(\.sessionId)) {
+            let list = try self.boundaries(sessionId: sid)
+            if !list.isEmpty { boundaries[sid] = list }
+        }
+        return HistoryPage(turns: turns, boundaries: boundaries, oldestRowId: oldest, hasMore: hasMore)
+    }
+
+    static func visibleTurn(from row: Row) throws -> VisibleTurn? {
+        guard let roleRaw: String = row["role"], let role = Message.Role(rawValue: roleRaw),
+              role == .user || role == .assistant, let json: String = row["content_json"] else { return nil }
+        let surfaceRaw: String? = row["surface"]
+        var turn = VisibleTurn(role: role, blocks: try decodeBlocks(json),
+                               surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
+        if let raw: String = row["proactive_json"],
+           let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
+            turn?.proactive = tag
+        }
+        turn?.createdAt = (row["created_at"] as Double?).map(Date.init(timeIntervalSince1970:))
+        turn?.seq = row["seq"]
+        turn?.sessionId = row["session_id"]
+        turn?.rowId = row["id"]
+        return turn
     }
 
     // MARK: - Helpers
@@ -222,6 +283,9 @@ public struct VisibleTurn: Sendable, Equatable {
     public var createdAt: Date?
     /// Posición en el transcript (las fronteras de contexto se ubican por seq).
     public var seq: Int?
+    /// Sesión del turno (el chat separa conversaciones) y su rowid (cursor de página).
+    public var sessionId: SessionID?
+    public var rowId: Int64?
 
     public init(role: Message.Role, text: String, isVoice: Bool = false, imageBase64: String? = nil,
                 surface: SurfaceID? = nil, proactive: ProactiveTag? = nil, createdAt: Date? = nil) {
@@ -242,7 +306,11 @@ public struct VisibleTurn: Sendable, Equatable {
         for block in blocks {
             switch block {
             case .text(let t):
-                if role == .user, t == HUDPhoto.prompt {
+                if role == .user, ActionClaimGuard.isNudge(t) {
+                    return nil   // turno sintético del harness: jamás se pinta
+                } else if role == .user, IntentionAcceptance.isAcceptance(t) {
+                    texts.append(IntentionAcceptance.shownText)
+                } else if role == .user, t == HUDPhoto.prompt {
                     texts.append(HUDPhoto.question)   // foto del botón de las gafas
                 } else if role == .user, t.hasPrefix(AudioTool.transcriptPrefix) {
                     voice = true

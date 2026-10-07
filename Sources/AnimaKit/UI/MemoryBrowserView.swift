@@ -272,6 +272,10 @@ struct MemoryDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        VStack(spacing: 0) {
+        SheetHeader("Recuerdo", screen: "memoryDetail") { dismiss() }
+            .padding(.horizontal, Theme.Space.screenInset)
+            .padding(.top, Theme.Space.sectionGap)
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
                 VStack(alignment: .leading, spacing: Theme.Space.unit * 1.5) {
@@ -332,11 +336,12 @@ struct MemoryDetailSheet: View {
                     }
                 }
             }
-            .padding(Theme.Space.screenInset)
-            .padding(.top, Theme.minHitTarget - Theme.Space.screenInset)
+            .padding(.horizontal, Theme.Space.screenInset)
+            .padding(.top, Theme.Space.stack)
+            .padding(.bottom, Theme.Space.screenInset)
         }
         .scrollDismissesKeyboard(.interactively)
-        .overlay(alignment: .topTrailing) { NavCloseButton("memoryDetail") { dismiss() } }
+        }
         .confirmationDialog("¿Invalidar este recuerdo?", isPresented: $confirming, titleVisibility: .visible) {
             Button("Invalidar", role: .destructive) { onInvalidate(detail.id, reason) }
             Button("Cancelar", role: .cancel) {}

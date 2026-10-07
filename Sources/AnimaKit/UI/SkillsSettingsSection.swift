@@ -309,22 +309,23 @@ struct SkillExampleSheet: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Theme.Colors.bg.ignoresSafeArea()
+            VStack(spacing: 0) {
+            SheetHeader("Ejemplo de skill", screen: "skillExample") { dismiss() }
+                .padding(.horizontal, Theme.Space.screenInset)
+                .padding(.top, Theme.Space.sectionGap)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.stack) {
-                    Text("EJEMPLO DE SKILL")
-                        .font(Theme.Type_.label)
-                        .kerning(0.66)
-                        .foregroundStyle(Theme.Colors.textMuted)
                     Text("Arriba, entre ---, el front-matter: name, when (cuándo usarla) y opcionalmente los pasos que puede correr sola. Abajo, en prosa, el cómo.")
                         .font(Theme.Type_.secondary)
                         .foregroundStyle(Theme.Colors.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
                     SkillMarkdownCard(markdown: markdown)
                 }
-                .padding(Theme.Space.screenInset)
-                .padding(.top, Theme.Space.sectionGap)
+                .padding(.horizontal, Theme.Space.screenInset)
+                .padding(.top, Theme.Space.stack)
+                .padding(.bottom, Theme.Space.screenInset)
             }
-            NavCloseButton("skillExample") { dismiss() }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("skills.exampleSheet")

@@ -44,12 +44,18 @@ jobs:
           path: .spm-ci
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('App/project.yml', 'Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
-      - name: Build app target (sin firma)
+      - name: Build app + extensión de widgets (sin firma)
         run: >
           xcodebuild -project App/Anima.xcodeproj -scheme Anima
           -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm-ci
+          -derivedDataPath build/dd
           build CODE_SIGNING_ALLOWED=NO
+      - name: La extensión de widgets va embebida
+        run: |
+          APPEX=build/dd/Build/Products/Debug-iphonesimulator/Anima.app/PlugIns/AnimaWidgets.appex
+          test -d "$APPEX" || { echo "Falta AnimaWidgets.appex en Anima.app/PlugIns" >&2; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist"
 
   ui-test:
     name: App shell — XCUITest (iOS Simulator)

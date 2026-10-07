@@ -33,6 +33,16 @@ public final class ChatViewModel: ObservableObject {
         public var goalStatement: String?
         /// Turno del dueño dicho por voz (mic del composer o gafas): queda marcado.
         public var isVoice: Bool = false
+        /// Por dónde llegó el turno del dueño: gafas ⇒ chip "gafas" (batch 8 #2).
+        public var surface: SurfaceID?
+
+        /// El chip del canal del turno del dueño: "gafas" gana a "voz".
+        public var channelChip: (label: String, glyph: String, id: String)? {
+            guard role == .user else { return nil }
+            if surface == .glassesHUD { return ("gafas", "eyeglasses", "chat.userMessage.glasses") }
+            if isVoice { return ("voz", "waveform", "chat.userMessage.voice") }
+            return nil
+        }
         /// Separador sutil "— nueva sesión —" entre el historial anterior y el actual.
         public var isSessionDivider: Bool = false
         /// Foto del turno del dueño (JPEG ya reducido): thumb sobre la burbuja.
@@ -113,29 +123,79 @@ public final class ChatViewModel: ObservableObject {
 
     public static let photosNeedRemoteNote = "Las fotos necesitan un modelo remoto (Claude, OpenAI o Gemini)."
 
-    public static let sessionDividerText = "— nueva sesión —"
+    /// Separador entre conversaciones (sesiones) en el historial del chat.
+    public static let sessionDividerText = newConversationText
 
-    /// Historial persistido → mensajes del chat. Si la sesión es nueva (ventana
-    /// de 8 h), el historial de la ANTERIOR va arriba con un separador: el dueño
-    /// nunca ve vacío si hubo conversación (el contexto del modelo es otro).
+    static func message(_ turn: VisibleTurn) -> DisplayMessage {
+        if turn.role == .assistant, let tag = turn.proactive,
+           let proactive = ProactiveMessage(tag: tag, text: turn.text) {
+            var card = DisplayMessage.proactive(proactive)
+            if let createdAt = turn.createdAt { card.sentAt = createdAt }
+            return card
+        }
+        var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
+                                     imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
+        message.toolFailure = turn.role == .assistant && ToolFailureNotice.isNotice(turn.text)
+        message.surface = turn.role == .user ? turn.surface : nil
+        if let createdAt = turn.createdAt { message.sentAt = createdAt }
+        return message
+    }
+
+    static func divider(_ text: String) -> DisplayMessage {
+        DisplayMessage(role: .assistant, text: text, isSessionDivider: true)
+    }
+
+    /// Una página del historial de TODAS las sesiones → mensajes, con
+    /// "— nueva conversación —" entre sesiones y las fronteras de contexto
+    /// ("Conversación compactada", recortes) donde cayeron. `following` es el
+    /// primer turno ya cargado (al prepender una página más vieja); `leadingCut`
+    /// dice que hay turnos más viejos sin cargar (sus fronteras las pinta esa página).
+    public static func history(turns: [VisibleTurn], boundaries: [SessionID: [ContextBoundary]],
+                               following: VisibleTurn? = nil, leadingCut: Bool = false) -> [DisplayMessage] {
+        var out: [DisplayMessage] = []
+        var session: SessionID?
+        var started = false
+        var pending: [ContextBoundary] = []
+        for turn in turns {
+            if !started || turn.sessionId != session {
+                if started {
+                    out += pending.map { divider($0.dividerText) }
+                    out.append(divider(newConversationText))
+                }
+                pending = (turn.sessionId.flatMap { boundaries[$0] } ?? []).sorted { $0.fromSeq < $1.fromSeq }
+                // Página cortada a mitad de sesión: lo de antes de su primer turno es de la página anterior.
+                if !started, leadingCut, let first = turn.seq { pending.removeAll { $0.fromSeq <= first } }
+                session = turn.sessionId
+                started = true
+            }
+            while let next = pending.first, let seq = turn.seq, seq >= next.fromSeq {
+                out.append(divider(next.dividerText))
+                pending.removeFirst()
+            }
+            out.append(message(turn))
+        }
+        guard started else { return out }
+        if let following {
+            if following.sessionId == session {
+                let upTo = following.seq ?? Int.max
+                out += pending.filter { $0.fromSeq <= upTo }.map { divider($0.dividerText) }
+            } else {
+                out += pending.map { divider($0.dividerText) }
+                out.append(divider(newConversationText))
+            }
+        } else {
+            out += pending.map { divider($0.dividerText) }
+        }
+        return out
+    }
+
+    /// Historial de la sesión actual (y la anterior) — API previa al historial
+    /// completo; la usan tests y superficies sin store.
     public static func history(current: [VisibleTurn], previous: [VisibleTurn] = [],
                                boundaries: [ContextBoundary] = []) -> [DisplayMessage] {
-        func message(_ turn: VisibleTurn) -> DisplayMessage {
-            if turn.role == .assistant, let tag = turn.proactive,
-               let proactive = ProactiveMessage(tag: tag, text: turn.text) {
-                var card = DisplayMessage.proactive(proactive)
-                if let createdAt = turn.createdAt { card.sentAt = createdAt }
-                return card
-            }
-            var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
-                                         imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
-            message.toolFailure = turn.role == .assistant && turn.text.hasPrefix(ToolFailureNotice.marker)
-            if let createdAt = turn.createdAt { message.sentAt = createdAt }
-            return message
-        }
         var out = previous.map(message)
         if !out.isEmpty {
-            out.append(DisplayMessage(role: .assistant, text: sessionDividerText, isSessionDivider: true))
+            out.append(divider(sessionDividerText))
         }
         var pending = boundaries.sorted { $0.fromSeq < $1.fromSeq }
         for turn in current {
@@ -152,8 +212,65 @@ public final class ChatViewModel: ObservableObject {
     /// Carga el historial al cablearse (antes de cualquier turno nuevo).
     public func loadHistory(current: [VisibleTurn], previous: [VisibleTurn] = [], boundaries: [ContextBoundary] = []) {
         let restored = Self.history(current: current, previous: previous, boundaries: boundaries)
+        register(restored)
         guard !restored.isEmpty else { return }
         messages = restored + messages
+    }
+
+    // MARK: Historial completo (campo batch 8 #3): fijo en el teléfono
+
+    /// El transcript de TODAS las sesiones (paginado hacia arriba). Compactar o
+    /// abrir conversación nueva solo cambia el contexto del modelo, jamás esto.
+    public var historyStore: SymbolicStore?
+    @Published public private(set) var hasOlderHistory = false
+    /// Sube con cada carga inicial del historial: la vista re-ancla al fondo.
+    @Published public private(set) var historyGeneration = 0
+    private var oldestTurn: VisibleTurn?
+    private var isLoadingOlder = false
+
+    /// Primera página (la más reciente) del historial completo.
+    public func loadHistory(page: SymbolicStore.HistoryPage) {
+        var restored = Self.history(turns: page.turns, boundaries: page.boundaries, leadingCut: page.hasMore)
+        // La sesión activa es otra (nueva tras >8 h o "Nueva conversación"): el
+        // separador marca desde dónde arranca el contexto del modelo.
+        if let last = page.turns.last, let lastSession = last.sessionId, lastSession != sessionId,
+           restored.last?.isSessionDivider != true || restored.last?.text != Self.newConversationText {
+            restored.append(Self.divider(Self.newConversationText))
+        }
+        oldestTurn = page.turns.first
+        hasOlderHistory = page.hasMore
+        register(restored)
+        guard !restored.isEmpty else { return }
+        messages = restored + messages
+        historyGeneration += 1
+    }
+
+    /// Scroll al tope: la página anterior va arriba. Devuelve el mensaje que
+    /// estaba primero (la vista lo re-ancla para que nada salte).
+    @discardableResult
+    public func loadOlderHistory() async -> UUID? {
+        guard hasOlderHistory, !isLoadingOlder, let historyStore, let cursor = oldestTurn?.rowId else { return nil }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        guard let page = try? historyStore.historyPage(before: cursor), !page.turns.isEmpty else {
+            hasOlderHistory = false
+            return nil
+        }
+        var older = Self.history(turns: page.turns, boundaries: page.boundaries, following: oldestTurn,
+                                 leadingCut: page.hasMore)
+        // Una propuesta ya pintada abajo (pendiente) no se repite al subir.
+        older.removeAll { message in message.intentionId.map { shownIntentionIds.contains($0) } ?? false }
+        register(older)
+        oldestTurn = page.turns.first
+        hasOlderHistory = page.hasMore
+        let anchor = messages.first?.id
+        messages = older + messages
+        return anchor
+    }
+
+    /// Las propuestas restauradas del historial ya están pintadas (no se duplican).
+    private func register(_ restored: [DisplayMessage]) {
+        for id in restored.compactMap(\.intentionId) { shownIntentionIds.insert(id) }
     }
 
     /// Estado de la mente para el badge y el Mind sheet.
@@ -195,6 +312,11 @@ public final class ChatViewModel: ObservableObject {
     @Published public var pendingApprovals = 0
     /// Tap al aviso → Ajustes → Mente (lo cablea el shell).
     public var onOpenApprovals: (() -> Void)?
+    /// El Mind sheet (badge de plasticidad o el aviso de despertar, batch 8 #7).
+    @Published public var showMindSheet = false
+    /// Resumen del último sueño (lo provee el shell; se relee en loadMind).
+    public var wakeSummary: (@MainActor () -> String?)?
+    @Published public private(set) var lastWake: String?
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -244,6 +366,7 @@ public final class ChatViewModel: ObservableObject {
 
     /// Refresca p/ciclos/régimen para el badge (anima 600 ms al cambiar).
     public func loadMind() async {
+        if let wakeSummary, lastWake != wakeSummary() { lastWake = wakeSummary() }
         guard let selfModel else { return }
         let name = await selfModel.name()
         if name != selfName { selfName = name }
@@ -259,6 +382,13 @@ public final class ChatViewModel: ObservableObject {
     /// proactivos del agente (§5.8). Idempotente: no re-muestra una ya pintada.
     public func loadProactiveIntentions() async {
         guard let desireEngine else { return }
+        // Las cards restauradas del historial muestran cómo respondió el dueño.
+        for index in messages.indices {
+            guard let id = messages[index].intentionId, messages[index].outcome == nil,
+                  let intention = await desireEngine.intention(id: id), intention.outcome != .pending else { continue }
+            messages[index].resolved = true
+            messages[index].outcome = intention.outcome == .ignored ? nil : intention.outcome
+        }
         let pending = await desireEngine.pendingIntentions()
         for intention in pending where !shownIntentionIds.contains(intention.id) {
             shownIntentionIds.insert(intention.id)
@@ -302,13 +432,17 @@ public final class ChatViewModel: ObservableObject {
 
     /// "Hagámoslo": la propuesta queda aceptada Y el dueño se lo dice a ella,
     /// para que la EJECUTE (cree el recordatorio, el bloque…) y responda.
+    /// Batch 8 #6: el turno pide EJECUTARLA con la tool (ligada a la meta), no solo contestar.
     public func accept(_ message: DisplayMessage) async {
         await resolve(message, outcome: .accepted)
-        let text = Self.acceptText(message.text)
-        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
+        let goalId: String? = if let id = message.intentionId { await desireEngine?.intention(id: id)?.goalId } else { nil }
+        let text = Self.acceptText(message.text, goalId: goalId)
+        await run(DisplayMessage(role: .user, text: IntentionAcceptance.shownText), content: [.text(text)])
     }
 
-    public static func acceptText(_ proposal: String) -> String { "Acepto: \(proposal)" }
+    public static func acceptText(_ proposal: String, goalId: String? = nil) -> String {
+        IntentionAcceptance.prompt(proposal: proposal, goalId: goalId)
+    }
 
     public func dismiss(_ message: DisplayMessage) async {
         await resolve(message, outcome: .dismissed)
@@ -500,9 +634,11 @@ public final class ChatViewModel: ObservableObject {
 
     public static let newConversationText = "— nueva conversación —"
 
-    /// El chat recién abierto por "Nueva conversación": solo el separador.
+    /// "Nueva conversación": el historial queda visible; el separador marca
+    /// desde dónde arranca el contexto nuevo del modelo.
     public func markNewConversation() {
-        messages = [DisplayMessage(role: .assistant, text: Self.newConversationText, isSessionDivider: true)]
+        guard !(messages.last?.isSessionDivider == true && messages.last?.text == Self.newConversationText) else { return }
+        messages.append(Self.divider(Self.newConversationText))
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
@@ -513,6 +649,7 @@ public final class ChatViewModel: ObservableObject {
         }
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
+        var committedText = ""
         messages.append(assistant)
         var index = messages.count - 1
         isStreaming = true
@@ -550,7 +687,14 @@ public final class ChatViewModel: ObservableObject {
                     let body = assistant.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     assistant.text = body.isEmpty ? notice : notice + "\n\n" + body
                 }
-            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
+            case .retracted:
+                // El loop descartó la respuesta final que afirmaba algo no
+                // ejecutado: se retira SOLO ese tramo; lo dicho antes de una
+                // tool del mismo turno ya está persistido y se queda.
+                assistant.text = committedText
+            case .assistantMessage:
+                committedText = assistant.text
+            case .toolStarted, .toolFinished, .turnFinished:
                 break
             }
             assistant.isStreaming = true
@@ -577,7 +721,9 @@ extension ChatViewModel: PhoneChatSurface {
     public func render(_ content: SurfaceContent) async {
         switch content {
         case .userTurn(let text, let origin) where origin != .phoneChat:
-            messages.append(DisplayMessage(role: .user, text: text))
+            var message = DisplayMessage(role: .user, text: text)
+            message.surface = origin
+            messages.append(message)
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
             let message = DisplayMessage(role: .assistant, text: text)
             messages.append(message)
@@ -602,8 +748,8 @@ public struct ChatView: View {
     @ObservedObject private var model: ChatViewModel
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
-    @State private var showMindSheet = false
     @State private var showContextSheet = false
+    @State private var mindSheetHeight: CGFloat = 560
     /// Alto medido del sheet de contexto (abraza su contenido con cualquier Dynamic Type).
     @State private var contextSheetHeight = ContextSheet.initialHeight
     /// ¿El dueño está al fondo del chat? (si subió a leer, no se le mueve).
@@ -636,6 +782,20 @@ public struct ChatView: View {
                     ScrollView {
                         let headers = model.dayHeaders()
                         LazyVStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
+                            if model.hasOlderHistory {
+                                // Al llegar al tope: la página anterior (50 turnos) y re-ancla.
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Theme.Colors.textFaint)
+                                    .frame(maxWidth: .infinity)
+                                    .accessibilityIdentifier("chat.loadOlder")
+                                    .onAppear {
+                                        Task {
+                                            let anchor = await model.loadOlderHistory()
+                                            if let anchor, !followsBottom { proxy.scrollTo(anchor, anchor: .top) }
+                                        }
+                                    }
+                            }
                             ForEach(model.messages) { message in
                                 VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
                                     if let header = headers[message.id] {
@@ -674,6 +834,16 @@ public struct ChatView: View {
                     .onChange(of: model.focusedMessageId) { _, id in
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
+                    // Review #34: con 50 turnos el LazyVStack estima alturas y el
+                    // ancla inicial no quedaba al fondo. Tras el layout (y un par
+                    // de pasadas mientras se asientan las alturas) → al último.
+                    .task(id: model.historyGeneration) {
+                        for _ in 0..<3 {
+                            try? await Task.sleep(for: .milliseconds(80))
+                            guard let last = model.messages.last else { continue }
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
                 }
                 if model.isOffline {
                     OfflinePill(localAvailable: model.localModelAvailable)
@@ -701,9 +871,10 @@ public struct ChatView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.surface)
         }
-        .sheet(isPresented: $showMindSheet) {
-            MindSheet(mind: model.mind, glasses: model.glasses)
-                .presentationDetents([.medium])
+        .sheet(isPresented: $model.showMindSheet) {
+            MindSheet(mind: model.mind, glasses: model.glasses, lastWake: model.lastWake) { mindSheetHeight = $0 }
+                // A la medida del contenido (antes .medium cortaba "Vincular gafas").
+                .presentationDetents([.height(mindSheetHeight), .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
         }
@@ -759,7 +930,7 @@ public struct ChatView: View {
                     .frame(width: Self.headerMarkSize + Theme.Space.stack * 2)
                     .accessibilityHidden(true)
                 Button {
-                    showMindSheet = true
+                    model.showMindSheet = true
                     Task { await model.loadMind() }
                 } label: {
                     PlasticityBadge(mind: model.mind)
@@ -813,11 +984,11 @@ public struct ChatView: View {
                             .accessibilityIdentifier("chat.userMessage.photoAsText")
                     }
                 }
-                if message.isVoice {
-                    Label("voz", systemImage: "waveform")
+                if let chip = message.channelChip {
+                    Label(chip.label, systemImage: chip.glyph)
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
-                        .accessibilityIdentifier("chat.userMessage.voice")
+                        .accessibilityIdentifier(chip.id)
                 }
                 if !message.text.isEmpty {
                     Text(message.text)
@@ -1501,16 +1672,35 @@ public struct PlasticityBadge: View {
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
     let glasses: GlassesViewModel?
+    /// El resumen del último sueño (batch 8 #7): con la app al frente no hay push.
+    let lastWake: String?
+    /// Alto natural (fila del título + contenido): el detent lo abraza.
+    var onHeight: (CGFloat) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
+    @State private var headerHeight: CGFloat = 0
+    /// El detent .height no descuenta el home indicator: holgura para la última fila.
+    static let bottomInset: CGFloat = 34
 
-    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
+    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil, lastWake: String? = nil,
+                onHeight: @escaping (CGFloat) -> Void = { _ in }) {
         self.mind = mind
         self.glasses = glasses
+        self.lastWake = lastWake
+        self.onHeight = onHeight
     }
 
     public var body: some View {
         ZStack {
             Theme.Colors.bg.ignoresSafeArea()
+            VStack(spacing: 0) {
+            // La fila de la X queda fija arriba, dentro del padding; el resto
+            // scrollea si no cabe en el detent .medium (antes desbordaba y
+            // empujaba la primera fila fuera del sheet).
+            SheetHeader("Mente", screen: "mind") { dismiss() }
+                .padding(.horizontal, Theme.Space.screenInset)
+                .padding(.top, Theme.Space.sectionGap)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+            ScrollView {
             VStack(spacing: Theme.Space.stack) {
                 BreathMark(size: 104, p: mind.p, phase: .breathing)
                     .accessibilityElement()
@@ -1534,6 +1724,15 @@ public struct MindSheet: View {
                 Text("p(n) = 0.05 + 0.95·e^(−n/30)")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Theme.Colors.textFaint)
+                if let lastWake {
+                    Text(lastWake)
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, Theme.Space.screenInset)
+                        .accessibilityIdentifier("mind.lastWake")
+                }
 
                 VStack(spacing: 0) {
                     keyValueRow("cuerpo", glasses?.bodyLabel ?? "solo teléfono", id: "body")
@@ -1551,11 +1750,13 @@ public struct MindSheet: View {
                     MindGlassesAction(model: glasses)
                         .padding(.top, 4)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.top, Theme.Space.sectionGap)
+            .padding(.top, Theme.Space.stack)
+            .padding(.bottom, Theme.Space.sectionGap)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0 + headerHeight + Self.bottomInset) }
+            }
+            }
         }
-        .overlay(alignment: .topTrailing) { NavCloseButton("mind") { dismiss() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mind.sheet")
     }

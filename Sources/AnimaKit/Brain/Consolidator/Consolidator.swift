@@ -26,6 +26,8 @@ public actor Consolidator {
         public var completed: Bool
         /// Candidatos que el DistillGuard rechazó (eco/meta/pregunta), con razón en el cycle_log.
         public var rejected: Int = 0
+        /// Metas creadas o reforzadas durante el ciclo (el aviso de despertar: "1 meta al día").
+        public var goalsUpdated: Int = 0
     }
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
@@ -328,7 +330,7 @@ public actor Consolidator {
         let user = """
         En este ciclo se consolidaron estas memorias:
         \(listing.isEmpty ? "(ninguna nueva)" : listing)
-
+        \(await existingGoalsBlock())
         Resume en una frase qué aprendiste sobre el dueño y lista los insights de alto nivel.
         Devuelve SOLO el objeto JSON.
         """
@@ -402,7 +404,12 @@ public actor Consolidator {
         let texts = try inboxTexts(cycle: cycle)
         guard !texts.isEmpty else { return }
         let joined = texts.enumerated().map { "(\($0.offset + 1)) \($0.element)" }.joined(separator: "\n")
-        let user = "Mensajes del dueño en el ciclo:\n\(joined)\n\nDevuelve SOLO el arreglo JSON de metas declaradas."
+        let user = """
+        Mensajes del dueño en el ciclo:
+        \(joined)
+        \(await existingGoalsBlock())
+        Devuelve SOLO el arreglo JSON de metas declaradas NUEVAS.
+        """
         let text = try await complete(.consolidation, system: Self.goalsPrompt, user: user, maxOutputTokens: 1024)
         let goals = Self.decode([StatedGoalDTO].self, from: text) ?? []
         for goal in goals {
@@ -413,6 +420,21 @@ public actor Consolidator {
                                               evidence: goal.evidence ?? "",
                                               priority: goal.priority ?? 5)
         }
+    }
+
+    /// Batch 8 #5: las metas que ya existen van al prompt (extracción y
+    /// reflection) — el modelo no las repite ni reformuladas. El dedupe
+    /// determinista de OtherModel es la red de seguridad.
+    private func existingGoalsBlock() async -> String {
+        guard let otherModel else { return "" }
+        let existing = await otherModel.existingStatements()
+        guard !existing.isEmpty else { return "" }
+        return """
+
+        Metas que YA existen (NO las repitas ni reformuladas; si el dueño vuelve a hablar de una, no la devuelvas):
+        \(existing.map { "- \($0)" }.joined(separator: "\n"))
+
+        """
     }
 
     // MARK: - Housekeeping final
@@ -523,6 +545,12 @@ public actor Consolidator {
         let summary = logged?.summary ?? ""
         // Antes del reflection el cycle_log aún no existe: cuenta lo de cycle_distilled.
         let rejected = try logged?.rejected?.count ?? rejectedDistilled(cycle: cycle).count
+        let goalsUpdated = try queue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM goal WHERE status != 'abandoned'
+                AND updated_at >= (SELECT started_at FROM consolidation_cycle WHERE cycle=?)
+                """, arguments: [cycle]) ?? 0
+        }
         return CycleReport(
             cycle: cycle,
             distilled: distilledCount,
@@ -533,7 +561,8 @@ public actor Consolidator {
             reconsolidated: reconsolidated,
             reflectionSummary: summary,
             completed: completed,
-            rejected: rejected)
+            rejected: rejected,
+            goalsUpdated: goalsUpdated)
     }
 
     static let rejectedPrefix = "REJECTED: "
@@ -765,14 +794,15 @@ extension Consolidator {
     static let reflectionPrompt = """
     Resume el ciclo de consolidación. Los insights son conclusiones de alto nivel sobre el DUEÑO y su mundo (jamás sobre el asistente, su modelo o sus capacidades, ni sobre la conversación misma, ni preguntas). Sin insights durables, insights=[]. Devuelve SOLO un objeto JSON:
     {"summary":"una frase de qué aprendiste sobre el dueño","insights":["insight de alto nivel", "..."],"self_proposals":[{"field":"capabilities|style|historySummary|identity|values","value":"nuevo valor propuesto (para listas: items separados por saltos de línea)","rationale":"por qué"}],"inferred_goals":[{"statement":"meta inferida del dueño","rationale":"por qué","priority":1-10,"predicate":{"kind":"...","value":N}}]}
-    Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente. Usa inferred_goals SOLO si infieres una meta que el dueño NO declaró explícitamente (requerirá su confirmación). Si no aplica, omite el campo o déjalo vacío.
+    Usa self_proposals SOLO si el ciclo aporta evidencia real para ajustar la identidad del asistente. Usa inferred_goals SOLO si infieres una meta que el dueño NO declaró explícitamente (requerirá su confirmación) y que NO está en la lista de metas que ya existen, ni reformulada ("Perder 10 kg en un plazo" = "Bajar 10 kg"). statement corto en infinitivo o segunda persona ("Bajar 10 kg"), NUNCA "El dueño quiere…". Si no aplica, omite el campo o déjalo vacío.
     Predicados observables válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}, progress_check_in{every_days} (el dueño reporta avance cada N días; úsalo para metas de hábito o ahorro sin otro observable).
     """
 
     static let goalsPrompt = """
-    Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente"). Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta en tercera persona), evidence (cita textual del mensaje), priority (1-10) y un predicate observable de la lista cerrada. Devuelve SOLO un arreglo JSON:
+    Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente"). Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta corta en infinitivo, como la diría el dueño: "Bajar 10 kg", "Entrenar 3 veces por semana"; NUNCA "El dueño quiere…"), evidence (cita textual del mensaje), priority (1-10) y un predicate observable de la lista cerrada. Devuelve SOLO un arreglo JSON:
     [{"statement":"...","evidence":"cita","priority":1-10,"predicate":{"kind":"...","value":N}}]
     Predicados válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}, progress_check_in{every_days} (el dueño reporta avance cada N días; úsalo para metas de hábito o ahorro sin otro observable).
-    Si no hay metas declaradas, devuelve [].
+    No devuelvas metas que ya existen, ni reformuladas ("Bajar 10 kg de peso" = "Bajar 10 kg"): una meta, una sola vez.
+    Si no hay metas declaradas nuevas, devuelve [].
     """
 }

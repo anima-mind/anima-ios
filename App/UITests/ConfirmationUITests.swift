@@ -29,6 +29,9 @@ final class ConfirmationUITests: AnimaUITestCase {
         XCTAssertTrue(text(app, "Calendario del iPhone · crear").exists)
         // A la medida: el sheet no ocupa media pantalla vacía.
         XCTAssertLessThan(sheet.frame.height, app.frame.height * 0.5)
+        // Batch 8 #4: X en la fila del título (= Cancelar, fail-closed).
+        assertSheetClose(app, "confirm")
+        screenshot(app, "batch8-04-confirm")
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "confirmation-sheet"
         shot.lifetime = .keepAlways

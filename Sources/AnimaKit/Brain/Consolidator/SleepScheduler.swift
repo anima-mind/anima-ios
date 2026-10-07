@@ -49,12 +49,13 @@ public struct SleepScheduler: Sendable {
     @discardableResult
     public func runResumable(_ consolidator: Consolidator,
                              isExpired: @escaping @Sendable () -> Bool = { false }) async -> Bool {
-        do {
-            let report = try await consolidator.cycle(interrupting: { _ in isExpired() })
-            return report.completed
-        } catch {
-            return false
-        }
+        await runReport(consolidator, isExpired: isExpired)?.completed ?? false
+    }
+
+    /// Igual, devolviendo el reporte del ciclo (nil si falló).
+    public func runReport(_ consolidator: Consolidator,
+                          isExpired: @escaping @Sendable () -> Bool = { false }) async -> Consolidator.CycleReport? {
+        try? await consolidator.cycle(interrupting: { _ in isExpired() })
     }
 
     #if os(iOS)
@@ -86,23 +87,34 @@ public final class ConsolidatorHolder: @unchecked Sendable {
     private let lock = NSLock()
     private var consolidator: Consolidator?
     private var scheduler: SleepScheduler?
+    /// Ciclo COMPLETO (BGTask o fallback foreground) → el aviso de despertar (batch 8 #7).
+    private var onCompleted: (@Sendable (Consolidator.CycleReport, Int) async -> Void)?
 
     public init() {}
 
-    public func set(_ consolidator: Consolidator, scheduler: SleepScheduler) {
-        lock.lock(); self.consolidator = consolidator; self.scheduler = scheduler; lock.unlock()
+    public func set(_ consolidator: Consolidator, scheduler: SleepScheduler,
+                    onCompleted: (@Sendable (Consolidator.CycleReport, Int) async -> Void)? = nil) {
+        lock.lock()
+        self.consolidator = consolidator
+        self.scheduler = scheduler
+        self.onCompleted = onCompleted
+        lock.unlock()
     }
 
-    private func current() -> (Consolidator, SleepScheduler)? {
+    private func current() -> (Consolidator, SleepScheduler, (@Sendable (Consolidator.CycleReport, Int) async -> Void)?)? {
         lock.lock(); defer { lock.unlock() }
         guard let consolidator, let scheduler else { return nil }
-        return (consolidator, scheduler)
+        return (consolidator, scheduler, onCompleted)
     }
 
     @discardableResult
     public func run(isExpired: @escaping @Sendable () -> Bool) async -> Bool {
-        guard let (consolidator, scheduler) = current() else { return false }
-        return await scheduler.runResumable(consolidator, isExpired: isExpired)
+        guard let (consolidator, scheduler, onCompleted) = current() else { return false }
+        guard let report = await scheduler.runReport(consolidator, isExpired: isExpired) else { return false }
+        if report.completed, let onCompleted {
+            await onCompleted(report, await consolidator.successfulCycles())
+        }
+        return report.completed
     }
 }
 

@@ -42,6 +42,46 @@ enum UITestMode {
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
     }
 
+    /// Una propuesta del deseo pendiente en el chat (batch 8 #1: una sola card).
+    static let seedsIntention = isActive && arguments.contains("--uitest-seed-intention")
+    static let seededProposal = "¿El miércoles a las 8:00 hacemos tu primer check-in?"
+
+    /// Idempotente entre relanzamientos: solo si aún no hay Intentions.
+    static func seedIntention(_ engine: DesireEngine, _ otherModel: OtherModel, sessionId: SessionID) async {
+        guard await engine.allIntentions().isEmpty else { return }
+        let id = await otherModel.ingestStated(statement: "Bajar 10 kg", desiredState: .progressCheckIn(everyDays: 7),
+                                               evidence: "uitest")
+        guard let goal = await otherModel.goal(id: id) else { return }
+        await engine.recordProposal(goal: goal, text: seededProposal, sessionId: sessionId)
+    }
+
+    /// Un turno de voz hecho desde las gafas (+ la respuesta), como lo persiste el loop (batch 8 #2).
+    static let seedsGlassesTurn = isActive && arguments.contains("--uitest-seed-glasses-turn")
+    static let seededGlassesTranscript = "¿qué tengo mañana?"
+
+    static func seedGlassesTurn(_ store: SymbolicStore, sessionId: SessionID) {
+        let turns = (try? store.historyPage().turns) ?? []
+        guard !turns.contains(where: { $0.surface == .glassesHUD }) else { return }
+        try? store.append(sessionId: sessionId, message: .user([AudioTool.transcriptBlock(seededGlassesTranscript)]),
+                          surface: .glassesHUD)
+        try? store.append(sessionId: sessionId, message: .assistant([.text("Mañana tienes el standup a las 9.")]),
+                          surface: .glassesHUD)
+    }
+
+    /// 60 turnos previos: el chat debe abrir anclado al último (review #34).
+    static let seedsLongHistory = isActive && arguments.contains("--uitest-seed-long-history")
+
+    static func seedLongHistory(_ store: SymbolicStore, sessionId: SessionID) {
+        guard ((try? store.historyPage().turns) ?? []).isEmpty else { return }
+        for i in 0..<30 {
+            try? store.append(sessionId: sessionId, message: .user("mensaje \(i)"))
+            try? store.append(sessionId: sessionId, message: .assistant([.text("respuesta \(i)\nCon una segunda línea para que ocupe.")]))
+        }
+    }
+
+    /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
+    static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
+
     /// Sin red forzado (pill "Sin conexión" + turno encolado).
     static let forcesOffline = isActive && arguments.contains("--uitest-offline")
     static let shouldReset = isActive && arguments.contains(resetFlag)

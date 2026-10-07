@@ -56,11 +56,7 @@ struct ContextSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.stack) {
-            Text("Contexto")
-                .font(Theme.Type_.label)
-                .textCase(.uppercase)
-                .kerning(0.66)
-                .foregroundStyle(Theme.Colors.textMuted)
+            SheetHeader("Contexto", screen: "context") { dismiss() }
             if let gauge = model.contextGauge {
                 Text("\(gauge.percent) % lleno")
                     .font(Theme.Type_.tabular(Theme.Type_.cardTitle))

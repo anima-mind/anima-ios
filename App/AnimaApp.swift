@@ -104,6 +104,9 @@ final class AppModel: ObservableObject {
     // Capa proactiva: recordatorios de Anima, notificaciones locales y la
     // reconciliación de lo vencido mientras la app no miraba.
     private var reminderStore: AnimaReminderStore?
+    /// El aviso de despertar (batch 8 #7).
+    private var wakeNotifier: WakeNotifier?
+    private var wakePreference: WakePreference?
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
@@ -246,11 +249,19 @@ final class AppModel: ObservableObject {
                                                          selfName: { await selfModel.name() },
                                                          preference: preference)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+            // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño.
+            let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
+            let wake = WakeNotifier(scheduler: notifications, general: preference, preference: wakePreference,
+                                    selfName: { await selfModel.name() },
+                                    isForeground: { await MainActor.run { Self.isForeground } })
+            self.wakePreference = wakePreference
+            self.wakeNotifier = wake
             let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
-                                                                preference: preference)
+                                                                preference: preference, wake: wakePreference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
             notificationsModel.onEnabledChanged = { await proactive?.sync() }
+            notificationsModel.onWakeChanged = { on in if !on { await wake.cancelPending() } }
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
             remindersList.onChange = { [weak notificationsModel] in
@@ -451,7 +462,10 @@ final class AppModel: ObservableObject {
                                             telemetry: telemetry, selfModel: selfModel,
                                             realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
-            Self.shared.set(consolidator, scheduler: sleepScheduler)
+            let wake = wakeNotifier
+            Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night in
+                await wake?.cycleCompleted(report, night: night)
+            })
             // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
             let other = otherModel
             settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
@@ -478,7 +492,7 @@ final class AppModel: ObservableObject {
         }
 
         // El DesireEngine (§5.8): pulso ≤4/día contra el estado real del teléfono.
-        let (sessionId, previousSession) = resolveSession(store)
+        let (sessionId, _) = resolveSession(store)
         var desireEngine: DesireEngine?
         if let otherModel {
             let engine = DesireEngine(otherModel: otherModel,
@@ -488,6 +502,7 @@ final class AppModel: ObservableObject {
                                       store: store, telemetry: telemetry)
             self.desireEngine = engine
             desireEngine = engine
+            if UITestMode.seedsIntention { await UITestMode.seedIntention(engine, otherModel, sessionId: sessionId) }
             // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.
             // Un despertar en background NO lo corre: ese pulso es del BGTask y notifica.
             let sid = sessionId
@@ -499,10 +514,14 @@ final class AppModel: ObservableObject {
         // El SelfModel vivo alimenta el badge, el Mind sheet ("noches") y el nombre del header.
         let chat = ChatViewModel(loop: loop, sessionId: sessionId, desireEngine: desireEngine,
                                  selfModel: selfModel)
-        // El chat abre con lo vivido: la sesión reanudada (y la anterior, si es nueva).
-        chat.loadHistory(current: (try? store.visibleTurns(sessionId: sessionId)) ?? [],
-                         previous: previousSession.flatMap { try? store.visibleTurns(sessionId: $0) } ?? [],
-                         boundaries: (try? store.boundaries(sessionId: sessionId)) ?? [])
+        // El chat abre con TODO lo vivido (campo batch 8 #3): el historial de todas
+        // las sesiones, paginado hacia arriba. La sesión solo define el contexto del modelo.
+        chat.historyStore = store
+        let wakePreference = self.wakePreference
+        chat.wakeSummary = { wakePreference?.lastSummary }
+        if UITestMode.seedsLongHistory { UITestMode.seedLongHistory(store, sessionId: sessionId) }
+        if UITestMode.seedsGlassesTurn { UITestMode.seedGlassesTurn(store, sessionId: sessionId) }
+        if let page = try? store.historyPage() { chat.loadHistory(page: page) }
         // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
         chat.compactor = ConversationCompactor(selector: selector, store: store, telemetry: telemetry)
         chat.onNewConversation = { [weak self] in self?.startNewConversation() }
@@ -573,7 +592,8 @@ final class AppModel: ObservableObject {
     private func resolveSession(_ store: SymbolicStore) -> (SessionID, SessionID?) {
         if let activeSessionId { return (activeSessionId, previousSessionId) }
         let recovery = Recovery(queue: store.database, store: store)
-        let decision = (try? recovery.decideLaunch()) ?? .fresh(previous: nil)
+        let idle = UITestMode.forcesFreshSession ? 0 : Recovery.idleLimit
+        let decision = (try? recovery.decideLaunch(idleLimit: idle)) ?? .fresh(previous: nil)
         let resolved: (SessionID, SessionID?)
         switch decision {
         case .resume(let id):
@@ -602,8 +622,8 @@ final class AppModel: ObservableObject {
     private func runForegroundFallbackIfNeeded(_ consolidator: Consolidator) async {
         let last = await consolidator.lastCycleAt()
         guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else { return }
-        let scheduler = sleepScheduler
-        Task.detached { await scheduler.runResumable(consolidator) }
+        // Por el holder: un ciclo completo también avisa que despertó (batch 8 #7).
+        Task.detached { await AppModel.shared.run(isExpired: { false }) }
     }
 
     /// Registro del BGProcessingTask (§5.4). Se llama en app launch; el runner
@@ -675,6 +695,15 @@ final class AppModel: ObservableObject {
     func schedulePulse() {
         #if os(iOS)
         PulseScheduler().submit()
+        #endif
+    }
+
+    /// ¿La app está al frente? (el aviso de despertar no se manda: va al Mind sheet).
+    static var isForeground: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .active
+        #else
+        return false
         #endif
     }
 
@@ -819,6 +848,14 @@ final class AppModel: ObservableObject {
             Task {
                 await chatModel?.loadProactiveIntentions()
                 chatModel?.focus(.intention(id: id))
+            }
+        case .mind:
+            // Aviso de despertar (batch 8 #7): el chat con el Mind sheet abierto.
+            guard deferUntilReady(link) else { return }
+            selectedTab = .chat
+            Task {
+                await chatModel?.loadMind()
+                chatModel?.showMindSheet = true
             }
         }
     }

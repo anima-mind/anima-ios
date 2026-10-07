@@ -18,6 +18,9 @@ final class MemoryUITests: AnimaUITestCase {
         XCTAssertTrue(item.label.contains("Noche #1 · destilado"), item.label)
         XCTAssertTrue(item.label.contains("confianza 50 %"), item.label)
         tap(item, until: element(app, "memory.invalidate"))
+        // Batch 8 #4: la X del detalle dentro del padding, en la fila del título.
+        assertSheetClose(app, "memoryDetail")
+        screenshot(app, "batch8-04-memory")
         tap(element(app, "memory.invalidate"))
         let confirm = app.buttons.matching(NSPredicate(format: "label == 'Invalidar'")).firstMatch
         tap(confirm)

@@ -10,6 +10,11 @@ import Foundation
 public enum ToolFailureNotice {
     public static let marker = "⚠️ No pude"
 
+    /// ¿El texto abre con una línea fija del loop (fallo de tool o escritura no ejecutada)?
+    public static func isNotice(_ text: String) -> Bool {
+        text.hasPrefix(marker) || text.hasPrefix(ActionClaimGuard.marker)
+    }
+
     /// La intención de una llamada real, como verbo ("crear el recordatorio").
     public static func verb(tool: String, input: JSONValue) -> String {
         let action = input["action"]?.stringValue ?? ""

@@ -33,6 +33,7 @@ final class AnimaNotifications: NSObject, UNUserNotificationCenterDelegate, Send
                                    intentIdentifiers: []),
             UNNotificationCategory(identifier: ProactiveNotificationIDs.intentionCategory, actions: [],
                                    intentIdentifiers: []),
+            UNNotificationCategory(identifier: WakeNotice.category, actions: [], intentIdentifiers: []),
         ]
     }
 
@@ -74,7 +75,7 @@ final class AnimaNotifications: NSObject, UNUserNotificationCenterDelegate, Send
 
     static func presentationOptions(category: String) -> UNNotificationPresentationOptions {
         switch category {
-        case ProactiveNotificationIDs.reminderCategory, ProactiveNotificationIDs.checkInCategory:
+        case ProactiveNotificationIDs.reminderCategory, ProactiveNotificationIDs.checkInCategory, WakeNotice.category:
             return [.banner, .sound, .list]
         default:
             return []

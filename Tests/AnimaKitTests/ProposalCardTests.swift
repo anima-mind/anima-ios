@@ -31,9 +31,11 @@ import Testing
         await chat.accept(card)
         let resolved = try #require(chat.messages.first { $0.id == card.id })
         #expect(resolved.outcome == .accepted && resolved.resolved)
-        #expect(chat.messages.contains { $0.role == .user && $0.text == "Acepto: \(card.text)" })
+        // Batch 8 #6: el dueño ve "Hagámoslo"; al loop viaja la orden de EJECUTAR ligada a la meta.
+        #expect(chat.messages.contains { $0.role == .user && $0.text == IntentionAcceptance.shownText })
         let sent = try #require(provider.captures.value.first?.messages.last)
-        #expect(sent == .user("Acepto: \(card.text)"))
+        let goalId = try #require(await engine.intention(id: card.intentionId ?? "")?.goalId)
+        #expect(sent == .user(IntentionAcceptance.prompt(proposal: card.text, goalId: goalId)))
         #expect(chat.messages.last?.text == "Listo, te bloqueé 45 min mañana a las 7.")
         #expect(await engine.intention(id: card.intentionId ?? "")?.outcome == .accepted)
 
@@ -42,7 +44,9 @@ import Testing
             #expect(chat.messages.first { $0.id == second.id }?.outcome == .dismissed)
             #expect(provider.captures.value.count == 1)              // "Ahora no" no le pide nada
         }
-        #expect(ChatViewModel.acceptText("x") == "Acepto: x")
+        #expect(ChatViewModel.acceptText("x").hasPrefix(IntentionAcceptance.marker))
+        #expect(ChatViewModel.acceptText("x", goalId: "g1").contains("set_checkin con goal_id g1"))
+        #expect(!ChatViewModel.acceptText("x").contains("goal_id"))
         #expect(ProactiveCard.label(.intention(id: "i"), at: nil, goalStatement: nil, now: Date(),
                                     dates: AnimaDateText(), selfName: "Budosky") == "Propuesta de Budosky")
     }

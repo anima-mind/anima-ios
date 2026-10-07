@@ -268,9 +268,7 @@ struct AccountDeletionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
-            Text("Eliminar cuenta")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(Theme.Colors.text)
+            SheetHeader("Eliminar cuenta", style: .title, screen: "accountDeletion") { onClose() }
             Text("Se borra tu cuenta de Anima (tu identidad con Apple). Tu mente —memorias, identidad y key— se queda intacta en este teléfono.")
                 .font(Theme.Type_.body)
                 .foregroundStyle(Theme.Colors.textMuted)

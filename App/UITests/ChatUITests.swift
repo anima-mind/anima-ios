@@ -42,6 +42,125 @@ final class ChatUITests: AnimaUITestCase {
         waitFor(assistantMessage(relaunched, labelContains: fixedReply))
     }
 
+    /// Batch 8 #3: el historial queda fijo en el teléfono. Relanzar con sesión
+    /// nueva (>8 h) y volver a relanzar (reanuda la sesión nueva VACÍA: la causa
+    /// del historial perdido) sigue mostrando lo viejo, con el separador.
+    @MainActor
+    func testHistorySurvivesNewSessionsAcrossRelaunches() {
+        let app = launch()
+        onboard(app)
+        send(app, "historial fijo")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+        app.terminate()
+
+        let fresh = makeApp(reset: false)
+        fresh.launchArguments.append("--uitest-fresh-session")
+        fresh.launch()
+        waitForChat(fresh)
+        let old = fresh.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'historial fijo'")).firstMatch
+        waitFor(old)
+        waitFor(assistantMessage(fresh, labelContains: fixedReply))
+        fresh.terminate()
+
+        let again = launch(reset: false)
+        waitForChat(again)
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'historial fijo'")).firstMatch)
+        // Un turno nuevo en la sesión nueva: lo viejo arriba, separador de conversación en medio.
+        send(again, "seguimos")
+        waitFor(assistantMessage(again, value: "done", labelContains: fixedReply), timeout: 15)
+        let divider = again.staticTexts.matching(identifier: "chat.sessionDivider")
+            .matching(NSPredicate(format: "label == '— nueva conversación —'")).firstMatch
+        waitFor(divider)
+        let shot = XCTAttachment(screenshot: again.screenshot())
+        shot.name = "batch8-03-historial"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// Batch 8 #1: la propuesta del deseo se ve UNA vez — la card con
+    /// "Hagámoslo / Ahora no" —, también tras relanzar; al aceptarla el dueño ve
+    /// "Hagámoslo", no la propuesta repetida.
+    @MainActor
+    func testProposalShowsOnceAsCard() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-intention")
+        app.launch()
+        onboard(app)
+        let proposal = "¿El miércoles a las 8:00 hacemos tu primer check-in?"
+        let card = element(app, "chat.proactive.intention")
+        waitFor(card)
+        waitFor(app.buttons["chat.proactive.accept"])
+        waitFor(app.buttons["chat.proactive.dismiss"])
+        let copies = app.staticTexts.matching(NSPredicate(format: "label == %@", proposal))
+        XCTAssertEqual(copies.count, 1, "la propuesta no se repite como texto suelto")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "batch8-01-propuesta"
+        shot.lifetime = .keepAlways
+        add(shot)
+        app.terminate()
+
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-intention")
+        again.launch()
+        waitForChat(again)
+        waitFor(element(again, "chat.proactive.intention"))
+        XCTAssertEqual(again.staticTexts.matching(NSPredicate(format: "label == %@", proposal)).count, 1)
+        tap(again.buttons["chat.proactive.accept"])
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'Hagámoslo'")).firstMatch)
+        waitFor(element(again, "chat.proactive.outcome"))
+        XCTAssertEqual(again.staticTexts.matching(NSPredicate(format: "label == %@", proposal)).count, 1)
+    }
+
+    /// Batch 8 #2: lo hablado en las gafas aparece en el historial con el chip
+    /// "gafas" (glifo eyeglasses), no con el de "voz".
+    @MainActor
+    func testGlassesTurnShowsGlassesChip() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-glasses-turn")
+        app.launch()
+        onboard(app)
+        send(app, "y desde el teléfono")
+        waitFor(assistantMessage(app, value: "done", labelContains: fixedReply), timeout: 15)
+        app.terminate()
+
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-glasses-turn")
+        again.launch()
+        waitForChat(again)
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == '¿qué tengo mañana?'")).firstMatch)
+        let chip = element(again, "chat.userMessage.glasses")
+        waitFor(chip)
+        XCTAssertTrue(again.staticTexts.matching(NSPredicate(format: "label == 'gafas'")).firstMatch.exists)
+        XCTAssertFalse(element(again, "chat.userMessage.voice").exists, "un turno de gafas no es 'voz'")
+        let shot = XCTAttachment(screenshot: again.screenshot())
+        shot.name = "batch8-02-gafas"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// Review #34: con un historial largo el chat abre anclado al último mensaje.
+    @MainActor
+    func testLongHistoryOpensAtTheBottom() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-long-history")
+        app.launch()
+        onboard(app)
+        app.terminate()
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-long-history")
+        again.launch()
+        waitForChat(again)
+        let last = assistantMessage(again, labelContains: "respuesta 29")
+        waitFor(last)
+        waitUntil(last, "isHittable == true")
+        XCTAssertFalse(assistantMessage(again, labelContains: "respuesta 0").isHittable)
+        screenshot(again, "batch8-review-fondo")
+    }
+
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
     @MainActor
     func testPlasticityBadgeOpensMindSheet() {
@@ -159,7 +278,8 @@ final class ChatUITests: AnimaUITestCase {
 }
 
 /// Batch 5b #4/#5: el medidor de contexto abre su sheet; "Nueva conversación"
-/// deja el chat limpio con su separador (la memoria no se toca).
+/// agrega su separador (la memoria no se toca). Batch 8 #3: lo visible NO se
+/// borra — solo cambia lo que entra al contexto del modelo.
 final class ContextUITests: AnimaUITestCase {
     @MainActor
     func testContextMeterOpensSheetAndStartsANewConversation() {
@@ -175,7 +295,8 @@ final class ContextUITests: AnimaUITestCase {
         tap(element(app, "context.newConversation"))
         waitUntil(element(app, "context.sheet"), "exists == false")
         waitFor(text(app, "— nueva conversación —"))
-        XCTAssertFalse(app.staticTexts.matching(identifier: "chat.userMessage").firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'hola'")).firstMatch.exists)
     }
 }
 

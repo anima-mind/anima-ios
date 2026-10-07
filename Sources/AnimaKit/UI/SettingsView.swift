@@ -60,6 +60,8 @@ public final class SettingsViewModel: ObservableObject {
     public var nightSimulator: NightSimulator?
     /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
     public var onNightSimulated: (() -> Void)?
+    /// Arranca la noche simulada (la app abre la Live Activity del sueño).
+    public var onNightStarted: (() -> Void)?
     @Published public private(set) var simulatingNight = false
     @Published public private(set) var nightSummary: String?
     /// Hub (FIX F): el SelfModel vivo alimenta el resumen de la fila Mente.
@@ -150,6 +152,7 @@ public final class SettingsViewModel: ObservableObject {
         guard let nightSimulator, !simulatingNight else { return }
         simulatingNight = true
         nightSummary = nil
+        onNightStarted?()
         if let summary = await nightSimulator.run() {
             nightSummary = summary
             onNightSimulated?()

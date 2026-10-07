@@ -5,6 +5,7 @@
 
 import SwiftUI
 import Combine
+import WidgetKit
 import AnimaKit
 import FirebaseCore
 
@@ -25,20 +26,28 @@ struct AnimaApp: App {
         AppModel.registerConsolidationTask()
         AppModel.registerPulseTask()
         AnimaNotifications.install()
+        // Botones de los widgets ejecutados en ESTE proceso (LiveActivityIntent):
+        // se aplican ya con el mismo handler de las notificaciones.
+        WidgetIntentBridge.shared.apply = { await AppModel.live.applyWidgetActionsFromIntent() }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(app: app)
-                .task { await app.ensureBootstrapped() }
-                .onOpenURL { app.handleOpenURL($0) }
-                .preferredColorScheme(.dark)
+            if UITestMode.showsWidgetGallery {
+                WidgetGalleryView()
+            } else {
+                RootView(app: app)
+                    .task { await app.ensureBootstrapped() }
+                    .onOpenURL { app.handleOpenURL($0) }
+                    .preferredColorScheme(.dark)
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 app.markCleanShutdown()
                 app.scheduleConsolidation()
                 app.schedulePulse()
+                Task { await app.publishWidgets() }
             }
             app.glassesForeground(phase == .active)
             // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
@@ -104,6 +113,11 @@ final class AppModel: ObservableObject {
     // Capa proactiva: recordatorios de Anima, notificaciones locales y la
     // reconciliación de lo vencido mientras la app no miraba.
     private var reminderStore: AnimaReminderStore?
+    /// Widgets: snapshot JSON en el App Group + la cola de sus botones.
+    private var widgetPublisher: WidgetPublisher?
+    private var widgetDrain: Task<Void, Never>?
+    /// Live Activity del sueño en foreground.
+    private let sleepActivity = SleepActivityController()
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
@@ -187,7 +201,8 @@ final class AppModel: ObservableObject {
             configProvider = provider
         }
 
-        // Base de datos única (GRDB) en el sandbox.
+        // Base de datos única (GRDB) en el contenedor del App Group (mudanza
+        // única y verificada desde Documents; ante cualquier fallo, la vieja).
         do {
             let dbPath = Self.databasePath()
             let queue = try AnimaDatabase.makeQueue(path: dbPath)
@@ -246,6 +261,15 @@ final class AppModel: ObservableObject {
                                                          selfName: { await selfModel.name() },
                                                          preference: preference)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+            if let widgetStore = WidgetSnapshotStore.shared() {
+                let publisher = WidgetPublisher(
+                    builder: WidgetSnapshotBuilder(reminders: reminderStore, otherModel: otherModel,
+                                                   selfModel: selfModel),
+                    store: widgetStore, reload: { WidgetCenter.shared.reloadAllTimelines() })
+                self.widgetPublisher = publisher
+                // Cada cambio de recordatorios/metas pasa por sync(): ahí se republica.
+                await proactiveScheduler?.setAfterSync { await publisher.publish() }
+            }
             let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
                                                                 preference: preference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
@@ -457,8 +481,16 @@ final class AppModel: ObservableObject {
             settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
                 await other?.allGoals().count ?? 0
             })
+            settingsModel?.onNightStarted = { [weak self] in
+                guard let self, !UITestMode.isActive else { return }
+                Task { await self.sleepActivity.start(selfName: await self.selfModel?.name() ?? "Anima") }
+            }
             settingsModel?.onNightSimulated = { [weak self] in
                 Task { @MainActor in
+                    if let self, !UITestMode.isActive {
+                        await self.sleepActivity.finish(completed: true, night: await self.selfModel?.cycles() ?? 0)
+                    }
+                    await self?.publishWidgets()
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()
                     await self?.approvalsModel?.refresh()
@@ -527,6 +559,8 @@ final class AppModel: ObservableObject {
         phase = .ready
         await approvalsModel?.refresh()
         await reconcileProactive()
+        await applyWidgetActions()
+        await publishWidgets()
         if let link = pendingLink {
             pendingLink = nil
             open(link)
@@ -547,7 +581,41 @@ final class AppModel: ObservableObject {
         Task {
             await reconcileProactive()
             await approvalsModel?.refresh()
+            await applyWidgetActions()
         }
+    }
+
+    // MARK: - Widgets
+
+    /// Reescribe el snapshot del App Group y pide a WidgetKit repintar.
+    func publishWidgets() async {
+        await widgetPublisher?.publish()
+    }
+
+    /// Aplica la cola de botones de los widgets con el MISMO handler de las
+    /// notificaciones. Serializado: nunca dos drenajes a la vez.
+    func applyWidgetActions() async {
+        while let running = widgetDrain { await running.value }
+        guard reminderStore != nil, let inbox = WidgetActionInbox.shared(), !inbox.pending().isEmpty else { return }
+        let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
+                                             scheduler: proactiveScheduler)
+        let task = Task { @MainActor in
+            await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) }
+            await self.goalsModel?.refresh()
+            await self.remindersModel?.refresh()
+            await self.settingsModel?.notifications?.refresh()
+            await self.publishWidgets()
+        }
+        widgetDrain = task
+        await task.value
+        widgetDrain = nil
+    }
+
+    /// El intent del widget corrió en el proceso de la app (posiblemente lanzada
+    /// en background solo para esto): cablea con tope de config y aplica.
+    func applyWidgetActionsFromIntent() async {
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
+        await applyWidgetActions()
     }
 
     /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;
@@ -603,7 +671,13 @@ final class AppModel: ObservableObject {
         let last = await consolidator.lastCycleAt()
         guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else { return }
         let scheduler = sleepScheduler
-        Task.detached { await scheduler.runResumable(consolidator) }
+        let selfModel = self.selfModel
+        await sleepActivity.start(selfName: await selfModel?.name() ?? "Anima")
+        Task.detached { [sleepActivity] in
+            let completed = await scheduler.runResumable(consolidator)
+            await sleepActivity.finish(completed: completed, night: await selfModel?.cycles() ?? 0)
+            await AppModel.live.publishWidgets()
+        }
     }
 
     /// Registro del BGProcessingTask (§5.4). Se llama en app launch; el runner
@@ -620,6 +694,8 @@ final class AppModel: ObservableObject {
                 // Lanzamiento en background: cablea el harness si la escena no lo hizo.
                 await AppModel.live.ensureBootstrapped()
                 let success = await AppModel.shared.run(isExpired: { expired.value })
+                // Noche nueva: el widget muestra el número y la plasticidad al día.
+                await AppModel.live.publishWidgets()
                 task.setTaskCompleted(success: success)
             }
         }
@@ -646,6 +722,7 @@ final class AppModel: ObservableObject {
     /// Intentions como notificación local. nil si el harness no está cableado.
     func runBackgroundPulse() async -> PulseRunner.Outcome? {
         guard let store, reconciler != nil else { return nil }
+        await applyWidgetActions()
         let (sessionId, _) = resolveSession(store)
         let runner = PulseRunner(reconciler: reconciler, engine: desireEngine, scheduler: proactiveScheduler)
         let outcome = await runner.run(sessionId: sessionId)
@@ -820,6 +897,18 @@ final class AppModel: ObservableObject {
                 await chatModel?.loadProactiveIntentions()
                 chatModel?.focus(.intention(id: id))
             }
+        case .talk:
+            guard deferUntilReady(link) else { return }
+            selectedTab = .chat
+            chatModel?.startVoice()
+        case .reminders:
+            guard deferUntilReady(link) else { return }
+            selectedTab = .reminders
+            Task { await remindersModel?.refresh() }
+        case .goals(let id):
+            guard deferUntilReady(link) else { return }
+            selectedTab = .goals
+            if let id { goalsModel?.focus(goalId: id) }
         }
     }
 
@@ -857,15 +946,22 @@ final class AppModel: ObservableObject {
                                           isDirectory: true)
     }
 
+    /// `--uitest`: su base aislada en Documents. Dueño: la del App Group, con la
+    /// mudanza única y verificada desde Documents (DatabaseRelocation); si algo
+    /// falla, la de Documents intacta (se reintenta en el próximo arranque).
     private static func databasePath() -> String {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return dir.appendingPathComponent(UITestMode.isActive ? UITestMode.databaseName : "anima.sqlite").path
+        if UITestMode.isActive { return dir.appendingPathComponent(UITestMode.databaseName).path }
+        let relocation = DatabaseRelocation(legacyURL: dir.appendingPathComponent(DatabaseRelocation.fileName),
+                                            groupDirectory: AppGroup.databaseDirectory(),
+                                            protect: { protect(path: $0.path) })
+        return relocation.resolve().path
     }
 
     /// Protección del .sqlite alineada con el token del Keychain (AfterFirstUnlock):
     /// Complete impediría que el BGTask nocturno abra la DB con el teléfono bloqueado (§8).
-    private static func protect(path: String) {
+    nonisolated private static func protect(path: String) {
         try? FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: path)
     }

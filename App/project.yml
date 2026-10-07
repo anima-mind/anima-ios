@@ -49,6 +49,7 @@ targets:
           - "Anima.xcodeproj"
           - "Skills"
           - "UITests"
+          - "Widgets"
       # Skills de ejemplo (markdown portable, doc 05): folder reference en el
       # bundle; el shell los copia a Documents/skills al primer arranque.
       - path: Skills
@@ -71,6 +72,8 @@ targets:
         product: MWDATDisplay
       - package: MetaWearablesDAT
         product: MWDATCamera
+      # Widgets (WidgetKit + control + Live Activity), embebida en PlugIns/.
+      - target: AnimaWidgets
     info:
       path: Info.plist
       properties:
@@ -89,6 +92,8 @@ targets:
         # + pulso del deseo en background (BGAppRefreshTask mind.anima.pulse): fetch.
         UIBackgroundModes: [processing, fetch, external-accessory, bluetooth-peripheral]
         UISupportedExternalAccessoryProtocols: [com.meta.ar.wearable]
+        # Live Activity del sueño en foreground ("… está consolidando" → "Noche #N lista").
+        NSSupportsLiveActivities: true
         # URL scheme propio: callback de Meta AI en el registro DAT (handleUrl) y
         # deep link del handoff "ver en el teléfono" (anima://chat?turn=…).
         CFBundleURLTypes:
@@ -124,8 +129,45 @@ targets:
         DEVELOPMENT_TEAM: 97VRP2W6B6
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
-        # Sign in with Apple (identidad vía Firebase Auth, proveedor apple.com).
+        # Sign in with Apple (identidad vía Firebase Auth, proveedor apple.com)
+        # + App Group group.com.joshuamoreno1.anima.widgets (base + snapshot de widgets).
         CODE_SIGN_ENTITLEMENTS: Anima.entitlements
+
+  # Extensión de widgets: lee SOLO el snapshot JSON del App Group (jamás GRDB).
+  # Comparte con la app App/WidgetsShared (intents, vistas, atributos de la Live
+  # Activity). Mismo App Group que la app; bundle id registrado por el dueño.
+  AnimaWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Widgets
+      - path: WidgetsShared
+    dependencies:
+      - package: AnimaKit
+        product: AnimaKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Anima
+        CFBundleDevelopmentRegion: es
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joshuamoreno1.anima.widgets
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 97VRP2W6B6
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_ENTITLEMENTS: AnimaWidgets.entitlements
+        SKIP_INSTALL: YES
 
   # UI tests (XCUITest) contra el simulador. La app se lanza con `--uitest`
   # (dobles deterministas sin red, ver App/UITestSupport.swift). Categoría aparte

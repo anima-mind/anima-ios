@@ -12,6 +12,7 @@ Secrets.*
 GoogleService-Info.plist
 .spm-ci/
 App/Info.plist
+App/Widgets/Info.plist
 /build/
 .dd-sim/
 build/

@@ -27,9 +27,13 @@ import GRDB
         try inbox.enqueue(second)
         try inbox.enqueue(first)
         #expect(inbox.pending().map(\.action) == [first, second])
-        // Un archivo ilegible no tranca la cola: se descarta.
-        try Data("basura".utf8).write(to: inbox.directory.appendingPathComponent("0000000000000-x.json"))
+        // Un archivo ilegible no tranca la cola, pero tampoco se borra (antes del
+        // primer desbloqueo un tap válido es ilegible por la protección de datos).
+        let unreadable = inbox.directory.appendingPathComponent("0000000000000-x.json")
+        try Data("basura".utf8).write(to: unreadable)
         try Data("no json".utf8).write(to: inbox.directory.appendingPathComponent("ignorado.txt"))
+        #expect(inbox.pending().map(\.action) == [first, second])
+        #expect(FileManager.default.fileExists(atPath: unreadable.path))
         #expect(inbox.pending().map(\.action) == [first, second])
         #expect(WidgetActionInbox.shared()?.directory.lastPathComponent == "Actions" || WidgetActionInbox.shared() == nil)
     }
@@ -66,7 +70,7 @@ import GRDB
         try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: reminder.id)))
         try inbox.enqueue(WidgetAction(kind: .checkInProgress(goalId: goalId)))
         let handler = ProactiveActionHandler(reminders: reminders, otherModel: other, scheduler: scheduler)
-        let applied = await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) }
+        let applied = await inbox.drain { await handler.handle($0) }
 
         #expect(applied == 2)
         #expect(await reminders.reminder(id: reminder.id)?.status == .done)
@@ -78,7 +82,7 @@ import GRDB
         #expect(await other.streak(goalId: goalId) == 1)
         // Reaplicar (tap doble) no rompe nada.
         try inbox.enqueue(WidgetAction(kind: .reminderDone(reminderId: reminder.id)))
-        #expect(await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) } == 0)
+        #expect(await inbox.drain { await handler.handle($0) } == 0)
         #expect(await reminders.reminder(id: reminder.id)?.status == .done)
     }
 
@@ -146,5 +150,46 @@ extension WidgetActionInboxTests {
         await scheduler.setAfterSync(nil)
         await scheduler.sync()
         #expect(calls.value == 2)
+    }
+}
+
+extension WidgetActionInboxTests {
+    /// Reaplicar un "Sí, avancé" (p. ej. murió la app entre aplicar y borrar el
+    /// archivo) no duplica el check-in, y la respuesta lleva la hora del tap.
+    @Test func reapplyingACheckInIsIdempotentAndKeepsTheTapTime() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let other = OtherModel(queue: queue)
+        let goalId = await other.ingestStated(statement: "Leer", desiredState: .progressCheckIn(everyDays: 1),
+                                              evidence: "t")
+        let handler = ProactiveActionHandler(reminders: nil, otherModel: other, scheduler: nil)
+        let tapped = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
+        let tap = WidgetAction(kind: .checkInProgress(goalId: goalId), createdAt: tapped)
+
+        #expect(await handler.handle(tap))
+        #expect(await handler.handle(tap))
+        #expect(await handler.handle(WidgetAction(kind: .checkInProgress(goalId: goalId),
+                                                  createdAt: tapped.addingTimeInterval(60))))
+
+        let checkIns = await other.checkIns(goalId: goalId)
+        #expect(checkIns.count == 1)
+        #expect(checkIns.first?.answeredAt.map { abs($0.timeIntervalSince(tapped)) < 0.001 } == true)
+        #expect(checkIns.first?.note == ProactiveActionHandler.widgetNote)
+        #expect(await other.streak(goalId: goalId) == 1)
+        // Un tap de otro día sí cuenta.
+        let yesterday = WidgetAction(kind: .checkInProgress(goalId: goalId), createdAt: tapped.addingTimeInterval(-86_400))
+        #expect(await handler.handle(yesterday))
+        #expect(await other.checkIns(goalId: goalId).count == 2)
+        // Meta borrada: no aplica.
+        #expect(await !handler.handle(WidgetAction(kind: .checkInProgress(goalId: "nope"))))
+    }
+
+    @Test func checkInsFromTheChatStillAddRowsTheSameDay() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let other = OtherModel(queue: queue)
+        let goalId = await other.ingestStated(statement: "Leer", desiredState: .progressCheckIn(everyDays: 1),
+                                              evidence: "t")
+        _ = await other.recordCheckIn(goalId: goalId, answer: .yes, note: "widget", oncePerDay: true)
+        _ = await other.recordCheckIn(goalId: goalId, answer: .yes, note: "leí 30 páginas")
+        #expect(await other.checkIns(goalId: goalId).count == 2)
     }
 }

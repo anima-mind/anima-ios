@@ -606,7 +606,7 @@ final class AppModel: ObservableObject {
         guard reminderStore != nil, let inbox = WidgetActionInbox.shared(), !inbox.pending().isEmpty else { return }
         let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
                                              scheduler: proactiveScheduler)
-        await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) }
+        await inbox.drain { await handler.handle($0) }
         await goalsModel?.refresh()
         await remindersModel?.refresh()
         await settingsModel?.notifications?.refresh()

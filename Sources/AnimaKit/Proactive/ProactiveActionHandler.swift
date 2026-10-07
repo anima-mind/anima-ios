@@ -63,6 +63,22 @@ public struct ProactiveActionHandler: Sendable {
         if handled { await scheduler?.sync() }
         return handled
     }
+
+    /// Un botón de widget de la cola: con la hora del tap y sin duplicar el
+    /// check-in si se reaplica (idempotente por día).
+    @discardableResult
+    public func handle(_ action: WidgetAction) async -> Bool {
+        switch action.kind {
+        case .reminderDone:
+            return await handle(action.proactiveAction, note: Self.widgetNote)
+        case .checkInProgress(let goalId):
+            let recorded = await otherModel?.recordCheckIn(goalId: goalId, answer: .yes, note: Self.widgetNote,
+                                                           answeredAt: action.createdAt, oncePerDay: true)
+            guard recorded != nil else { return false }
+            await scheduler?.sync()
+            return true
+        }
+    }
 }
 
 extension WidgetAction {

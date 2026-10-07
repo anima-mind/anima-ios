@@ -61,7 +61,9 @@ public struct WidgetActionInbox: Sendable {
         try Self.encoder().encode(action).write(to: fileURL(action), options: options)
     }
 
-    /// Pendientes en orden de llegada (los ilegibles se descartan).
+    /// Pendientes en orden de llegada. Un archivo que no se puede leer se salta
+    /// sin borrarlo: antes del primer desbloqueo la protección de datos lo
+    /// esconde y sigue siendo un tap válido (se aplica en el próximo drenaje).
     public func pending() -> [(url: URL, action: WidgetAction)] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
@@ -70,10 +72,7 @@ public struct WidgetActionInbox: Sendable {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .compactMap { url in
                 guard let data = try? Data(contentsOf: url),
-                      let action = try? decoder.decode(WidgetAction.self, from: data) else {
-                    try? FileManager.default.removeItem(at: url)
-                    return nil
-                }
+                      let action = try? decoder.decode(WidgetAction.self, from: data) else { return nil }
                 return (url, action)
             }
     }

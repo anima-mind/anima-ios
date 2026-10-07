@@ -236,10 +236,25 @@ public actor OtherModel {
     /// La respuesta del dueño (chat o acción de la notificación). Responde la
     /// pregunta abierta de las últimas 24h si la hay; si no, crea la fila.
     @discardableResult
-    public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "") -> GoalCheckIn? {
+    /// - answeredAt: cuándo respondió el dueño (un tap del widget aplicado
+    ///   después); nil = ahora.
+    /// - oncePerDay: reaplicar la misma respuesta ese día no agrega otra fila
+    ///   (la cola de botones puede reaplicar una acción ya aplicada).
+    public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "",
+                              answeredAt: Date? = nil, oncePerDay: Bool = false) -> GoalCheckIn? {
         guard goal(id: goalId) != nil else { return nil }
-        let ts = now().timeIntervalSince1970
+        let at = answeredAt ?? now()
+        let ts = at.timeIntervalSince1970
+        let dayStart = calendar.startOfDay(for: at).timeIntervalSince1970
+        let dayEnd = (calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: at)) ?? at)
+            .timeIntervalSince1970
         let id = try? queue.write { db -> String in
+            if oncePerDay, let existing = try String.fetchOne(db, sql: """
+                SELECT id FROM goal_checkin WHERE goal_id=? AND answer=? AND answered_at >= ? AND answered_at < ?
+                ORDER BY answered_at LIMIT 1
+                """, arguments: [goalId, answer.rawValue, dayStart, dayEnd]) {
+                return existing
+            }
             if let open = try String.fetchOne(db, sql: """
                 SELECT id FROM goal_checkin WHERE goal_id=? AND answered_at IS NULL AND asked_at > ?
                 ORDER BY asked_at DESC LIMIT 1

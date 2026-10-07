@@ -37,17 +37,19 @@ struct AnimaApp: App {
                 WidgetGalleryView()
             } else {
                 RootView(app: app)
-                    .task { await app.ensureBootstrapped() }
+                    .task {
+                        DatabaseSuspension.shared.enterForeground()
+                        await app.ensureBootstrapped()
+                    }
                     .onOpenURL { app.handleOpenURL($0) }
                     .preferredColorScheme(.dark)
             }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
-                app.markCleanShutdown()
-                app.scheduleConsolidation()
-                app.schedulePulse()
-                Task { await app.publishWidgets() }
+                app.enterBackground()
+            } else {
+                DatabaseSuspension.shared.enterForeground()
             }
             app.glassesForeground(phase == .active)
             // Un ciclo nocturno pudo correr en background: el badge/Mind sheet relee el self.
@@ -614,8 +616,10 @@ final class AppModel: ObservableObject {
     /// El intent del widget corrió en el proceso de la app (posiblemente lanzada
     /// en background solo para esto): cablea con tope de config y aplica.
     func applyWidgetActionsFromIntent() async {
+        DatabaseSuspension.shared.begin()
         await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         await applyWidgetActions()
+        DatabaseSuspension.shared.end()
     }
 
     /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;
@@ -659,6 +663,20 @@ final class AppModel: ObservableObject {
         Task { await chatModel.loadMind() }
     }
 
+    /// scenePhase .background: cierre limpio, próximos BGTasks y snapshot de los
+    /// widgets; recién entonces la base se suspende (0xdead10cc). Un background
+    /// task cubre el vaciado; si iOS lo expira, la base se suspende ya.
+    func enterBackground() {
+        markCleanShutdown()
+        scheduleConsolidation()
+        schedulePulse()
+        let flush = BackgroundFlush.begin(onExpire: { DatabaseSuspension.shared.expire() })
+        Task {
+            await DatabaseSuspension.shared.enterBackground { await self.publishWidgets() }
+            flush.end()
+        }
+    }
+
     /// scenePhase .background: cierre limpio de la sesión activa.
     func markCleanShutdown() {
         guard let store, let activeSessionId else { return }
@@ -689,13 +707,18 @@ final class AppModel: ObservableObject {
             // (patrón sancionado de Apple para el expirationHandler + trabajo async).
             nonisolated(unsafe) let task = task
             let expired = ExpirationFlag()
-            task.expirationHandler = { expired.mark() }
+            task.expirationHandler = {
+                expired.mark()
+                DatabaseSuspension.shared.expire()
+            }
+            DatabaseSuspension.shared.begin()
             Task {
                 // Lanzamiento en background: cablea el harness si la escena no lo hizo.
                 await AppModel.live.ensureBootstrapped()
                 let success = await AppModel.shared.run(isExpired: { expired.value })
                 // Noche nueva: el widget muestra el número y la plasticidad al día.
                 await AppModel.live.publishWidgets()
+                DatabaseSuspension.shared.end()
                 task.setTaskCompleted(success: success)
             }
         }
@@ -707,13 +730,18 @@ final class AppModel: ObservableObject {
         #if os(iOS)
         PulseScheduler().register { task in
             nonisolated(unsafe) let task = task
+            DatabaseSuspension.shared.begin()
             let work = Task { @MainActor in
                 await AppModel.live.ensureBootstrapped()
                 let outcome = await AppModel.live.runBackgroundPulse()
                 PulseScheduler().submit()
+                DatabaseSuspension.shared.end()
                 task.setTaskCompleted(success: outcome != nil)
             }
-            task.expirationHandler = { work.cancel() }
+            task.expirationHandler = {
+                work.cancel()
+                DatabaseSuspension.shared.expire()
+            }
         }
         #endif
     }
@@ -733,6 +761,8 @@ final class AppModel: ObservableObject {
     /// Acción de una notificación (Hecho / En 1 hora / Sí, avancé / Hoy no): corre
     /// sin abrir la app, sobre el harness ya cableado.
     func handleNotificationAction(_ action: ProactiveNotificationAction) async {
+        DatabaseSuspension.shared.begin()
+        defer { DatabaseSuspension.shared.end() }
         await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
                                              scheduler: proactiveScheduler)
@@ -1118,5 +1148,34 @@ struct ConfirmationOverlay: ViewModifier {
                     .presentationBackground(Theme.Colors.surface)
             }
         }
+    }
+}
+
+/// `beginBackgroundTask` para el vaciado al ir a background (fin idempotente).
+@MainActor
+final class BackgroundFlush {
+    #if os(iOS)
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    #endif
+
+    static func begin(onExpire: @escaping @MainActor @Sendable () -> Void) -> BackgroundFlush {
+        let flush = BackgroundFlush()
+        #if os(iOS)
+        flush.identifier = UIApplication.shared.beginBackgroundTask(withName: "mind.anima.flush") { [flush] in
+            MainActor.assumeIsolated {
+                onExpire()
+                flush.end()
+            }
+        }
+        #endif
+        return flush
+    }
+
+    func end() {
+        #if os(iOS)
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+        #endif
     }
 }

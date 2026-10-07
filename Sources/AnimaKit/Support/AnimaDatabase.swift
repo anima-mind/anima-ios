@@ -115,11 +115,18 @@ public enum AnimaDatabase {
         return m
     }
 
-    /// Abre (o crea) la base en `path` y aplica migraciones.
+    /// Abre (o crea) la base en `path` y aplica migraciones. Observa la
+    /// suspensión de GRDB (DatabaseSuspension): la base vive en el App Group.
     public static func makeQueue(path: String) throws -> DatabaseQueue {
-        let queue = try DatabaseQueue(path: path)
+        let queue = try DatabaseQueue(path: path, configuration: configuration())
         try migrator().migrate(queue)
         return queue
+    }
+
+    static func configuration() -> Configuration {
+        var configuration = Configuration()
+        configuration.observesSuspensionNotifications = true
+        return configuration
     }
 
     /// Base en memoria (jamás toca disco): sesiones efímeras de propósito como el

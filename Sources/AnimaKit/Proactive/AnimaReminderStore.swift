@@ -6,21 +6,6 @@
 import Foundation
 import GRDB
 
-/// Cadencia compartida por recordatorios y check-ins.
-public enum ProactiveCadence: String, Sendable, Codable, Equatable, CaseIterable {
-    case none, daily, weekdays, weekly
-
-    /// "cada día", "entre semana", "cada semana" (nil si no se repite).
-    public var phrase: String? {
-        switch self {
-        case .none: return nil
-        case .daily: return "cada día"
-        case .weekdays: return "entre semana"
-        case .weekly: return "cada semana"
-        }
-    }
-}
-
 public struct AnimaReminder: Sendable, Equatable, Identifiable {
     public enum Status: String, Sendable, Equatable {
         case scheduled, fired, done, cancelled
@@ -184,6 +169,28 @@ public actor AnimaReminderStore {
         return try found(id)
     }
 
+    /// "Hecho" desde la cola de los widgets, reaplicable: true si lo cerró,
+    /// false si ya no aplica (no existe, ya cerrado o cancelado). done_at = la
+    /// hora del tap (nunca retrocede). Lanza SOLO si la base falló: el tap se
+    /// conserva para reintentar.
+    public func completeFromWidget(id: String, at tappedAt: Date) throws -> Bool {
+        let ts = tappedAt.timeIntervalSince1970
+        return try queue.write { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT status, repeat, done_at FROM anima_reminder WHERE id=?",
+                                             arguments: [id]),
+                  let status = AnimaReminder.Status(rawValue: row["status"] ?? ""),
+                  status == .scheduled || status == .fired else { return false }
+            let doneAt = max(ts, (row["done_at"] as Double?) ?? ts)
+            if (ProactiveCadence(rawValue: row["repeat"] ?? "none") ?? ProactiveCadence.none) == ProactiveCadence.none {
+                try db.execute(sql: "UPDATE anima_reminder SET status='done', done_at=? WHERE id=?",
+                               arguments: [doneAt, id])
+            } else {
+                try db.execute(sql: "UPDATE anima_reminder SET done_at=? WHERE id=?", arguments: [doneAt, id])
+            }
+            return true
+        }
+    }
+
     @discardableResult
     public func cancel(id: String) throws -> AnimaReminder {
         _ = try active(id)
@@ -209,25 +216,10 @@ public actor AnimaReminderStore {
 
     // MARK: - Repetición
 
-    /// Próxima ocurrencia estrictamente posterior a `reference`, a la hora/minuto
-    /// (y día de semana, si aplica) de `fireAt`. nil si no se repite.
+    /// Próxima ocurrencia estrictamente posterior a `reference` (ver ProactiveCadence).
     public static func nextOccurrence(after reference: Date, of fireAt: Date, repeat cadence: ProactiveCadence,
                                       calendar: Calendar) -> Date? {
-        let parts = calendar.dateComponents([.hour, .minute, .weekday], from: fireAt)
-        func next(weekday: Int?) -> Date? {
-            var c = DateComponents()
-            c.hour = parts.hour
-            c.minute = parts.minute
-            c.second = 0
-            c.weekday = weekday
-            return calendar.nextDate(after: reference, matching: c, matchingPolicy: .nextTime)
-        }
-        switch cadence {
-        case .none: return nil
-        case .daily: return next(weekday: nil)
-        case .weekly: return next(weekday: parts.weekday)
-        case .weekdays: return (2...6).compactMap { next(weekday: $0) }.min()
-        }
+        cadence.nextOccurrence(after: reference, of: fireAt, calendar: calendar)
     }
 
     /// Las próximas `count` ocurrencias desde fire_at (incluida) para programar

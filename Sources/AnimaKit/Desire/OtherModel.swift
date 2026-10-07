@@ -26,50 +26,6 @@ public enum GoalStatus: String, Sendable, Codable, Equatable {
     case pendingConfirmation = "pending_confirmation"
 }
 
-/// Cada cuánto Anima le pregunta al dueño por una meta (opt-in, hora local).
-public struct CheckInCadence: Sendable, Equatable, Codable {
-    public static let defaultHour = 20
-
-    public var cadence: ProactiveCadence
-    public var hour: Int
-    public var minute: Int
-    /// Solo weekly: 1=domingo … 7=sábado.
-    public var weekday: Int?
-
-    public init(cadence: ProactiveCadence, hour: Int = CheckInCadence.defaultHour, minute: Int = 0,
-                weekday: Int? = nil) {
-        self.cadence = cadence
-        self.hour = hour
-        self.minute = minute
-        self.weekday = weekday
-    }
-
-    public static let off = CheckInCadence(cadence: .none)
-
-    public var isActive: Bool { cadence != .none }
-
-    public var isValid: Bool {
-        (0...23).contains(hour) && (0...59).contains(minute)
-            && (cadence != .weekly || (weekday.map { (1...7).contains($0) } ?? false))
-    }
-
-    /// "cada día a las 20:00", "entre semana a las 07:30", "cada lunes a las 09:00".
-    public var phrase: String {
-        let time = String(format: "%02d:%02d", hour, minute)
-        switch cadence {
-        case .none: return "sin check-in"
-        case .daily: return "cada día a las \(time)"
-        case .weekdays: return "entre semana a las \(time)"
-        case .weekly: return "cada \(Self.weekdayName(weekday ?? 2)) a las \(time)"
-        }
-    }
-
-    public static func weekdayName(_ weekday: Int) -> String {
-        let names = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
-        return names[(max(1, min(7, weekday))) - 1]
-    }
-}
-
 public enum CheckInAnswer: String, Sendable, Codable, Equatable, CaseIterable {
     case yes, partial, no, skipped
 
@@ -327,10 +283,34 @@ public actor OtherModel {
     /// La respuesta del dueño (chat o acción de la notificación). Responde la
     /// pregunta abierta de las últimas 24h si la hay; si no, crea la fila.
     @discardableResult
-    public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "") -> GoalCheckIn? {
-        guard goal(id: goalId) != nil else { return nil }
-        let ts = now().timeIntervalSince1970
-        let id = try? queue.write { db -> String in
+    /// - answeredAt: cuándo respondió el dueño (un tap del widget aplicado
+    ///   después); nil = ahora.
+    /// - oncePerDay: reaplicar la misma respuesta ese día no agrega otra fila
+    ///   (la cola de botones puede reaplicar una acción ya aplicada).
+    public func recordCheckIn(goalId: String, answer: CheckInAnswer, note: String = "",
+                              answeredAt: Date? = nil, oncePerDay: Bool = false) -> GoalCheckIn? {
+        (try? applyCheckIn(goalId: goalId, answer: answer, note: note, answeredAt: answeredAt,
+                           oncePerDay: oncePerDay)) ?? nil
+    }
+
+    /// Como `recordCheckIn`, pero distingue "la meta ya no existe" (nil) de "la
+    /// base falló" (lanza): la cola de los widgets conserva el tap en el segundo.
+    public func applyCheckIn(goalId: String, answer: CheckInAnswer, note: String = "",
+                             answeredAt: Date? = nil, oncePerDay: Bool = false) throws -> GoalCheckIn? {
+        let at = answeredAt ?? now()
+        let ts = at.timeIntervalSince1970
+        let dayStart = calendar.startOfDay(for: at).timeIntervalSince1970
+        let dayEnd = (calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: at)) ?? at)
+            .timeIntervalSince1970
+        let id = try queue.write { db -> String? in
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM goal WHERE id=?)",
+                                    arguments: [goalId]) == true else { return nil }
+            if oncePerDay, let existing = try String.fetchOne(db, sql: """
+                SELECT id FROM goal_checkin WHERE goal_id=? AND answer=? AND answered_at >= ? AND answered_at < ?
+                ORDER BY answered_at LIMIT 1
+                """, arguments: [goalId, answer.rawValue, dayStart, dayEnd]) {
+                return existing
+            }
             if let open = try String.fetchOne(db, sql: """
                 SELECT id FROM goal_checkin WHERE goal_id=? AND answered_at IS NULL AND asked_at > ?
                 ORDER BY asked_at DESC LIMIT 1
@@ -345,7 +325,10 @@ public actor OtherModel {
                 """, arguments: [fresh, goalId, ts, ts, answer.rawValue, note])
             return fresh
         }
-        return id.flatMap { checkIn(id: $0) }
+        guard let id else { return nil }
+        return try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM goal_checkin WHERE id=?", arguments: [id]).map(Self.checkIn(from:))
+        }
     }
 
     public func lastCheckIn(goalId: String) -> GoalCheckIn? {
@@ -388,6 +371,19 @@ public actor OtherModel {
     public func daysSinceProgress(goalId: String) -> Int? {
         guard let last = progressDates(goalId: goalId).first else { return nil }
         return max(0, Int(now().timeIntervalSince(last) / 86_400))
+    }
+
+    /// Último avance (yes/partial). nil si nunca hubo.
+    public func lastProgressAt(goalId: String) -> Date? {
+        progressDates(goalId: goalId).first
+    }
+
+    /// Última respuesta del dueño (cualquier respuesta). nil si nunca respondió.
+    public func lastAnsweredAt(goalId: String) -> Date? {
+        (try? queue.read { db in
+            try Double.fetchOne(db, sql: "SELECT MAX(answered_at) FROM goal_checkin WHERE goal_id=?",
+                                arguments: [goalId])
+        }).flatMap { $0 }.map(Date.init(timeIntervalSince1970:))
     }
 
     private func progressDates(goalId: String) -> [Date] {

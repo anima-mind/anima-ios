@@ -69,5 +69,29 @@ struct NightSimulatorTests {
         #expect(!model.simulatingNight)
         #expect(refreshed == 1)
     }
+
+    /// run() → nil (ya hay un ciclo corriendo): la app debe poder cerrar la Live Activity.
+    @Test func siLaNocheNoCorreAvisaElFallo() async throws {
+        let gate = GatedProvider(NightSimulatorTests.distill)
+        let (consolidator, inbox) = try NightSimulatorTests.consolidator(gate)
+        try inbox.enqueue(sessionId: "s1", text: "Vivo en Bogota.")
+        let simulator = NightSimulator(consolidator: consolidator)
+        let busy = Task { await simulator.run() }
+        await gate.waitUntilCalled()
+        let ud = try #require(UserDefaults(suiteName: "test.night.\(UUID().uuidString)"))
+        let model = SettingsViewModel(keychain: ProviderTokenStore(service: "svc", backend: InMemoryKeychain()),
+                                      telemetry: Telemetry(queue: try AnimaDatabase.temporary()),
+                                      onboardingDefaults: OnboardingDefaults(defaults: ud), availability: { .available })
+        model.nightSimulator = simulator
+        var started = 0, failed = 0, simulated = 0
+        model.onNightStarted = { started += 1 }
+        model.onNightFailed = { failed += 1 }
+        model.onNightSimulated = { simulated += 1 }
+        await model.simulateNight()
+        #expect((started, failed, simulated) == (1, 1, 0))
+        #expect(!model.simulatingNight)
+        gate.release()
+        _ = await busy.value
+    }
 }
 #endif

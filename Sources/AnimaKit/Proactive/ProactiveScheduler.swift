@@ -16,6 +16,9 @@ public actor ProactiveScheduler {
     /// Ocurrencias que se programan por recordatorio que se repite.
     private let occurrencesPerReminder: Int
     private let preference: ProactivePreference?
+    /// Tras cada sincronización (= tras cada cambio de recordatorios/metas): la
+    /// app republica el snapshot de los widgets aquí.
+    private var afterSync: (@Sendable () async -> Void)?
 
     public init(scheduler: LocalNotificationScheduler,
                 reminders: AnimaReminderStore,
@@ -36,6 +39,10 @@ public actor ProactiveScheduler {
     }
 
     private var isEnabled: Bool { preference?.isEnabled ?? true }
+
+    public func setAfterSync(_ hook: (@Sendable () async -> Void)?) {
+        afterSync = hook
+    }
 
     // MARK: - Conjunto deseado
 
@@ -67,6 +74,12 @@ public actor ProactiveScheduler {
     /// Devuelve los ids programados.
     @discardableResult
     public func sync() async -> [String] {
+        let ids = await syncNotifications()
+        await afterSync?()
+        return ids
+    }
+
+    private func syncNotifications() async -> [String] {
         guard isEnabled else {
             let managed = await scheduler.pendingIds().filter { Self.isManaged($0) || $0.hasPrefix(WakeNotice.prefix) }
             if !managed.isEmpty { await scheduler.cancel(ids: managed) }

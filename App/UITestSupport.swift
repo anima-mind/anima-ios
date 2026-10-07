@@ -42,6 +42,15 @@ enum UITestMode {
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
     }
 
+    /// Galería de widgets (screenshots de cada widget con datos de ejemplo).
+    static let showsWidgetGallery = isActive && (arguments.contains("--uitest-widget-gallery") || widgetOnly != nil)
+    /// `--uitest-widget=<id>`: la galería pinta SOLO ese widget, centrado (screenshot entero).
+    static let widgetOnly: String? = isActive
+        ? arguments.lazy.compactMap { arg -> String? in
+            arg.hasPrefix("--uitest-widget=") ? String(arg.dropFirst("--uitest-widget=".count)) : nil
+        }.first
+        : nil
+
     /// Una propuesta del deseo pendiente en el chat (batch 8 #1: una sola card).
     static let seedsIntention = isActive && arguments.contains("--uitest-seed-intention")
     static let seededProposal = "¿El miércoles a las 8:00 hacemos tu primer check-in?"

@@ -31,6 +31,7 @@ public enum ProactiveNotificationAction: Sendable, Equatable {
 
 public struct ProactiveActionHandler: Sendable {
     public static let notificationNote = "respondido desde la notificación"
+    public static let widgetNote = "respondido desde el widget"
 
     private let reminders: AnimaReminderStore?
     private let otherModel: OtherModel?
@@ -43,8 +44,10 @@ public struct ProactiveActionHandler: Sendable {
     }
 
     /// Aplica una acción en background. `.open` no se maneja aquí (es del shell).
+    /// `note`: de dónde respondió el dueño (notificación o widget).
     @discardableResult
-    public func handle(_ action: ProactiveNotificationAction) async -> Bool {
+    public func handle(_ action: ProactiveNotificationAction,
+                       note: String = ProactiveActionHandler.notificationNote) async -> Bool {
         let handled: Bool
         switch action {
         case .reminderDone(let id):
@@ -53,11 +56,45 @@ public struct ProactiveActionHandler: Sendable {
             handled = (try? await reminders?.snooze(id: id, minutes: ProactiveNotificationIDs.snoozeMinutes)) != nil
         case .checkIn(let goalId, let answer):
             handled = await otherModel?.recordCheckIn(goalId: goalId, answer: answer,
-                                                       note: Self.notificationNote) != nil
+                                                       note: note) != nil
         case .open:
             return false
         }
         if handled { await scheduler?.sync() }
         return handled
+    }
+
+    /// Un botón de widget de la cola: con la hora del tap, idempotente al
+    /// reaplicarse ("Hecho" sobre uno cerrado = obsoleta; check-in una vez por
+    /// día) y `.failed` si la base falló (el tap queda en la cola).
+    @discardableResult
+    public func handle(_ action: WidgetAction) async -> WidgetActionOutcome {
+        let outcome: WidgetActionOutcome
+        do {
+            switch action.kind {
+            case .reminderDone(let id):
+                guard let reminders else { return .failed }
+                outcome = try await reminders.completeFromWidget(id: id, at: action.createdAt) ? .applied : .obsolete
+            case .checkInProgress(let goalId):
+                guard let otherModel else { return .failed }
+                let recorded = try await otherModel.applyCheckIn(goalId: goalId, answer: .yes, note: Self.widgetNote,
+                                                                 answeredAt: action.createdAt, oncePerDay: true)
+                outcome = recorded == nil ? .obsolete : .applied
+            }
+        } catch {
+            return .failed
+        }
+        if outcome == .applied { await scheduler?.sync() }
+        return outcome
+    }
+}
+
+extension WidgetAction {
+    /// La misma acción que dispara el botón de la notificación equivalente.
+    public var proactiveAction: ProactiveNotificationAction {
+        switch kind {
+        case .reminderDone(let id): return .reminderDone(id: id)
+        case .checkInProgress(let goalId): return .checkIn(goalId: goalId, answer: .yes)
+        }
     }
 }

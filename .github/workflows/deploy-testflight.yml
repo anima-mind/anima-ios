@@ -55,6 +55,20 @@ jobs:
           -authenticationKeyIssuerID "$ASC_ISSUER_ID"
           CURRENT_PROJECT_VERSION=${{ github.run_number }}
           archive
+      # Firma automática con la API key (-allowProvisioningUpdates): la app
+      # (com.joshuamoreno1.anima) y la extensión (com.joshuamoreno1.anima.widgets),
+      # ambas con el App Group group.com.joshuamoreno1.anima.widgets. Si el perfil
+      # de alguna no trae el grupo, se corta aquí y no se sube un build roto.
+      - name: Verificar firma + App Group de la app y la extensión
+        run: |
+          APP=build/Anima.xcarchive/Products/Applications/Anima.app
+          APPEX="$APP/PlugIns/AnimaWidgets.appex"
+          test -d "$APPEX" || { echo "Falta AnimaWidgets.appex en el archive" >&2; exit 1; }
+          for bundle in "$APP" "$APPEX"; do
+            codesign --verify --strict "$bundle"
+            codesign -d --entitlements :- "$bundle" 2>/dev/null | grep -q "group.com.joshuamoreno1.anima.widgets" \
+              || { echo "Sin App Group en $bundle" >&2; exit 1; }
+          done
       - name: Export + upload a TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}

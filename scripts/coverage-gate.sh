@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# coverage-gate.sh — gate de cobertura de líneas del core de AnimaKit.
+# coverage-gate.sh — gate de cobertura de líneas del core (AnimaKit + AnimaWidgetCore).
 # Idéntico en local y CI: corre `swift test --enable-code-coverage`, calcula el %
 # de líneas del recorte y falla si queda bajo el umbral.
 #
@@ -10,17 +10,18 @@
 #
 # EXCLUSIONES (fuera del denominador) — cada una con su justificación:
 #   Sources/AnimaKit/UI/                                 SwiftUI: se cubre con UI tests de simulador, no unit.
-#   Sources/AnimaKit/Design/                             SwiftUI (tema, BreathMark): idem.
+#   Sources/AnimaKit/Design/                             SwiftUI (NavCloseButton): idem.
+#   Sources/AnimaWidgetCore/Design/                      SwiftUI (tema, BreathMark): idem.
 #   Sources/AnimaKit/Desire/SystemObservableEnvironment.swift
 #                                                        EventKit/HealthKit reales; solo verificable en device.
 #   Tests/                                               el propio código de test no cuenta.
 #   .build/ (dependencias SPM, p. ej. GRDB)              código de terceros.
-# TODO lo demás bajo Sources/AnimaKit/ cuenta.
+# TODO lo demás bajo Sources/AnimaKit/ y Sources/AnimaWidgetCore/ cuenta.
 
 set -euo pipefail
 
 MIN_COVERAGE="${MIN_COVERAGE:-90}"
-EXCLUDE_REGEX='(/Sources/AnimaKit/UI/|/Sources/AnimaKit/Design/|/Sources/AnimaKit/Desire/SystemObservableEnvironment\.swift$|/Tests/|/\.build/)'
+EXCLUDE_REGEX='(/Sources/AnimaKit/UI/|/Sources/AnimaKit/Design/|/Sources/AnimaWidgetCore/Design/|/Sources/AnimaKit/Desire/SystemObservableEnvironment\.swift$|/Tests/|/\.build/)'
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -47,7 +48,7 @@ xcrun llvm-cov export -summary-only \
   -ignore-filename-regex "$EXCLUDE_REGEX" \
   "$TEST_BIN" > "$SUMMARY_JSON"
 
-COVERAGE_JSON="$SUMMARY_JSON" COVERAGE_ROOT="$ROOT/Sources/AnimaKit/" MIN_COVERAGE="$MIN_COVERAGE" python3 - <<'PY'
+COVERAGE_JSON="$SUMMARY_JSON" COVERAGE_ROOT="$ROOT/Sources/" MIN_COVERAGE="$MIN_COVERAGE" python3 - <<'PY'
 import json, os, sys
 
 root = os.environ["COVERAGE_ROOT"]

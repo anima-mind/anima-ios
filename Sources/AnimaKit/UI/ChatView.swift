@@ -642,6 +642,7 @@ public final class ChatViewModel: ObservableObject {
         }
 
         var assistant = DisplayMessage(role: .assistant, isStreaming: true)
+        var committedText = ""
         messages.append(assistant)
         var index = messages.count - 1
         isStreaming = true
@@ -680,9 +681,13 @@ public final class ChatViewModel: ObservableObject {
                     assistant.text = body.isEmpty ? notice : notice + "\n\n" + body
                 }
             case .retracted:
-                // El loop descartó una respuesta que afirmaba algo no ejecutado: reintenta.
-                assistant.text = ""
-            case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
+                // El loop descartó la respuesta final que afirmaba algo no
+                // ejecutado: se retira SOLO ese tramo; lo dicho antes de una
+                // tool del mismo turno ya está persistido y se queda.
+                assistant.text = committedText
+            case .assistantMessage:
+                committedText = assistant.text
+            case .toolStarted, .toolFinished, .turnFinished:
                 break
             }
             assistant.isStreaming = true

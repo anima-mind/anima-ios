@@ -70,3 +70,24 @@ struct GlassesChannelChipTests {
         #expect(ChatViewModel.history(turns: [typed], boundaries: [:]).first?.channelChip == nil)
     }
 }
+
+@MainActor
+@Suite("Review #34 — en las gafas lo retraído no se sigue diciendo")
+struct GlassesRetractionTests {
+    @Test func laRespuestaCorregidaReemplazaAlTramoRetraido() async throws {
+        let rig = await GlassesRig.make()
+        rig.runner.replies.mutate { $0 = [[
+            .textDelta("Primero reviso. "), .assistantMessage([.text("Primero reviso. ")]),
+            .textDelta("Quedó agendado. "), .retracted,
+            .textDelta("No hice cambios."), .turnFinished(stopReason: .endTurn),
+        ]] }
+        await rig.surface.handle(.action(.talk))
+        rig.voice.cancel()
+        await rig.surface.handle(.transcript("agéndalo"))
+        await rig.surface.handle(.action(.send))
+        #expect(await eventually { await MainActor.run {
+            rig.phone.rendered.contains(.assistantTurn(text: "Primero reviso. No hice cambios.", origin: .glassesHUD)) } })
+        #expect(await eventually { rig.voice.spoken.value.contains { $0.contains("No hice cambios") } })
+        #expect(!rig.voice.spoken.value.contains { $0.contains("Quedó agendado") })
+    }
+}

@@ -160,3 +160,36 @@ struct AcceptanceInboxTests {
         #expect(pending == 0)
     }
 }
+
+/// Tool neutra (no es de escritura ni de lectura del mundo del dueño).
+private struct EchoTool: SensorimotorTool {
+    var spec: ToolSpec {
+        .client(name: "echo", description: "eco", inputSchema: .object(["type": .string("object")]))
+    }
+    func execute(_ input: JSONValue) async -> ToolResult { ToolResult(content: "ok") }
+}
+
+@MainActor
+@Suite("Review #34 — la retracción solo quita el tramo final")
+struct RetractionScopeTests {
+    @Test func loDichoAntesDeUnaToolSeQueda() async throws {
+        let w = try ProactiveFixtures.world()
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let first: [ProviderEvent] = [
+            .messageStart(id: "a", model: "claude-opus-4-8"), .textDelta("Déjame revisar. "), .blockStop(index: 0),
+            .toolUseStart(id: "t1", name: "echo"), .toolUseInputDelta("{}"), .blockStop(index: 1),
+            .messageDelta(stopReason: .toolUse, usage: Usage()), .messageStop,
+        ]
+        let loop = AgentLoop(provider: ScriptedProvider([first, LocalLoopHarness.text("Quedó agendado."),
+                                                         LocalLoopHarness.text("No hice cambios.")]),
+                             store: store, telemetry: Telemetry(queue: queue),
+                             router: ModelRouter(config: try TestConfig.providerConfig()), authMode: .apiKey,
+                             token: "sk-ant-api03-x", clientTools: [EchoTool(), AnimaRemindersTool(store: w.reminders)],
+                             serverTools: [], permissionPolicy: .app(ownerAllowlist: { [] }), sleep: { _ in })
+        let chat = ChatViewModel(loop: loop, sessionId: try store.startSession())
+        chat.input = "revisa"
+        await chat.send()
+        #expect(chat.messages.last?.text == "Déjame revisar. No hice cambios.")
+    }
+}

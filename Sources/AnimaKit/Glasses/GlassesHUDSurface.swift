@@ -352,6 +352,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         turnSpeechDismissed = false
         await deliver(.userTurn(text: mirror, origin: .glassesHUD))
         var reply = ""
+        var committed = ""
         var refused = false
         var failure: String?
         let stream = await runner.run(sessionId: sessionId, content: content, surface: .glassesHUD)
@@ -361,7 +362,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
                 reply += delta
                 if !refused { await streamed(delta, reply: reply, turn: turn) }
             case .refused: refused = true
-            case .retracted: reply = ""
+            case .assistantMessage: committed = reply
+            case .retracted:
+                // Lo retraído no se sigue diciendo: se corta el TTS y la
+                // respuesta corregida se dice entera al cerrar el turno.
+                reply = committed
+                endSpeech()
+                turnScript = SpokenScript()
+                turnSpeechDismissed = true
             case .toolFailure(let notice) where !reply.hasPrefix(notice):
                 reply = reply.isEmpty ? notice : notice + "\n\n" + reply
             case .error(let message): failure = message

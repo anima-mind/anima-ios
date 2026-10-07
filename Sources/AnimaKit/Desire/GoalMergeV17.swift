@@ -1,19 +1,78 @@
-// GoalDedupe.swift — una meta, una sola vez (campo batch 8 #5). En campo la
-// misma meta existía 3 veces: "El dueño quiere bajar 10 kg" (extraída de
-// noche, en tercera persona), "Perder 10 kg en un plazo determinado"
-// (inferida por el reflection sin ver las existentes) y "Bajar 10 kg de peso"
-// (declarada en el chat). El upsert solo deduplicaba por enunciado EXACTO.
-// Aquí: normalización determinista (sin LLM) — minúsculas, sin tildes, sin
-// "el dueño quiere / quiero / mi meta es", sinónimos (bajar≈perder≈reducir),
-// números y unidades — y una comparación por contenido.
+// GoalMergeV17.swift — la migración v17-goal-dedupe CONGELADA (review #34):
+// una migración no puede depender de código vivo (OtherModel.goal(from:),
+// GoalDedupe) que cambia con columnas o reglas futuras. Lee columnas
+// explícitas por SQL y usa una copia fija de la normalización de batch 8.
+// NO editar: si cambian las reglas, va en una migración nueva.
 
 import Foundation
+import GRDB
 
-public enum GoalDedupe {
+enum GoalMergeV17 {
+    static let reason = "duplicada"
+
+    private struct Row17 {
+        var id: String, statement: String, source: String, status: String
+        var cadence: String, hour: Int, minute: Int, weekday: Int?
+    }
+
+    static func register(_ m: inout DatabaseMigrator) {
+        m.registerMigration("v17-goal-dedupe") { db in
+            try db.execute(sql: "ALTER TABLE goal ADD COLUMN status_reason TEXT NULL")
+            try run(db, now: Date())
+        }
+    }
+
+    @discardableResult
+    static func run(_ db: Database, now: Date) throws -> Int {
+        let ts = now.timeIntervalSince1970
+        let open = try Row.fetchAll(db, sql: """
+            SELECT id, statement, source, status, checkin_cadence, checkin_hour, checkin_minute, checkin_weekday
+            FROM goal WHERE status IN ('active','pending_confirmation')
+            ORDER BY CASE source WHEN 'stated' THEN 0 WHEN 'inferred' THEN 1 ELSE 2 END, created_at ASC
+            """).map { r in
+            Row17(id: r["id"], statement: r["statement"], source: r["source"], status: r["status"],
+                  cadence: r["checkin_cadence"] ?? "none", hour: r["checkin_hour"] ?? 20,
+                  minute: r["checkin_minute"] ?? 0, weekday: r["checkin_weekday"])
+        }
+        // Sin transitividad: cada duplicado es equivalente a la canónica (la 1.ª del grupo).
+        var clusters: [[Row17]] = []
+        for goal in open {
+            if let index = clusters.firstIndex(where: { V17Dedupe.equivalent($0[0].statement, goal.statement) }) {
+                clusters[index].append(goal)
+            } else {
+                clusters.append([goal])
+            }
+        }
+        var merged = 0
+        for cluster in clusters {
+            let keeper = cluster[0]
+            var cadence = (keeper.cadence, keeper.hour, keeper.minute, keeper.weekday)
+            for dup in cluster.dropFirst() {
+                for table in ["goal_checkin", "anima_reminder", "intention"] {
+                    try db.execute(sql: "UPDATE \(table) SET goal_id=? WHERE goal_id=?", arguments: [keeper.id, dup.id])
+                }
+                if cadence.0 == "none", dup.cadence != "none" { cadence = (dup.cadence, dup.hour, dup.minute, dup.weekday) }
+                try db.execute(sql: "UPDATE goal SET status='abandoned', status_reason=?, updated_at=? WHERE id=?",
+                               arguments: [reason, ts, dup.id])
+                merged += 1
+            }
+            let statement = V17Dedupe.neutral(keeper.statement)
+            try db.execute(sql: """
+                UPDATE goal SET statement=?, checkin_cadence=?, checkin_hour=?, checkin_minute=?, checkin_weekday=?
+                WHERE id=?
+                """, arguments: [statement, cadence.0, cadence.1, cadence.2,
+                                 cadence.0 == "weekly" ? cadence.3 : nil, keeper.id])
+        }
+        return merged
+    }
+}
+
+/// Copia FIJA de GoalDedupe tal como quedó en batch 8 (solo para v17).
+enum V17Dedupe {
 
     /// Enunciado neutral (segunda persona/infinitivo): "Bajar 10 kg", nunca
     /// "El dueño quiere bajar 10 kg". Conserva las palabras del dueño.
-    public static func neutral(_ statement: String) -> String {
+    static func neutral(_ statement: String) -> String {
         var text = statement.trimmingCharacters(in: .whitespacesAndNewlines)
         let folded = fold(text)
         var stripped = false
@@ -43,7 +102,7 @@ public enum GoalDedupe {
     /// uno puede tener de más SOLO marcadores de cadencia ("Correr 5 km" ≈
     /// "Correr 5 km cada semana"), nunca contenido ("Correr una maratón" ≠
     /// "Correr una media maratón", "Aprender inglés" ≠ "Aprender inglés y francés").
-    public static func equivalent(_ a: String, _ b: String) -> Bool {
+    static func equivalent(_ a: String, _ b: String) -> Bool {
         let ka = key(a), kb = key(b)
         guard !ka.terms.isEmpty, !kb.terms.isEmpty, ka.numbers == kb.numbers else { return false }
         let core = { (terms: Set<String>) in terms.subtracting(cadence) }

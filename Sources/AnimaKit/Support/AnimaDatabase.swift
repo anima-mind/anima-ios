@@ -108,7 +108,7 @@ public enum AnimaDatabase {
         // Fronteras de contexto (recorte duro / compactación) por sesión.
         ContextSchema.register(&m)
         // Batch 8 #5: metas duplicadas fusionadas una vez (y razón del estado).
-        GoalMerge.register(&m)
+        GoalMergeV17.register(&m)
         // Batch 8 #1: las propuestas viejas sin marca pasan a ser su card.
         IntentionTurnRepair.register(&m)
 

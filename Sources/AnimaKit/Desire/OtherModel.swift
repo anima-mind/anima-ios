@@ -123,6 +123,10 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
 
     /// Un goal motiva acciones solo si está activo y, cuando es inferred, fue
     /// confirmado por el Otro (§5.8 mitigación 2). El DesireEngine solo lee estos.
+    /// Abierta: activa o esperando confirmación. El dedupe solo compara contra
+    /// estas — una lograda no absorbe una nueva ("Correr 5 km" otra vez).
+    public var isOpen: Bool { status == .active || status == .pendingConfirmation }
+
     public var motivates: Bool {
         status == .active && (source != .inferred || confirmedByOther)
     }
@@ -170,7 +174,7 @@ public actor OtherModel {
     }
 
     /// Dedupe semántico determinista (batch 8 #5): si ya hay una meta
-    /// equivalente (no abandonada) se refuerza su evidencia y NO se crea otra.
+    /// equivalente ABIERTA (activa o por confirmar) se refuerza su evidencia y NO se crea otra.
     /// Una declarada sobre una inferida equivalente la promueve (stated/active).
     /// Una inferida jamás nace si hay una equivalente —incluida una que el
     /// dueño ya rechazó o que se fusionó como duplicada—. El enunciado se guarda
@@ -182,7 +186,7 @@ public actor OtherModel {
         let predicateJSON = Self.encode(desiredState)
         let id = (try? queue.write { db -> String in
             let goals = try Row.fetchAll(db, sql: "SELECT * FROM goal ORDER BY created_at ASC").map(Self.goal(from:))
-            let alive = goals.filter { $0.status != .abandoned }
+            let alive = goals.filter(\.isOpen)
                 .sorted { ($0.source.precedence, $0.createdAt) < ($1.source.precedence, $1.createdAt) }
             if let existing = alive.first(where: { GoalDedupe.equivalent($0.statement, trimmed) }) {
                 if source == .stated, existing.source == .inferred {
@@ -214,7 +218,7 @@ public actor OtherModel {
 
     /// La meta viva equivalente a un enunciado (la tool `goals` avisa que ya existía).
     public func equivalentGoal(to statement: String) -> Goal? {
-        allGoals().filter { $0.status != .abandoned }
+        allGoals().filter(\.isOpen)
             .sorted { ($0.source.precedence, $0.createdAt) < ($1.source.precedence, $1.createdAt) }
             .first { GoalDedupe.equivalent($0.statement, statement) }
     }
@@ -222,7 +226,7 @@ public actor OtherModel {
     /// Enunciados de las metas vivas (el Consolidator se los pasa al modelo:
     /// "no repitas metas existentes ni reformuladas").
     public func existingStatements() -> [String] {
-        allGoals().filter { $0.status != .abandoned }.sorted { $0.createdAt < $1.createdAt }
+        allGoals().filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
             .map { "\($0.statement) (\($0.source == .inferred ? "inferida" : "declarada"))" }
     }
 
@@ -458,23 +462,23 @@ public actor OtherModel {
     }
 }
 
-/// Fusión de metas duplicadas (batch 8 #5 e): por cada grupo equivalente se
-/// conserva la declarada más antigua (o la más antigua) con su seguimiento; los
-/// check-ins, recordatorios e Intentions de las otras pasan a ella (y su
-/// cadencia si la conservada no tenía); las otras quedan abandonadas con razón
-/// "duplicada". Los enunciados vivos quedan neutrales.
+/// Fusión de metas duplicadas en caliente (batch 8 #5): solo metas ABIERTAS,
+/// sin transitividad — cada duplicada es equivalente a la canónica (la
+/// declarada más antigua). Mueve check-ins, recordatorios e Intentions (y la
+/// cadencia si la canónica no tenía) y abandona las otras con razón
+/// "duplicada". La migración v17 usa su copia congelada (GoalMergeV17).
 public enum GoalMerge {
-    public static let reason = "duplicada"
+    public static let reason = GoalMergeV17.reason
 
     @discardableResult
     public static func run(_ db: Database, now: Date) throws -> Int {
         let ts = now.timeIntervalSince1970
-        let alive = try Row.fetchAll(db, sql: """
-            SELECT * FROM goal WHERE status != 'abandoned' ORDER BY created_at ASC
-            """).map(OtherModel.goal(from:))
+        let open = try Row.fetchAll(db, sql: "SELECT * FROM goal ORDER BY created_at ASC")
+            .map(OtherModel.goal(from:)).filter(\.isOpen)
+            .sorted { ($0.source.precedence, $0.createdAt) < ($1.source.precedence, $1.createdAt) }
         var clusters: [[Goal]] = []
-        for goal in alive {
-            if let index = clusters.firstIndex(where: { $0.contains { GoalDedupe.equivalent($0.statement, goal.statement) } }) {
+        for goal in open {
+            if let index = clusters.firstIndex(where: { GoalDedupe.equivalent($0[0].statement, goal.statement) }) {
                 clusters[index].append(goal)
             } else {
                 clusters.append([goal])
@@ -482,10 +486,9 @@ public enum GoalMerge {
         }
         var merged = 0
         for cluster in clusters {
-            let keeper = cluster.first { $0.source == .stated }
-                ?? cluster.first { $0.status == .active } ?? cluster[0]
+            let keeper = cluster[0]
             var cadence = keeper.checkIn
-            for dup in cluster where dup.id != keeper.id {
+            for dup in cluster.dropFirst() {
                 for table in ["goal_checkin", "anima_reminder", "intention"] {
                     try db.execute(sql: "UPDATE \(table) SET goal_id=? WHERE goal_id=?", arguments: [keeper.id, dup.id])
                 }
@@ -505,12 +508,5 @@ public enum GoalMerge {
             }
         }
         return merged
-    }
-
-    public static func register(_ m: inout DatabaseMigrator) {
-        m.registerMigration("v17-goal-dedupe") { db in
-            try db.execute(sql: "ALTER TABLE goal ADD COLUMN status_reason TEXT NULL")
-            try run(db, now: Date())
-        }
     }
 }

@@ -29,6 +29,16 @@ struct GoalDedupeTests {
         #expect(!GoalDedupe.equivalent("", "Bajar 10 kg"))
     }
 
+    /// Review #34: el subconjunto solo vale si lo de más es cadencia.
+    @Test func noFundeMetasDistintasConPalabrasComunes() {
+        #expect(!GoalDedupe.equivalent("Correr una maratón", "Correr una media maratón"))
+        #expect(!GoalDedupe.equivalent("Aprender inglés", "Aprender inglés y francés"))
+        #expect(!GoalDedupe.equivalent("Aprender inglés y francés", "Aprender francés"))
+        #expect(!GoalDedupe.equivalent("Bajar el azúcar", "Eliminar el azúcar"))
+        #expect(GoalDedupe.equivalent("Correr 5 km", "Correr 5 km cada semana"))
+        #expect(GoalDedupe.equivalent("Leer", "Leer todos los días"))
+    }
+
     @Test func enunciadoNeutralNuncaElDuenoQuiere() {
         #expect(GoalDedupe.neutral("El dueño quiere bajar 10 kg") == "Bajar 10 kg")
         #expect(GoalDedupe.neutral("Joshua quiere entrenar 3x por semana.") == "Entrenar 3x por semana")
@@ -84,6 +94,38 @@ struct GoalDedupeModelTests {
         // Declararla de nuevo sí la revive como nueva (el dueño la quiere).
         _ = await other.ingestStated(statement: "Dormir 7 horas", desiredState: .progressCheckIn(everyDays: 1), evidence: "c")
         #expect(await other.desire().count == 1)
+    }
+
+    /// Review #34: una meta LOGRADA no absorbe una nueva equivalente.
+    @Test func unaLogradaNoAbsorbeLaNueva() async throws {
+        let other = OtherModel(queue: try AnimaDatabase.temporary())
+        let done = await other.ingestStated(statement: "Correr 5 km", desiredState: .progressCheckIn(everyDays: 7),
+                                            evidence: "e")
+        await other.markAchieved(id: done)
+        let again = await other.ingestStated(statement: "Correr 5 km", desiredState: .progressCheckIn(everyDays: 7),
+                                             evidence: "otra vez")
+        #expect(again != done)
+        #expect(await other.goal(id: again)?.status == .active)
+        #expect(await other.goal(id: done)?.status == .achieved)
+        let tool = GoalsTool(otherModel: other)
+        await other.markAchieved(id: again)
+        let result = await tool.execute(.object(["action": .string("declare"), "statement": .string("Correr 5 km")]))
+        #expect(result.content.hasPrefix("Meta registrada"))
+        #expect(await other.mergeDuplicates() == 0)
+    }
+
+    @Test func laFusionEnCalienteNoEsTransitivaNiTocaLogradas() async throws {
+        let other = OtherModel(queue: try AnimaDatabase.temporary())
+        let english = await other.ingestStated(statement: "Aprender inglés", desiredState: .progressCheckIn(everyDays: 7),
+                                               evidence: "e")
+        // Sin dedupe en la entrada: se insertan por la migración vieja / datos legacy.
+        let both = await other.ingestStated(statement: "Aprender inglés y francés",
+                                            desiredState: .progressCheckIn(everyDays: 7), evidence: "e")
+        let french = await other.ingestStated(statement: "Aprender francés", desiredState: .progressCheckIn(everyDays: 7),
+                                              evidence: "e")
+        #expect(Set([english, both, french]).count == 3)
+        #expect(await other.mergeDuplicates() == 0)
+        #expect(await other.allGoals().allSatisfy { $0.status == .active })
     }
 
     @Test func laToolAvisaQueYaExistia() async throws {
@@ -143,6 +185,32 @@ struct GoalMergeMigrationTests {
         #expect(reminder == "g1")
         // Idempotente.
         #expect(await other.mergeDuplicates() == 0)
+    }
+
+    /// Review #34: v17 no abandona una activa por una LOGRADA equivalente, y
+    /// agrupa sin transitividad.
+    @Test func laMigracionSoloFusionaAbiertasYSinTransitividad() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        let queue = try DatabaseQueue(path: url.path)
+        try AnimaDatabase.migrator().migrate(queue, upTo: "v15-context-boundary")
+        try await queue.write { db in
+            func insert(_ id: String, _ statement: String, _ status: String, _ at: Double) throws {
+                try db.execute(sql: """
+                    INSERT INTO goal (id, statement, predicate_json, source, status, priority, evidence,
+                                      confirmed_by_other, created_at, updated_at)
+                    VALUES (?,?,'{}','stated',?,5,'e',0,?,?)
+                    """, arguments: [id, statement, status, at, at])
+            }
+            try insert("done", "Correr 5 km", "achieved", 100)
+            try insert("run", "Correr 5 km cada semana", "active", 200)
+            try insert("en", "Aprender inglés", "active", 300)
+            try insert("enfr", "Aprender inglés y francés", "active", 400)
+            try insert("fr", "Aprender francés", "active", 500)
+        }
+        try AnimaDatabase.migrator().migrate(queue)
+        let other = OtherModel(queue: queue)
+        for id in ["run", "en", "enfr", "fr"] { #expect(await other.goal(id: id)?.status == .active, "\(id)") }
+        #expect(await other.goal(id: "done")?.status == .achieved)
     }
 }
 

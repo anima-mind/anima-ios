@@ -204,8 +204,8 @@ struct VoiceInvocationTests {
         orchestrator.bind(target: target, record: { row in rows.mutate { $0.append(row) } })
         #expect(await eventually { rows.value.count == 3 })
         #expect(rows.value.first?.phase == .received)   // el buffer previo al bind se vuelca
-        #expect(responder.successes == [true])
-        #expect(target.homes.value == 1)
+        #expect(await eventually { responder.successes == [true] })
+        #expect(await eventually { target.homes.value == 1 })
     }
 
     @Test func coldLaunchSinCuerpoExpiraConFailure() async {

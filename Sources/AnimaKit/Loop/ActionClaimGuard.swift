@@ -51,7 +51,7 @@ public enum ActionClaimGuard {
         #"\blisto,? (ya )?quedó\b"#,
         #"\bte (lo |la )?recuerdo\b(?! que)"#,
         #"\bte voy a recordar\b"#,
-        #"\bte aviso (el|la|los|las|mañana|hoy|a las|en|cada|cuando)\b"#,
+        #"\bte aviso (el|la|los|las|mañana|hoy|a las|en|cada|cuando|apenas|en cuanto|tan pronto)\b"#,
     ]
     private static let claimRegexes = claimPatterns.compactMap { try? NSRegularExpression(pattern: $0) }
     private static let exemptions = ["ya existía", "ya existia", "ya estaba", "ya lo tenías", "ya la tenías", "ya tenías"]
@@ -88,18 +88,28 @@ public enum ActionClaimGuard {
         for sentence in sentences(text) {
             let lower = sentence.lowercased()
             if lower.contains("?") || lower.contains("¿") { continue }
-            if offers.contains(where: lower.contains) || exemptions.contains(where: lower.contains) { continue }
+            if exemptions.contains(where: lower.contains) { continue }
             if lower.contains("no puedo") || lower.contains("no lo puedo") { continue }
             if lower.contains("ya "), earlier.contains(where: lower.contains) { continue }
-            let ns = lower as NSString
-            for regex in claimRegexes {
-                for match in regex.matches(in: lower, range: NSRange(location: 0, length: ns.length)) {
-                    let start = max(0, match.range.location - 14)
-                    let before = ns.substring(with: NSRange(location: start, length: match.range.location - start))
-                    let negated = ["no ", "nunca ", "sin ", "aún no", "aun no", "todavía no", "todavia no"]
-                        .contains { before.contains($0) }
-                    if !negated { return true }
-                }
+            if sentenceClaims(lower) { return true }
+        }
+        return false
+    }
+
+    /// Un match cuenta si no está negado y ninguna marca de oferta lo precede.
+    private static func sentenceClaims(_ lower: String) -> Bool {
+        let ns = lower as NSString
+        for regex in claimRegexes {
+            for match in regex.matches(in: lower, range: NSRange(location: 0, length: ns.length)) {
+                let start = max(0, match.range.location - 14)
+                let before = ns.substring(with: NSRange(location: start, length: match.range.location - start))
+                let negated = ["no ", "nunca ", "sin ", "aún no", "aun no", "todavía no", "todavia no"]
+                    .contains { before.contains($0) }
+                // Oferta solo si la marca va ANTES de la afirmación: "Si quieres, te lo
+                // programo" propone; "Te programé…, si quieres lo cambiamos" afirma.
+                let prefix = ns.substring(to: match.range.location + match.range.length)
+                if negated || offers.contains(where: prefix.contains) { continue }
+                return true
             }
         }
         return false

@@ -95,6 +95,23 @@ struct WakeNoticeTests {
         #expect(WakeNotice.body(Self.report(), night: 4, at: evening, calendar: Self.cal) == WakeNotice.dayQuietBody)
     }
 
+    /// Ronda 2: un ciclo diurno que termina a las 10 no dice "Dormí".
+    @Test func unCicloDiurnoDeMananaNoDiceDormi() async throws {
+        #expect(WakeNotice.body(Self.report(added: 1), night: 5, at: Self.at(10), calendar: Self.cal, slept: false)
+                == "Listo, ordené lo de ayer: 1 recuerdo nuevo. Ciclo #5.")
+        #expect(WakeNotice.body(Self.report(), night: 5, at: Self.at(10), calendar: Self.cal, slept: false)
+                == "Listo, ordené lo de ayer; no hubo nada nuevo que guardar.")
+        let fake = FakeNotificationScheduler(status: .granted)
+        let n = WakeNotifier(scheduler: fake, general: nil, preference: WakePreference(defaults: defaults()),
+                             calendar: Self.cal, now: { Self.at(10) })
+        let request = try #require(await n.cycleCompleted(Self.report(added: 1), night: 5))
+        #expect(request.body == "Listo, ordené lo de ayer: 1 recuerdo nuevo. Ciclo #5.")
+        // De noche (2:10 → 7:30) sí durmió.
+        let night = WakeNotifier(scheduler: fake, general: nil, preference: WakePreference(defaults: defaults()),
+                                 calendar: Self.cal, now: { Self.at(2, 10) })
+        #expect(try #require(await night.cycleCompleted(Self.report(added: 1), night: 6)).body.contains("Dormí"))
+    }
+
     /// Review #34: con la app al frente no hay push; el resumen queda para el Mind sheet.
     @Test func conLaAppAlFrenteNoNotificaPeroGuardaElResumen() async throws {
         let fake = FakeNotificationScheduler(status: .granted)

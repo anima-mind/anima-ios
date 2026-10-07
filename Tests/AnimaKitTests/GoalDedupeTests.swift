@@ -39,6 +39,25 @@ struct GoalDedupeTests {
         #expect(GoalDedupe.equivalent("Leer", "Leer todos los días"))
     }
 
+    /// Ronda 2: periodos explícitos distintos no se funden; si uno no trae
+    /// periodo, el marcador se ignora. Igual en la copia congelada de v17.
+    @Test func periodosDistintosSonMetasDistintas() {
+        let different = [("Leer 1 libro al mes", "Leer 1 libro a la semana"),
+                         ("Ahorrar 1 millón al mes", "Ahorrar 1 millón al año"),
+                         ("Correr 5 km cada día", "Correr 5 km cada semana"),
+                         ("Ahorrar 200 mil cada quincena", "Ahorrar 200 mil mensual")]
+        for (a, b) in different {
+            #expect(!GoalDedupe.equivalent(a, b), "\(a) ≠ \(b)")
+            #expect(!V17Dedupe.equivalent(a, b), "v17: \(a) ≠ \(b)")
+        }
+        let same = [("Leer 1 libro", "Leer 1 libro al mes"), ("Ahorrar 1 millón al mes", "Ahorrar 1 millón mensual"),
+                    ("Correr 5 km", "Correr 5 km cada semana")]
+        for (a, b) in same {
+            #expect(GoalDedupe.equivalent(a, b), "\(a) ≈ \(b)")
+            #expect(V17Dedupe.equivalent(a, b), "v17: \(a) ≈ \(b)")
+        }
+    }
+
     @Test func enunciadoNeutralNuncaElDuenoQuiere() {
         #expect(GoalDedupe.neutral("El dueño quiere bajar 10 kg") == "Bajar 10 kg")
         #expect(GoalDedupe.neutral("Joshua quiere entrenar 3x por semana.") == "Entrenar 3x por semana")

@@ -38,8 +38,10 @@ public enum WakeNotice {
     }
 
     /// El cuerpo, en su voz. Variantes por plantilla según la noche (deterministas).
+    /// `slept`: el ciclo corrió de noche (21:00–7:30). Solo entonces "Dormí";
+    /// un ciclo diurno (p. ej. termina a las 10) dice "Listo, ordené lo de ayer/hoy".
     public static func body(_ report: Consolidator.CycleReport, night: Int, at date: Date,
-                            calendar: Calendar) -> String {
+                            calendar: Calendar, slept: Bool = true) -> String {
         let morningDelivery = (5..<12).contains(calendar.component(.hour, from: date))
         var parts: [String] = []
         if report.added > 0 { parts.append(report.added == 1 ? "1 recuerdo nuevo" : "\(report.added) recuerdos nuevos") }
@@ -51,10 +53,11 @@ public enum WakeNotice {
         if report.goalsUpdated > 0 {
             parts.append(report.goalsUpdated == 1 ? "1 meta al día" : "\(report.goalsUpdated) metas al día")
         }
-        // De tarde/noche (ciclo diurno, entrega inmediata) no "dormí": ordené lo de hoy.
-        guard morningDelivery else {
-            guard !parts.isEmpty else { return dayQuietBody }
-            return "Listo, ordené lo de hoy: \(join(parts)). Ciclo #\(night)."
+        // Ciclo diurno: no "dormí". De mañana ordena lo de ayer; de tarde, lo de hoy.
+        guard morningDelivery, slept else {
+            let span = morningDelivery ? "ayer" : "hoy"
+            guard !parts.isEmpty else { return "Listo, ordené lo de \(span); no hubo nada nuevo que guardar." }
+            return "Listo, ordené lo de \(span): \(join(parts)). Ciclo #\(night)."
         }
         let hello = greeting(at: date, calendar: calendar)
         guard !parts.isEmpty else { return "\(hello). \(quietBody)" }
@@ -138,8 +141,10 @@ public actor WakeNotifier {
     @discardableResult
     public func cycleCompleted(_ report: Consolidator.CycleReport, night: Int) async -> LocalNotificationRequest? {
         guard report.completed else { return nil }
-        let fire = WakeNotice.fireDate(completedAt: now(), calendar: calendar)
-        let body = WakeNotice.body(report, night: night, at: fire, calendar: calendar)
+        let completed = now()
+        let fire = WakeNotice.fireDate(completedAt: completed, calendar: calendar)
+        // fireDate solo difiere a las 7:30 si el ciclo corrió de noche.
+        let body = WakeNotice.body(report, night: night, at: fire, calendar: calendar, slept: fire > completed)
         preference.lastSummary = body
         guard preference.isEnabled, general?.isEnabled ?? true, !(await isForeground()) else { return nil }
         guard await scheduler.authorizationStatus() == .granted else { return nil }

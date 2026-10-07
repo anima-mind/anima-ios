@@ -105,6 +105,10 @@ enum V17Dedupe {
     static func equivalent(_ a: String, _ b: String) -> Bool {
         let ka = key(a), kb = key(b)
         guard !ka.terms.isEmpty, !kb.terms.isEmpty, ka.numbers == kb.numbers else { return false }
+        // Periodos explícitos distintos = metas distintas ("1 libro al mes" ≠
+        // "1 libro a la semana"); el marcador solo se ignora si uno no lo trae.
+        let pa = ka.terms.intersection(periods), pb = kb.terms.intersection(periods)
+        if !pa.isEmpty, !pb.isEmpty, pa != pb { return false }
         let core = { (terms: Set<String>) in terms.subtracting(cadence) }
         let ca = core(ka.terms), cb = core(kb.terms)
         return !ca.isEmpty && ca == cb
@@ -113,8 +117,10 @@ enum V17Dedupe {
     /// Marcadores de frecuencia: no cambian QUÉ es la meta.
     static let cadence: Set<String> = [
         "cada", "semana", "dia", "mes", "ano", "todo", "toda", "todos", "todas", "noche", "siempre", "habito",
-        "regularmente", "constante", "constantemente", "seguido",
+        "regularmente", "constante", "constantemente", "seguido", "quincena",
     ]
+    /// Periodos (canónicos): si ambas metas traen uno y difieren, no son la misma.
+    static let periods: Set<String> = ["dia", "semana", "quincena", "mes", "ano"]
 
     struct Key: Equatable {
         var terms: Set<String>
@@ -169,6 +175,9 @@ enum V17Dedupe {
             "millon": ["millon", "millones", "palo", "palos"],
             "semana": ["semana", "semanal", "semanalmente"],
             "dia": ["dia", "dias", "diario", "diaria", "diariamente"],
+            "mes": ["mes", "meses", "mensual", "mensualmente"],
+            "ano": ["ano", "anos", "anual", "anualmente"],
+            "quincena": ["quincena", "quincenas", "quincenal", "quincenalmente"],
         ]
         for (canonical, words) in groups { for word in words { map[word] = canonical } }
         return map

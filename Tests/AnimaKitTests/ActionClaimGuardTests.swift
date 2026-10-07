@@ -16,6 +16,11 @@ struct ActionClaimGuardTests {
         "Te voy a recordar el miércoles.", "Listo, quedó.", "Ya quedó programado para las 8.",
         // Falsos negativos del review.
         "Hecho, te aviso el miércoles a las 8", "Dejé el recordatorio para mañana.", "Lo anoté.",
+        // Ronda 2: afirmación + oferta unidas por coma; "te aviso apenas/en cuanto".
+        "Listo, te programé el recordatorio para mañana a las 7, si quieres lo cambiamos.",
+        "Guardé tu meta de correr 5 km cada semana, puedo ajustarla cuando quieras.",
+        "Te aviso apenas llegue la hora.", "Perfecto, te aviso apenas salga el resultado.",
+        "Te aviso en cuanto termine.",
     ])
     func detectaLasAfirmacionesDeEscritura(_ text: String) {
         #expect(ActionClaimGuard.claimsWrite(text), "\(text)")
@@ -33,6 +38,9 @@ struct ActionClaimGuardTests {
         "Tienes 3 recordatorios programados esta semana.", "Ya te lo programé ayer, sigue en pie.",
         "El plan quedó listo.", "Puedo dejarte el recordatorio para las 8.",
         "Te lo programo a las 8, ¿te parece?",
+        // Ronda 2: ofertas puras (con o sin coma) siguen sin contar.
+        "Si quieres, te lo programo para mañana.", "Cuando quieras, te recuerdo a las 7.",
+        "Puedo dejarte anotado lo de la nevera; si quieres, lo agendo.",
     ])
     func noConfundeOfertasNiInformacion(_ text: String) {
         #expect(!ActionClaimGuard.claimsWrite(text), "\(text)")

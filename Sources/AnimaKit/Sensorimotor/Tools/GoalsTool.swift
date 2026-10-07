@@ -148,12 +148,18 @@ public struct GoalsTool: SensorimotorTool {
         } else {
             predicate = .progressCheckIn(everyDays: Self.defaultEveryDays(checkIn?.cadence ?? .none))
         }
+        let existing = await otherModel.equivalentGoal(to: statement)
         let id = await otherModel.ingestStated(statement: statement, desiredState: predicate,
                                                evidence: "declarada en el chat")
         if let checkIn, checkIn.isActive { _ = await otherModel.setCheckIn(id: id, checkIn) }
         await onChange()
         let suffix = (checkIn?.isActive ?? false) ? " Te pregunto \(checkIn!.phrase)." : ""
-        return ToolResult(content: "Meta registrada (id \(id)): \(statement).\(suffix)")
+        if let existing, existing.id == id {
+            // Una meta, una sola vez (batch 8 #5): no se crea otra reformulada.
+            return ToolResult(content: "Esa meta ya existía (id \(id)): \(existing.statement). No la dupliqué.\(suffix)")
+        }
+        let saved = await otherModel.goal(id: id)?.statement ?? statement
+        return ToolResult(content: "Meta registrada (id \(id)): \(saved).\(suffix)")
     }
 
     private func setCheckIn(_ input: JSONValue) async -> ToolResult {

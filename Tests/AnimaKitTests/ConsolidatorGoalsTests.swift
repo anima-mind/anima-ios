@@ -45,7 +45,9 @@ import GRDB
         #expect(report.completed)
 
         let goals = await rig.other.allGoals()
-        #expect(goals.contains { $0.source == .stated && $0.statement.contains("entrenar") })
+        #expect(goals.contains { $0.source == .stated && $0.statement.lowercased().contains("entrenar") })
+        // Batch 8 #5: neutral, nunca en tercera persona.
+        #expect(goals.contains { $0.statement == "Entrenar 3x por semana" })
         // Un goal stated motiva de inmediato (aparece en el deseo vigente).
         #expect(await rig.other.desire().contains { $0.source == .stated })
     }

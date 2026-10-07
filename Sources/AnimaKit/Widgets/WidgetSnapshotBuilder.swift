@@ -30,7 +30,7 @@ public struct WidgetSnapshotBuilder: Sendable {
                 items.append(.init(id: reminder.id, text: reminder.text, fireAt: reminder.fireAt,
                                    cadence: reminder.repeatCadence, delivered: false, goalId: reminder.goalId))
             }
-            // Entregados sin "Hecho" (uno-a-uno): siguen siendo de hoy hasta cerrarlos.
+            // Entregados sin "Hecho" (uno-a-uno): siguen a la vista hasta cerrarlos.
             for reminder in await reminders.list(.fired, limit: 10) {
                 items.append(.init(id: reminder.id, text: reminder.text, fireAt: reminder.fireAt,
                                    cadence: reminder.repeatCadence, delivered: true, goalId: reminder.goalId))

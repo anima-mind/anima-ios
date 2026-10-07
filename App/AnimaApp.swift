@@ -191,6 +191,7 @@ final class AppModel: ObservableObject {
     }
 
     func bootstrap(configFetchTimeout: TimeInterval? = nil) async {
+        if !UITestMode.isActive { await sleepActivity.endStale() }
         if UITestMode.isActive {
             account = AccountViewModel(provider: PreviewAccountProvider(state: .signedOut),
                                        profile: AccountProfileStore(defaults: UITestMode.defaults))
@@ -488,6 +489,10 @@ final class AppModel: ObservableObject {
             settingsModel?.onNightStarted = { [weak self] in
                 guard let self, !UITestMode.isActive else { return }
                 Task { await self.sleepActivity.start(selfName: await self.selfModel?.name() ?? "Anima") }
+            }
+            settingsModel?.onNightFailed = { [weak self] in
+                guard let self, !UITestMode.isActive else { return }
+                Task { await self.sleepActivity.finish(completed: false, night: await self.selfModel?.cycles() ?? 0) }
             }
             settingsModel?.onNightSimulated = { [weak self] in
                 Task { @MainActor in

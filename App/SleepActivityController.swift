@@ -10,6 +10,16 @@ import AnimaKit
 final class SleepActivityController {
     private var activity: Activity<SleepActivityAttributes>?
 
+    /// Al lanzar: ninguna Live Activity del sueño es de este proceso; las que
+    /// quedaron (app muerta a mitad de la noche) se retiran ya.
+    func endStale() async {
+        guard activity == nil else { return }
+        for stale in Activity<SleepActivityAttributes>.activities {
+            nonisolated(unsafe) let stale = stale
+            await stale.end(nil, dismissalPolicy: .immediate)
+        }
+    }
+
     func start(selfName: String) {
         guard activity == nil, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let content = ActivityContent(state: SleepActivityAttributes.ContentState(phase: .consolidating, night: 0),

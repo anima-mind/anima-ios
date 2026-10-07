@@ -292,6 +292,7 @@ struct LockInlineView: View {
 
     var body: some View {
         Label(copy.lockLine(day), systemImage: day.next == nil ? "checkmark.circle" : "bell")
+            .privacySensitive(day.next != nil)
             .widgetURL(AnimaDeepLink.reminders.url)
     }
 }
@@ -312,6 +313,7 @@ struct LockRectangularView: View {
                 Text(next.text)
                     .font(.system(size: 15, weight: .medium))
                     .lineLimit(2)
+                    .privacySensitive()
             } else {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle")

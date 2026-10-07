@@ -88,7 +88,8 @@ import GRDB
 
         let day = snapshot.day(at: Self.wednesday8am, calendar: cal)
         #expect(day.next?.text == "Llamar al banco")
-        #expect(day.reminders.map(\.text) == ["Llamar al banco", "Agua", "Pagar la tarjeta"])
+        // La pastilla entregada ayer sin "Hecho" sigue a la vista hasta cerrarla.
+        #expect(day.reminders.map(\.text) == ["Tomar la pastilla", "Llamar al banco", "Agua", "Pagar la tarjeta"])
         #expect(day.checkIns.map(\.statement) == ["Ahorrar 10M"])
         #expect(day.pendingCheckIn?.at == Self.at(20))
         #expect(day.goals.first?.streak == 1)
@@ -126,22 +127,25 @@ import GRDB
             ])
         let cal = Self.calendar
         // Hoy 9:30: el de las 9 quedó vencido, el próximo es el de Agua (rodado a hoy).
+        // El entregado anteayer sin "Hecho" sigue a la vista hasta cerrarlo.
         let morning = snapshot.day(at: Self.at(9, 30), calendar: cal)
-        #expect(morning.reminders.map(\.id) == ["a", "d"])
+        #expect(morning.reminders.map(\.id) == ["e", "a", "d"])
         #expect(morning.reminders.first?.overdue == true)
+        #expect(morning.reminders[1].overdue == true)
+        #expect(!morning.isEmpty)
         #expect(morning.reminders.last?.at == Self.at(10))
         #expect(morning.next?.id == "d")
         #expect(morning.goals.first?.streak == 4)
         #expect(morning.goals.first?.nextCheckIn == Self.at(21))
         // Jueves: el de mañana es de hoy; la racha sigue (ayer hubo avance? no: fue el martes) → 0.
         let thursday = snapshot.day(at: Self.at(6, day: 8), calendar: cal)
-        #expect(thursday.reminders.map(\.id) == ["b", "d"])
+        #expect(thursday.reminders.map(\.id) == ["e", "b", "d"])
         #expect(thursday.goals.first?.streak == 0)
         // Sábado: seguimiento entre semana no toca; el próximo es el lunes.
         let saturday = snapshot.day(at: Self.at(12, day: 10), calendar: cal)
         #expect(saturday.checkIns.isEmpty)
         #expect(saturday.goals.first?.nextCheckIn == Self.at(21, day: 12))
-        #expect(saturday.reminders.map(\.id) == ["d"])
+        #expect(saturday.reminders.map(\.id) == ["e", "d"])
     }
 
     @Test func answeredTodayIsNotPendingAndNextFollowUpSkipsToday() {
@@ -156,7 +160,8 @@ import GRDB
         #expect(day.isEmpty)
         #expect(day.goals.first?.nextCheckIn == Self.at(20, day: 8))
         #expect(day.goal(id: "g")?.statement == "Correr")
-        #expect(day.goal(id: "otra") == nil)
+        // Meta borrada/lograda: el widget cae a la primera, no a "Aún no tienes metas".
+        #expect(day.goal(id: "otra")?.id == "g")
     }
 
     @Test func checkInCadencesProjectToTheirDays() {
@@ -251,8 +256,9 @@ import GRDB
     @Test func copySpeaksSpanish() {
         let copy = WidgetCopy(calendar: Self.calendar)
         let now = Self.wednesday8am
-        #expect(copy.clock(Self.at(9)) == "9:00")
-        #expect(copy.clock(Self.at(0, 5)) == "12:05")
+        #expect(copy.clock(Self.at(9)) == "9:00 a. m.")
+        #expect(copy.clock(Self.at(20)) == "8:00 p. m.")
+        #expect(copy.clock(Self.at(0, 5)) == "12:05 a. m.")
         #expect(copy.relative(now.addingTimeInterval(20), now: now) == "ahora")
         #expect(copy.relative(Self.at(8, 25), now: now) == "en 25 min")
         #expect(copy.relative(Self.at(10), now: now) == "en 2 h")
@@ -273,7 +279,7 @@ import GRDB
         #expect(WidgetCopy.inline("Llamar al banco") == "llamar al banco")
 
         let sample = WidgetSnapshot.sample(now: now, calendar: Self.calendar)
-        #expect(copy.lockLine(sample.day(at: now, calendar: Self.calendar)) == "Próximo: llamar al banco · 9:00")
+        #expect(copy.lockLine(sample.day(at: now, calendar: Self.calendar)) == "Próximo: llamar al banco · 9:00 a. m.")
         let tomorrowOnly = WidgetSnapshot(generatedAt: now, selfName: "A", plasticity: 1, nights: 0,
                                           reminders: [.init(id: "x", text: "IMSS", fireAt: Self.at(9, day: 8))],
                                           goals: [])

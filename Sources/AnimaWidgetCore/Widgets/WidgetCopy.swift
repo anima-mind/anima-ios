@@ -20,13 +20,10 @@ public struct WidgetCopy: Sendable {
         dates = AnimaDateText(calendar: calendar)
     }
 
-    /// "9:00" — hora corta para espacios chicos (a. m./p. m. solo si hace falta).
+    /// "9:00 a. m." / "8:00 p. m." — la hora de los widgets, siempre con a. m./p. m.
+    /// (igual que el medium y las notificaciones: "8:00" sola sería ambigua).
     public func clock(_ date: Date) -> String {
-        let parts = dates.calendar.dateComponents([.hour, .minute], from: date)
-        let hour = parts.hour ?? 0
-        let minute = parts.minute ?? 0
-        let twelve = hour % 12 == 0 ? 12 : hour % 12
-        return "\(twelve):\(minute < 10 ? "0" : "")\(minute)"
+        dates.time(date)
     }
 
     /// "en 25 min", "en 2 h", "hace 10 min", "ahora", "mañana 9:00 a. m.".
@@ -47,7 +44,7 @@ public struct WidgetCopy: Sendable {
         return dates.moment(date, now: now)
     }
 
-    /// Pantalla de bloqueo (inline): "Próximo: llamar al banco · 9:00".
+    /// Pantalla de bloqueo (inline): "Próximo: llamar al banco · 9:00 a. m.".
     public func lockLine(_ day: WidgetDay) -> String {
         guard let next = day.next else { return Self.emptyToday }
         let when = dates.calendar.isDate(next.at, inSameDayAs: day.now)

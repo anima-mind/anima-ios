@@ -14,7 +14,8 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
         public var text: String
         public var fireAt: Date
         public var cadence: ProactiveCadence
-        /// Ya entregado hoy y sin "Hecho" (uno-a-uno en estado fired).
+        /// Ya entregado y sin "Hecho" (uno-a-uno en estado fired): sigue a la
+        /// vista (también pasada la medianoche) hasta que el dueño lo cierre.
         public var delivered: Bool
         public var goalId: String?
 
@@ -131,7 +132,7 @@ public struct WidgetDay: Equatable, Sendable {
     public var nights: Int
     /// El próximo recordatorio aún por llegar (cualquier día).
     public var next: ReminderLine?
-    /// Recordatorios de hoy (incluye los entregados sin cerrar), por hora.
+    /// Recordatorios de hoy + los entregados sin cerrar (de cualquier día), por hora.
     public var reminders: [ReminderLine]
     /// Seguimientos que tocan hoy, por hora.
     public var checkIns: [CheckInLine]
@@ -145,9 +146,10 @@ public struct WidgetDay: Equatable, Sendable {
     /// El seguimiento que importa ahora: el primero sin responder.
     public var pendingCheckIn: CheckInLine? { checkIns.first { !$0.answered } }
 
+    /// La meta elegida en el widget; si ya no existe (borrada, lograda), la primera.
     public func goal(id: String?) -> GoalLine? {
         guard let id else { return goals.first }
-        return goals.first { $0.id == id }
+        return goals.first { $0.id == id } ?? goals.first
     }
 }
 
@@ -162,7 +164,7 @@ extension WidgetSnapshot {
             let at = Self.occurrence(of: reminder, from: start, calendar: calendar)
             let line = WidgetDay.ReminderLine(id: reminder.id, text: reminder.text, at: at, overdue: at < now)
             if reminder.delivered {
-                if at >= start { today.append(line) }
+                today.append(line)
                 continue
             }
             if at >= start, at < end { today.append(line) }

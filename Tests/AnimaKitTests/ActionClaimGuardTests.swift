@@ -9,19 +9,38 @@ import Testing
 @Suite("Batch 8 #6 — afirmar una escritura exige haberla hecho")
 struct ActionClaimGuardTests {
 
-    @Test func detectaLasAfirmacionesDeEscritura() {
-        for text in ["Listo, te programo el check-in para mañana miércoles a las 8:00.",
-                     "Quedó agendado.", "Agendé tu cita.", "Te programé el recordatorio.",
-                     "Registré tu meta de bajar 10 kg.", "Creé el recordatorio.", "Te lo recuerdo a las 7.",
-                     "Te voy a recordar el miércoles.", "Listo, quedó.", "Ya está programado para las 8."] {
-            #expect(ActionClaimGuard.claimsWrite(text), "\(text)")
-        }
-        for text in ["¿Lo agendamos para el miércoles?", "No lo agendé todavía.", "Aún no programé nada.",
-                     "Ese recordatorio ya existía desde ayer.", "¿Cómo te quedó el entrenamiento?",
-                     "Tienes 2 recordatorios.", "Sin programar nada aún.",
-                     "Eso no lo puedo cambiar desde aquí. Programados: - llamar al banco"] {
-            #expect(!ActionClaimGuard.claimsWrite(text), "\(text)")
-        }
+    @Test(arguments: [
+        "Listo, te programo el check-in para mañana miércoles a las 8:00.",
+        "Quedó agendado.", "Agendé tu cita.", "Te programé el recordatorio.",
+        "Registré tu meta de bajar 10 kg.", "Creé el recordatorio.", "Te lo recuerdo a las 7.",
+        "Te voy a recordar el miércoles.", "Listo, quedó.", "Ya quedó programado para las 8.",
+        // Falsos negativos del review.
+        "Hecho, te aviso el miércoles a las 8", "Dejé el recordatorio para mañana.", "Lo anoté.",
+    ])
+    func detectaLasAfirmacionesDeEscritura(_ text: String) {
+        #expect(ActionClaimGuard.claimsWrite(text), "\(text)")
+    }
+
+    @Test(arguments: [
+        "¿Lo agendamos para el miércoles?", "No lo agendé todavía.", "Aún no programé nada.",
+        "Ese recordatorio ya existía desde ayer.", "¿Cómo te quedó el entrenamiento?",
+        "Tienes 2 recordatorios.", "Sin programar nada aún.",
+        "Eso no lo puedo cambiar desde aquí. Programados: - llamar al banco",
+        // Falsos positivos del review: ofertas, información y pasado de otro turno.
+        "¿Quieres que te lo programe?", "Quieres que te lo programe para mañana.",
+        "Si quieres te recuerdo mañana.", "Cuando quieras te lo programo.",
+        "Te recuerdo que mañana tienes cita con el médico.", "Tu check-in está programado para el domingo.",
+        "Tienes 3 recordatorios programados esta semana.", "Ya te lo programé ayer, sigue en pie.",
+        "El plan quedó listo.", "Puedo dejarte el recordatorio para las 8.",
+        "Te lo programo a las 8, ¿te parece?",
+    ])
+    func noConfundeOfertasNiInformacion(_ text: String) {
+        #expect(!ActionClaimGuard.claimsWrite(text), "\(text)")
+    }
+
+    @Test func unaOfertaYUnaAfirmacionEnElMismoTextoCuenta() {
+        #expect(ActionClaimGuard.claimsWrite("Listo, quedó agendado. ¿Quieres que también te lo recuerde?"))
+        #expect(ActionClaimGuard.sentences("a. b? c") == ["a.", " b?", " c"])
     }
 
     @Test func soloLasEscriturasCuentan() {

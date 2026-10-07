@@ -40,29 +40,67 @@ public enum ActionClaimGuard {
         }
     }
 
-    // Afirmaciones de escritura en primera persona (texto plegado: minúsculas, sin tildes).
-    private static let claimPattern = #"\b(agende|agendad[oa]s?|te (lo |la )?programo|(te |lo |la )?programe|programad[oa]s?|quedo (agendad|programad|registrad|cread|guardad|anotad|list)[a-z]*|listo,? quedo|te (lo |la )?recuerdo|te voy a recordar|registre (el|la|los|las|un|una|tu|tus)|cree (el|la|los|las|un|una|tu|tus))\b"#
-    private static let claimRegex = try? NSRegularExpression(pattern: claimPattern)
-    private static let exemptions = ["ya existia", "ya estaba", "ya lo tenias", "ya la tenias", "ya tenias"]
+    // Afirmaciones de escritura en primera persona, CON tildes: "programé"
+    // (pretérito, afirma) ≠ "programe" (subjuntivo, "¿quieres que te lo
+    // programe?"). Los participios sueltos ("está programado") describen, no
+    // afirman: solo cuentan tras "quedó"/"dejé".
+    private static let claimPatterns = [
+        #"\b(agendé|programé|registré|creé|anoté|apunté|guardé|dejé|fijé)\b"#,
+        #"\bte (lo |la )?programo\b"#,
+        #"\b(ya )?quedó (agendad|programad|registrad|cread|guardad|anotad|fijad|apuntad)[a-z]*"#,
+        #"\blisto,? (ya )?quedó\b"#,
+        #"\bte (lo |la )?recuerdo\b(?! que)"#,
+        #"\bte voy a recordar\b"#,
+        #"\bte aviso (el|la|los|las|mañana|hoy|a las|en|cada|cuando)\b"#,
+    ]
+    private static let claimRegexes = claimPatterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let exemptions = ["ya existía", "ya existia", "ya estaba", "ya lo tenías", "ya la tenías", "ya tenías"]
+    /// Ofertas y condicionales: proponen, no afirman.
+    private static let offers = ["quieres que", "si quieres", "cuando quieras", "puedo ", "podría", "te parece",
+                                 "te gustaría", "prefieres", "si me dices", "si me confirmas", "dime si"]
+    /// Lo hecho en OTRO turno ("ya te lo programé ayer") no es de este.
+    private static let earlier = ["ayer", "antes", "el otro día", "la semana pasada", "hace un rato", "anoche"]
 
     static func fold(_ text: String) -> String {
         text.lowercased().folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
     }
 
-    /// ¿El texto afirma haber hecho (o estar haciendo) una escritura? Las negadas
-    /// ("no lo agendé", "sin programar") y lo que ya existía no cuentan.
-    public static func claimsWrite(_ text: String) -> Bool {
-        let folded = fold(text)
-        guard let regex = claimRegex, !exemptions.contains(where: folded.contains),
-              !ToolFailureNotice.admits(text), !folded.contains("no lo puedo"), !folded.contains("no puedo") else {
-            return false
+    /// Oraciones con su terminador ("?" marca pregunta aunque falte el "¿").
+    static func sentences(_ text: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        for ch in text {
+            current.append(ch)
+            if ".!?\n".contains(ch) {
+                out.append(current)
+                current = ""
+            }
         }
-        let ns = folded as NSString
-        for match in regex.matches(in: folded, range: NSRange(location: 0, length: ns.length)) {
-            let start = max(0, match.range.location - 14)
-            let before = ns.substring(with: NSRange(location: start, length: match.range.location - start))
-            let negated = ["no ", "nunca ", "sin ", "aun no", "todavia no"].contains { before.contains($0) }
-            if !negated { return true }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out.append(current) }
+        return out
+    }
+
+    /// ¿El texto afirma haber hecho (o estar haciendo) una escritura en ESTE
+    /// turno? No cuentan: preguntas y ofertas, negadas, lo que ya existía o se
+    /// hizo antes, ni "te recuerdo que…" informativo.
+    public static func claimsWrite(_ text: String) -> Bool {
+        guard !ToolFailureNotice.admits(text) else { return false }
+        for sentence in sentences(text) {
+            let lower = sentence.lowercased()
+            if lower.contains("?") || lower.contains("¿") { continue }
+            if offers.contains(where: lower.contains) || exemptions.contains(where: lower.contains) { continue }
+            if lower.contains("no puedo") || lower.contains("no lo puedo") { continue }
+            if lower.contains("ya "), earlier.contains(where: lower.contains) { continue }
+            let ns = lower as NSString
+            for regex in claimRegexes {
+                for match in regex.matches(in: lower, range: NSRange(location: 0, length: ns.length)) {
+                    let start = max(0, match.range.location - 14)
+                    let before = ns.substring(with: NSRange(location: start, length: match.range.location - start))
+                    let negated = ["no ", "nunca ", "sin ", "aún no", "aun no", "todavía no", "todavia no"]
+                        .contains { before.contains($0) }
+                    if !negated { return true }
+                }
+            }
         }
         return false
     }

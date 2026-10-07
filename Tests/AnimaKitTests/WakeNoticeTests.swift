@@ -83,7 +83,27 @@ struct WakeNoticeTests {
         #expect(await n.cycleCompleted(Self.report(added: 1, completed: false), night: 3) == nil)
         let request = try #require(await n.cycleCompleted(Self.report(added: 1), night: 3))
         #expect(request.trigger == .immediate)
-        #expect(request.body.hasPrefix("Buenas tardes."))
+        #expect(request.body == "Listo, ordené lo de hoy: 1 recuerdo nuevo. Ciclo #3.")
+    }
+
+    /// Review #34: un ciclo a las 20:59 no dice "Buenas noches… Dormí".
+    @Test func deTardeONocheNoDiceDormi() {
+        let evening = Self.at(20, 59)
+        #expect(WakeNotice.fireDate(completedAt: evening, calendar: Self.cal) == evening)
+        #expect(WakeNotice.body(Self.report(added: 2), night: 4, at: evening, calendar: Self.cal)
+                == "Listo, ordené lo de hoy: 2 recuerdos nuevos. Ciclo #4.")
+        #expect(WakeNotice.body(Self.report(), night: 4, at: evening, calendar: Self.cal) == WakeNotice.dayQuietBody)
+    }
+
+    /// Review #34: con la app al frente no hay push; el resumen queda para el Mind sheet.
+    @Test func conLaAppAlFrenteNoNotificaPeroGuardaElResumen() async throws {
+        let fake = FakeNotificationScheduler(status: .granted)
+        let wake = WakePreference(defaults: defaults())
+        let n = WakeNotifier(scheduler: fake, general: nil, preference: wake, selfName: { "Budosky" },
+                             calendar: Self.cal, now: { Self.at(15) }, isForeground: { true })
+        #expect(await n.cycleCompleted(Self.report(added: 1), night: 2) == nil)
+        #expect(fake.scheduled.isEmpty)
+        #expect(wake.lastSummary == "Listo, ordené lo de hoy: 1 recuerdo nuevo. Ciclo #2.")
     }
 
     @Test func respetaLosTogglesYElPermiso() async throws {

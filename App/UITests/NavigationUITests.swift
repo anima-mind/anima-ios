@@ -48,6 +48,11 @@ final class NavigationUITests: AnimaUITestCase {
         let mindSheet = element(app, "mind.sheet")
         XCTAssertGreaterThan(app.buttons["nav.close.mind"].frame.minY, mindSheet.frame.minY + 8,
                              "no pegada al drag indicator")
+        // Review #34: el sheet abraza su contenido — "Vincular gafas" entero y tocable.
+        let glasses = element(app, "mind.glasses")
+        waitFor(glasses)
+        XCTAssertTrue(glasses.isHittable, "la acción de gafas no queda cortada")
+        XCTAssertLessThanOrEqual(glasses.frame.maxY, app.windows.firstMatch.frame.maxY)
         screenshot(app, "batch8-04-mind")
         tap(app.buttons["nav.close.mind"])
         waitUntil(mindSheet, "exists == false")

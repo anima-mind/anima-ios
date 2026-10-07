@@ -311,6 +311,9 @@ public final class ChatViewModel: ObservableObject {
     public var onOpenApprovals: (() -> Void)?
     /// El Mind sheet (badge de plasticidad o el aviso de despertar, batch 8 #7).
     @Published public var showMindSheet = false
+    /// Resumen del último sueño (lo provee el shell; se relee en loadMind).
+    public var wakeSummary: (@MainActor () -> String?)?
+    @Published public private(set) var lastWake: String?
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -360,6 +363,7 @@ public final class ChatViewModel: ObservableObject {
 
     /// Refresca p/ciclos/régimen para el badge (anima 600 ms al cambiar).
     public func loadMind() async {
+        if let wakeSummary, lastWake != wakeSummary() { lastWake = wakeSummary() }
         guard let selfModel else { return }
         let name = await selfModel.name()
         if name != selfName { selfName = name }
@@ -742,6 +746,7 @@ public struct ChatView: View {
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
     @State private var showContextSheet = false
+    @State private var mindSheetHeight: CGFloat = 560
     /// Alto medido del sheet de contexto (abraza su contenido con cualquier Dynamic Type).
     @State private var contextSheetHeight = ContextSheet.initialHeight
     /// ¿El dueño está al fondo del chat? (si subió a leer, no se le mueve).
@@ -854,8 +859,9 @@ public struct ChatView: View {
                 .presentationBackground(Theme.Colors.surface)
         }
         .sheet(isPresented: $model.showMindSheet) {
-            MindSheet(mind: model.mind, glasses: model.glasses)
-                .presentationDetents([.medium])
+            MindSheet(mind: model.mind, glasses: model.glasses, lastWake: model.lastWake) { mindSheetHeight = $0 }
+                // A la medida del contenido (antes .medium cortaba "Vincular gafas").
+                .presentationDetents([.height(mindSheetHeight), .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.bg)
         }
@@ -1653,11 +1659,21 @@ public struct PlasticityBadge: View {
 public struct MindSheet: View {
     let mind: ChatViewModel.MindState
     let glasses: GlassesViewModel?
+    /// El resumen del último sueño (batch 8 #7): con la app al frente no hay push.
+    let lastWake: String?
+    /// Alto natural (fila del título + contenido): el detent lo abraza.
+    var onHeight: (CGFloat) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
+    @State private var headerHeight: CGFloat = 0
+    /// El detent .height no descuenta el home indicator: holgura para la última fila.
+    static let bottomInset: CGFloat = 34
 
-    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil) {
+    public init(mind: ChatViewModel.MindState, glasses: GlassesViewModel? = nil, lastWake: String? = nil,
+                onHeight: @escaping (CGFloat) -> Void = { _ in }) {
         self.mind = mind
         self.glasses = glasses
+        self.lastWake = lastWake
+        self.onHeight = onHeight
     }
 
     public var body: some View {
@@ -1670,6 +1686,7 @@ public struct MindSheet: View {
             SheetHeader("Mente", screen: "mind") { dismiss() }
                 .padding(.horizontal, Theme.Space.screenInset)
                 .padding(.top, Theme.Space.sectionGap)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             ScrollView {
             VStack(spacing: Theme.Space.stack) {
                 BreathMark(size: 104, p: mind.p, phase: .breathing)
@@ -1694,6 +1711,15 @@ public struct MindSheet: View {
                 Text("p(n) = 0.05 + 0.95·e^(−n/30)")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Theme.Colors.textFaint)
+                if let lastWake {
+                    Text(lastWake)
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(Theme.Colors.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, Theme.Space.screenInset)
+                        .accessibilityIdentifier("mind.lastWake")
+                }
 
                 VStack(spacing: 0) {
                     keyValueRow("cuerpo", glasses?.bodyLabel ?? "solo teléfono", id: "body")
@@ -1712,7 +1738,9 @@ public struct MindSheet: View {
                         .padding(.top, 4)
                 }
             }
+            .padding(.top, Theme.Space.stack)
             .padding(.bottom, Theme.Space.sectionGap)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight($0 + headerHeight + Self.bottomInset) }
             }
             }
         }

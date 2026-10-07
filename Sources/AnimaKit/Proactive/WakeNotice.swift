@@ -16,6 +16,7 @@ public enum WakeNotice {
     public static let nightStartsAt = 21
 
     public static let quietBody = "Dormí bien; ayer no dejó nada nuevo que guardar."
+    public static let dayQuietBody = "Listo, ordené lo de hoy; no hubo nada nuevo que guardar."
 
     /// Cuándo avisar: un ciclo nocturno (21:00–7:30) espera a las 7:30; de día, ya.
     public static func fireDate(completedAt now: Date, calendar: Calendar) -> Date {
@@ -39,7 +40,7 @@ public enum WakeNotice {
     /// El cuerpo, en su voz. Variantes por plantilla según la noche (deterministas).
     public static func body(_ report: Consolidator.CycleReport, night: Int, at date: Date,
                             calendar: Calendar) -> String {
-        let hello = greeting(at: date, calendar: calendar)
+        let morningDelivery = (5..<12).contains(calendar.component(.hour, from: date))
         var parts: [String] = []
         if report.added > 0 { parts.append(report.added == 1 ? "1 recuerdo nuevo" : "\(report.added) recuerdos nuevos") }
         let refined = report.updated + report.reconsolidated
@@ -50,6 +51,12 @@ public enum WakeNotice {
         if report.goalsUpdated > 0 {
             parts.append(report.goalsUpdated == 1 ? "1 meta al día" : "\(report.goalsUpdated) metas al día")
         }
+        // De tarde/noche (ciclo diurno, entrega inmediata) no "dormí": ordené lo de hoy.
+        guard morningDelivery else {
+            guard !parts.isEmpty else { return dayQuietBody }
+            return "Listo, ordené lo de hoy: \(join(parts)). Ciclo #\(night)."
+        }
+        let hello = greeting(at: date, calendar: calendar)
         guard !parts.isEmpty else { return "\(hello). \(quietBody)" }
         let listing = join(parts)
         let templates = [
@@ -92,6 +99,14 @@ public final class WakePreference: @unchecked Sendable {
         get { defaults.string(forKey: Self.lastDayKey) }
         set { defaults.set(newValue, forKey: Self.lastDayKey) }
     }
+
+    /// El último resumen del sueño (el Mind sheet lo muestra; con la app al
+    /// frente es ahí donde se ve, en vez de un push).
+    public static let lastSummaryKey = "anima.wake.lastSummary"
+    public var lastSummary: String? {
+        get { defaults.string(forKey: Self.lastSummaryKey) }
+        set { defaults.set(newValue, forKey: Self.lastSummaryKey) }
+    }
 }
 
 /// Programa el aviso de despertar al completar un ciclo.
@@ -102,10 +117,14 @@ public actor WakeNotifier {
     private let selfName: @Sendable () async -> String
     private let calendar: Calendar
     private let now: @Sendable () -> Date
+    /// ¿La app está al frente? Entonces no hay push: el resumen va al Mind sheet.
+    private let isForeground: @Sendable () async -> Bool
 
     public init(scheduler: LocalNotificationScheduler, general: ProactivePreference?, preference: WakePreference,
                 selfName: @escaping @Sendable () async -> String = { "Anima" }, calendar: Calendar = .current,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                isForeground: @escaping @Sendable () async -> Bool = { false }) {
+        self.isForeground = isForeground
         self.scheduler = scheduler
         self.general = general
         self.preference = preference
@@ -118,14 +137,17 @@ public actor WakeNotifier {
     /// ya hubo aviso ese día).
     @discardableResult
     public func cycleCompleted(_ report: Consolidator.CycleReport, night: Int) async -> LocalNotificationRequest? {
-        guard report.completed, preference.isEnabled, general?.isEnabled ?? true else { return nil }
-        guard await scheduler.authorizationStatus() == .granted else { return nil }
+        guard report.completed else { return nil }
         let fire = WakeNotice.fireDate(completedAt: now(), calendar: calendar)
+        let body = WakeNotice.body(report, night: night, at: fire, calendar: calendar)
+        preference.lastSummary = body
+        guard preference.isEnabled, general?.isEnabled ?? true, !(await isForeground()) else { return nil }
+        guard await scheduler.authorizationStatus() == .granted else { return nil }
         let id = WakeNotice.id(for: fire, calendar: calendar)
         guard preference.lastNotifiedId != id else { return nil }
         let request = LocalNotificationRequest(
             id: id, title: await selfName(),
-            body: WakeNotice.body(report, night: night, at: fire, calendar: calendar),
+            body: body,
             trigger: fire > now() ? .at(fire) : .immediate,
             categoryId: WakeNotice.category, deepLink: AnimaDeepLink.mind.url)
         await scheduler.schedule(request)

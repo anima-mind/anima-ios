@@ -106,6 +106,7 @@ final class AppModel: ObservableObject {
     private var reminderStore: AnimaReminderStore?
     /// El aviso de despertar (batch 8 #7).
     private var wakeNotifier: WakeNotifier?
+    private var wakePreference: WakePreference?
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
@@ -251,7 +252,9 @@ final class AppModel: ObservableObject {
             // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño.
             let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             let wake = WakeNotifier(scheduler: notifications, general: preference, preference: wakePreference,
-                                    selfName: { await selfModel.name() })
+                                    selfName: { await selfModel.name() },
+                                    isForeground: { await MainActor.run { Self.isForeground } })
+            self.wakePreference = wakePreference
             self.wakeNotifier = wake
             let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
                                                                 preference: preference, wake: wakePreference)
@@ -514,6 +517,8 @@ final class AppModel: ObservableObject {
         // El chat abre con TODO lo vivido (campo batch 8 #3): el historial de todas
         // las sesiones, paginado hacia arriba. La sesión solo define el contexto del modelo.
         chat.historyStore = store
+        let wakePreference = self.wakePreference
+        chat.wakeSummary = { wakePreference?.lastSummary }
         if UITestMode.seedsGlassesTurn { UITestMode.seedGlassesTurn(store, sessionId: sessionId) }
         if let page = try? store.historyPage() { chat.loadHistory(page: page) }
         // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.
@@ -689,6 +694,15 @@ final class AppModel: ObservableObject {
     func schedulePulse() {
         #if os(iOS)
         PulseScheduler().submit()
+        #endif
+    }
+
+    /// ¿La app está al frente? (el aviso de despertar no se manda: va al Mind sheet).
+    static var isForeground: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .active
+        #else
+        return false
         #endif
     }
 

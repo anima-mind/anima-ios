@@ -38,18 +38,20 @@ public final class DatabaseSuspension: @unchecked Sendable {
         notify.map(post)
     }
 
-    /// Escena a background: termina `flush` (snapshot de widgets…) y suspende
-    /// si nadie más la necesita (un BGTask o una acción en curso la mantienen).
-    public func enterBackground(flush: @Sendable () async -> Void) async {
-        begin()
-        lock.withLock {
+    /// Escena a background, SÍNCRONO en el onChange (si fuera en un Task, un
+    /// .inactive/.active que llegue antes quedaría en no-op y la base terminaría
+    /// suspendida con la app abierta). Suelta el hold de la escena y toma uno
+    /// para el vaciado (snapshot de widgets…), que quien llama cierra con `end()`.
+    public func enterBackground() {
+        let notify = lock.withLock { () -> Notification.Name? in
+            holds += 1
             if foreground {
                 foreground = false
                 holds -= 1
             }
+            return wake()
         }
-        await flush()
-        end()
+        notify.map(post)
     }
 
     /// Un trabajo que necesita la base (BGTask, acción de notificación/widget).
@@ -80,10 +82,12 @@ public final class DatabaseSuspension: @unchecked Sendable {
     }
 
     /// iOS está por suspender la app (expirationHandler): suelta los locks YA,
-    /// aunque quede trabajo en curso (sus escrituras fallan y se reintentan).
+    /// aunque quede trabajo en curso (sus escrituras fallan y se reintentan). Con
+    /// la escena en primer plano la app no se suspende: no hace nada (el trabajo
+    /// que expiró suelta su hold con su `end()`).
     public func expire() {
         let notify = lock.withLock { () -> Notification.Name? in
-            guard !suspended else { return nil }
+            guard !foreground, !suspended else { return nil }
             suspended = true
             return Database.suspendNotification
         }

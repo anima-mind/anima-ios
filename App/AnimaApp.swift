@@ -486,11 +486,15 @@ final class AppModel: ObservableObject {
             settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
                 await other?.allGoals().count ?? 0
             })
+            // La noche simulada retiene la base (si el dueño sale a mitad, no se
+            // suspende bajo el ciclo): Started abre el hold, Simulated/Failed lo cierran.
             settingsModel?.onNightStarted = { [weak self] in
+                DatabaseSuspension.shared.begin()
                 guard let self, !UITestMode.isActive else { return }
                 Task { await self.sleepActivity.start(selfName: await self.selfModel?.name() ?? "Anima") }
             }
             settingsModel?.onNightFailed = { [weak self] in
+                DatabaseSuspension.shared.end()
                 guard let self, !UITestMode.isActive else { return }
                 Task { await self.sleepActivity.finish(completed: false, night: await self.selfModel?.cycles() ?? 0) }
             }
@@ -504,6 +508,7 @@ final class AppModel: ObservableObject {
                     await self?.goalsModel?.refresh()
                     await self?.approvalsModel?.refresh()
                     await self?.chatModel?.loadMind()
+                    DatabaseSuspension.shared.end()
                 }
             }
             // `--uitest`: sin sueño en foreground (turnos deterministas).
@@ -675,9 +680,11 @@ final class AppModel: ObservableObject {
         markCleanShutdown()
         scheduleConsolidation()
         schedulePulse()
+        DatabaseSuspension.shared.enterBackground()
         let flush = BackgroundFlush.begin(onExpire: { DatabaseSuspension.shared.expire() })
         Task {
-            await DatabaseSuspension.shared.enterBackground { await self.publishWidgets() }
+            await publishWidgets()
+            DatabaseSuspension.shared.end()
             flush.end()
         }
     }
@@ -697,9 +704,11 @@ final class AppModel: ObservableObject {
         let selfModel = self.selfModel
         await sleepActivity.start(selfName: await selfModel?.name() ?? "Anima")
         Task.detached { [sleepActivity] in
-            let completed = await scheduler.runResumable(consolidator)
-            await sleepActivity.finish(completed: completed, night: await selfModel?.cycles() ?? 0)
-            await AppModel.live.publishWidgets()
+            await DatabaseSuspension.shared.awake {
+                let completed = await scheduler.runResumable(consolidator)
+                await sleepActivity.finish(completed: completed, night: await selfModel?.cycles() ?? 0)
+                await AppModel.live.publishWidgets()
+            }
         }
     }
 

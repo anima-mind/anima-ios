@@ -26,9 +26,9 @@ import GRDB
         suspension.enterForeground()
         suspension.enterForeground()
         #expect(posted.value.isEmpty)
-        await suspension.enterBackground {
-            #expect(!suspension.isSuspended)
-        }
+        suspension.enterBackground()
+        #expect(!suspension.isSuspended)
+        suspension.end()
         #expect(posted.value == ["suspend"])
         #expect(suspension.isSuspended)
         suspension.enterForeground()
@@ -40,7 +40,8 @@ import GRDB
         let (suspension, posted) = Self.make()
         suspension.enterForeground()
         suspension.begin()
-        await suspension.enterBackground {}
+        suspension.enterBackground()
+        suspension.end()
         #expect(posted.value.isEmpty)
         suspension.end()
         #expect(posted.value == ["suspend"])
@@ -48,7 +49,8 @@ import GRDB
 
     @Test func backgroundWakeResumesAndSuspendsAgainWhenDone() async {
         let (suspension, posted) = Self.make()
-        await suspension.enterBackground {}
+        suspension.enterBackground()
+        suspension.end()
         let value = await suspension.awake { () -> Int in
             #expect(!suspension.isSuspended)
             return 7
@@ -67,6 +69,41 @@ import GRDB
         #expect(posted.value == ["suspend"])
         suspension.begin()
         #expect(posted.value == ["suspend", "resume"])
+    }
+
+    /// Un BGTask que expira con la app abierta no suspende la base bajo el chat.
+    @Test func expirationWithTheAppInForegroundNeverSuspends() {
+        let (suspension, posted) = Self.make()
+        suspension.enterForeground()
+        suspension.begin()
+        suspension.expire()
+        suspension.end()
+        #expect(!suspension.isSuspended)
+        #expect(posted.value.isEmpty)
+        // Ya en background, la expiración sí suspende.
+        suspension.begin()
+        suspension.enterBackground()
+        suspension.end()
+        suspension.expire()
+        #expect(suspension.isSuspended)
+        suspension.end()
+        #expect(posted.value == ["suspend"])
+    }
+
+    /// background → inactive/active antes de que termine el vaciado: la escena
+    /// recupera su hold y el fin del vaciado no suspende la base abierta.
+    @Test func returningToForegroundBeforeTheFlushEndsKeepsTheDatabaseAwake() {
+        let (suspension, posted) = Self.make()
+        suspension.enterForeground()
+        suspension.enterBackground()
+        suspension.enterForeground()
+        suspension.enterForeground()
+        suspension.end()
+        #expect(!suspension.isSuspended)
+        #expect(posted.value.isEmpty)
+        suspension.enterBackground()
+        suspension.end()
+        #expect(suspension.isSuspended)
     }
 
     @Test func endWithoutBeginNeverGoesNegative() {

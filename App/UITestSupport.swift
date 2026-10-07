@@ -68,6 +68,17 @@ enum UITestMode {
                           surface: .glassesHUD)
     }
 
+    /// 60 turnos previos: el chat debe abrir anclado al último (review #34).
+    static let seedsLongHistory = isActive && arguments.contains("--uitest-seed-long-history")
+
+    static func seedLongHistory(_ store: SymbolicStore, sessionId: SessionID) {
+        guard ((try? store.historyPage().turns) ?? []).isEmpty else { return }
+        for i in 0..<30 {
+            try? store.append(sessionId: sessionId, message: .user("mensaje \(i)"))
+            try? store.append(sessionId: sessionId, message: .assistant([.text("respuesta \(i)\nCon una segunda línea para que ocupe.")]))
+        }
+    }
+
     /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
     static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
 

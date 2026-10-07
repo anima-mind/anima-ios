@@ -519,6 +519,7 @@ final class AppModel: ObservableObject {
         chat.historyStore = store
         let wakePreference = self.wakePreference
         chat.wakeSummary = { wakePreference?.lastSummary }
+        if UITestMode.seedsLongHistory { UITestMode.seedLongHistory(store, sessionId: sessionId) }
         if UITestMode.seedsGlassesTurn { UITestMode.seedGlassesTurn(store, sessionId: sessionId) }
         if let page = try? store.historyPage() { chat.loadHistory(page: page) }
         // Contexto (5b #4/#5): compactar con el córtex de ciclo, o conversación nueva.

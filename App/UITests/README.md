@@ -29,6 +29,7 @@ el argumento nada de esto se activa:
   con "Hagámoslo / Ahora no", sin texto duplicado).
 - `--uitest-seed-glasses-turn`: siembra un turno de voz hecho desde las gafas
   (chip "gafas" en el historial).
+- `--uitest-seed-long-history`: 60 turnos previos (el chat abre anclado al último).
 - `--uitest-fresh-session`: el lanzamiento abre sesión nueva (simula >8 h sin
   actividad) — el historial completo debe seguir visible.
 - `--uitest-seed-reminder=N`: siembra un recordatorio de Anima a +N s.

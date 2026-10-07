@@ -142,6 +142,25 @@ final class ChatUITests: AnimaUITestCase {
         add(shot)
     }
 
+    /// Review #34: con un historial largo el chat abre anclado al último mensaje.
+    @MainActor
+    func testLongHistoryOpensAtTheBottom() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-long-history")
+        app.launch()
+        onboard(app)
+        app.terminate()
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-long-history")
+        again.launch()
+        waitForChat(again)
+        let last = assistantMessage(again, labelContains: "respuesta 29")
+        waitFor(last)
+        waitUntil(last, "isHittable == true")
+        XCTAssertFalse(assistantMessage(again, labelContains: "respuesta 0").isHittable)
+        screenshot(again, "batch8-review-fondo")
+    }
+
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
     @MainActor
     func testPlasticityBadgeOpensMindSheet() {

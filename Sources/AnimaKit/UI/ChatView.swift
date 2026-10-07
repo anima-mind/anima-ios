@@ -223,6 +223,8 @@ public final class ChatViewModel: ObservableObject {
     /// abrir conversación nueva solo cambia el contexto del modelo, jamás esto.
     public var historyStore: SymbolicStore?
     @Published public private(set) var hasOlderHistory = false
+    /// Sube con cada carga inicial del historial: la vista re-ancla al fondo.
+    @Published public private(set) var historyGeneration = 0
     private var oldestTurn: VisibleTurn?
     private var isLoadingOlder = false
 
@@ -240,6 +242,7 @@ public final class ChatViewModel: ObservableObject {
         register(restored)
         guard !restored.isEmpty else { return }
         messages = restored + messages
+        historyGeneration += 1
     }
 
     /// Scroll al tope: la página anterior va arriba. Devuelve el mensaje que
@@ -830,6 +833,16 @@ public struct ChatView: View {
                     }
                     .onChange(of: model.focusedMessageId) { _, id in
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                    }
+                    // Review #34: con 50 turnos el LazyVStack estima alturas y el
+                    // ancla inicial no quedaba al fondo. Tras el layout (y un par
+                    // de pasadas mientras se asientan las alturas) → al último.
+                    .task(id: model.historyGeneration) {
+                        for _ in 0..<3 {
+                            try? await Task.sleep(for: .milliseconds(80))
+                            guard let last = model.messages.last else { continue }
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
                     }
                 }
                 if model.isOffline {

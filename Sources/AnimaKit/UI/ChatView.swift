@@ -362,6 +362,13 @@ public final class ChatViewModel: ObservableObject {
     /// proactivos del agente (§5.8). Idempotente: no re-muestra una ya pintada.
     public func loadProactiveIntentions() async {
         guard let desireEngine else { return }
+        // Las cards restauradas del historial muestran cómo respondió el dueño.
+        for index in messages.indices {
+            guard let id = messages[index].intentionId, messages[index].outcome == nil,
+                  let intention = await desireEngine.intention(id: id), intention.outcome != .pending else { continue }
+            messages[index].resolved = true
+            messages[index].outcome = intention.outcome == .ignored ? nil : intention.outcome
+        }
         let pending = await desireEngine.pendingIntentions()
         for intention in pending where !shownIntentionIds.contains(intention.id) {
             shownIntentionIds.insert(intention.id)

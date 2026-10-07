@@ -79,6 +79,41 @@ final class ChatUITests: AnimaUITestCase {
         add(shot)
     }
 
+    /// Batch 8 #1: la propuesta del deseo se ve UNA vez — la card con
+    /// "Hagámoslo / Ahora no" —, también tras relanzar; al aceptarla el dueño ve
+    /// "Hagámoslo", no la propuesta repetida.
+    @MainActor
+    func testProposalShowsOnceAsCard() {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-seed-intention")
+        app.launch()
+        onboard(app)
+        let proposal = "¿El miércoles a las 8:00 hacemos tu primer check-in?"
+        let card = element(app, "chat.proactive.intention")
+        waitFor(card)
+        waitFor(app.buttons["chat.proactive.accept"])
+        waitFor(app.buttons["chat.proactive.dismiss"])
+        let copies = app.staticTexts.matching(NSPredicate(format: "label == %@", proposal))
+        XCTAssertEqual(copies.count, 1, "la propuesta no se repite como texto suelto")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "batch8-01-propuesta"
+        shot.lifetime = .keepAlways
+        add(shot)
+        app.terminate()
+
+        let again = makeApp(reset: false)
+        again.launchArguments.append("--uitest-seed-intention")
+        again.launch()
+        waitForChat(again)
+        waitFor(element(again, "chat.proactive.intention"))
+        XCTAssertEqual(again.staticTexts.matching(NSPredicate(format: "label == %@", proposal)).count, 1)
+        tap(again.buttons["chat.proactive.accept"])
+        waitFor(again.staticTexts.matching(identifier: "chat.userMessage")
+            .matching(NSPredicate(format: "label == 'Hagámoslo'")).firstMatch)
+        waitFor(element(again, "chat.proactive.outcome"))
+        XCTAssertEqual(again.staticTexts.matching(NSPredicate(format: "label == %@", proposal)).count, 1)
+    }
+
     /// 8. Mind sheet: tap al badge de plasticidad → mark + key/values.
     @MainActor
     func testPlasticityBadgeOpensMindSheet() {

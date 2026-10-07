@@ -488,6 +488,7 @@ final class AppModel: ObservableObject {
                                       store: store, telemetry: telemetry)
             self.desireEngine = engine
             desireEngine = engine
+            if UITestMode.seedsIntention { await UITestMode.seedIntention(engine, otherModel, sessionId: sessionId) }
             // Pulso al abrir la app (§5.8): reconcilia brechas contra el presupuesto.
             // Un despertar en background NO lo corre: ese pulso es del BGTask y notifica.
             let sid = sessionId

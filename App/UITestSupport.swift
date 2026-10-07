@@ -42,6 +42,19 @@ enum UITestMode {
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
     }
 
+    /// Una propuesta del deseo pendiente en el chat (batch 8 #1: una sola card).
+    static let seedsIntention = isActive && arguments.contains("--uitest-seed-intention")
+    static let seededProposal = "¿El miércoles a las 8:00 hacemos tu primer check-in?"
+
+    /// Idempotente entre relanzamientos: solo si aún no hay Intentions.
+    static func seedIntention(_ engine: DesireEngine, _ otherModel: OtherModel, sessionId: SessionID) async {
+        guard await engine.allIntentions().isEmpty else { return }
+        let id = await otherModel.ingestStated(statement: "Bajar 10 kg", desiredState: .progressCheckIn(everyDays: 7),
+                                               evidence: "uitest")
+        guard let goal = await otherModel.goal(id: id) else { return }
+        await engine.recordProposal(goal: goal, text: seededProposal, sessionId: sessionId)
+    }
+
     /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
     static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
 

@@ -155,13 +155,29 @@ public actor DesireEngine {
             : text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let intention = persist(lack: lack, proposedText: proposed, origin: origin)
-        // Persiste como turno del agente marcado proactive (canónico: entra al
-        // contexto del próximo turno). La distinción visual la lleva el chat vía
-        // el log de Intentions.
-        if let store, let sessionId {
-            try? store.append(sessionId: sessionId, message: .assistant([.text(proposed)]))
-        }
+        appendTurn(intention, sessionId: sessionId)
         recordPulse()
+        return intention
+    }
+
+    /// Persiste la propuesta como turno del agente MARCADO como Intention
+    /// (batch 8 #1): el modelo ve el texto en su contexto y el chat la pinta UNA
+    /// vez, como card con "Hagámoslo / Ahora no" — nunca texto suelto + card.
+    private func appendTurn(_ intention: Intention, sessionId: SessionID?) {
+        guard let store, let sessionId else { return }
+        let tag = ProactiveMessage(kind: .intention(id: intention.id), text: intention.proposedText,
+                                   at: intention.createdAt).tag
+        try? store.append(sessionId: sessionId, message: .assistant([.text(intention.proposedText)]), proactive: tag)
+    }
+
+    /// Una propuesta ya redactada (siembra del modo UI-test y reparaciones):
+    /// mismo log y mismo turno marcado que el pulso.
+    @discardableResult
+    public func recordProposal(goal: Goal, text: String, sessionId: SessionID?,
+                               origin: IntentionOrigin = .foreground) -> Intention {
+        let lack = Lack(goal: goal, reading: ObservableReading(satisfied: false, detail: "propuesta"))
+        let intention = persist(lack: lack, proposedText: text, origin: origin)
+        appendTurn(intention, sessionId: sessionId)
         return intention
     }
 
@@ -305,4 +321,42 @@ extension DesireEngine {
     dueño y lo que su teléfono observa. Propones acciones concretas y respetuosas; nunca \
     inventas metas ni presionas. Respondes SOLO con el texto de una propuesta breve en español.
     """
+}
+
+/// Batch 8 #1: las propuestas viejas se persistieron como turno assistant SIN
+/// marca y el chat las pintaba dos veces (texto suelto + card). Se marcan una
+/// vez: el turno del mismo texto escrito junto a la Intention pasa a ser su card.
+public enum IntentionTurnRepair {
+    public static func register(_ m: inout DatabaseMigrator) {
+        m.registerMigration("v18-intention-turn-tag") { db in
+            try run(db)
+        }
+    }
+
+    @discardableResult
+    public static func run(_ db: Database, window: TimeInterval = 300) throws -> Int {
+        var tagged = 0
+        for row in try Row.fetchAll(db, sql: "SELECT id, proposed_text, created_at FROM intention") {
+            let id: String = row["id"]
+            let text: String = row["proposed_text"]
+            let at: Double = row["created_at"]
+            let candidates = try Row.fetchAll(db, sql: """
+                SELECT id, content_json FROM turn_event
+                WHERE role='assistant' AND proactive_json IS NULL AND created_at BETWEEN ? AND ?
+                ORDER BY id ASC
+                """, arguments: [at - window, at + window])
+            for candidate in candidates {
+                let json: String = candidate["content_json"]
+                guard let blocks = try? SymbolicStore.decodeBlocks(json), blocks == [.text(text)] else { continue }
+                let tag = ProactiveMessage(kind: .intention(id: id), text: text,
+                                           at: Date(timeIntervalSince1970: at)).tag
+                let tagJSON = String(decoding: try JSONEncoder().encode(tag), as: UTF8.self)
+                let rowId: Int64 = candidate["id"]
+                try db.execute(sql: "UPDATE turn_event SET proactive_json=? WHERE id=?", arguments: [tagJSON, rowId])
+                tagged += 1
+                break
+            }
+        }
+        return tagged
+    }
 }

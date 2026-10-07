@@ -346,11 +346,15 @@ public enum IntentionTurnRepair {
                 ORDER BY id ASC
                 """, arguments: [at - window, at + window])
             for candidate in candidates {
+                // Congelado (no usa ContentBlock/ProactiveTag vivos): un único
+                // bloque {"type":"text","text":…} y el tag {kind, ref, at}.
                 let json: String = candidate["content_json"]
-                guard let blocks = try? SymbolicStore.decodeBlocks(json), blocks == [.text(text)] else { continue }
-                let tag = ProactiveMessage(kind: .intention(id: id), text: text,
-                                           at: Date(timeIntervalSince1970: at)).tag
-                let tagJSON = String(decoding: try JSONEncoder().encode(tag), as: UTF8.self)
+                guard let blocks = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]],
+                      blocks.count == 1, blocks[0]["type"] as? String == "text",
+                      blocks[0]["text"] as? String == text else { continue }
+                let tagData = try JSONSerialization.data(withJSONObject: ["kind": "intention", "ref": id, "at": at],
+                                                         options: [.sortedKeys])
+                let tagJSON = String(decoding: tagData, as: UTF8.self)
                 let rowId: Int64 = candidate["id"]
                 try db.execute(sql: "UPDATE turn_event SET proactive_json=? WHERE id=?", arguments: [tagJSON, rowId])
                 tagged += 1

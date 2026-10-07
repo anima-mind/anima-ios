@@ -635,7 +635,7 @@ import Testing
             let n = await Self.turn(notes, "anota qué hay en la nevera: leche y huevos")
             let files = (try? FileManager.default.contentsOfDirectory(at: notes.notesRoot, includingPropertiesForKeys: nil)) ?? []
             let content = files.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.joined()
-            let noted = files.count == 1 && content.contains("leche") && !n.text.contains("nada pendiente")
+            let noted = files.count == 1 && content.lowercased().contains("leche") && !n.text.contains("nada pendiente")
             Self.row("46 anota qué hay en la nevera", run, n, noted)
             #expect(noted, "corrida \(run)")
         }

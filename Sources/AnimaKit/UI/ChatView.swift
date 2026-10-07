@@ -125,7 +125,7 @@ public final class ChatViewModel: ObservableObject {
         }
         var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
                                      imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
-        message.toolFailure = turn.role == .assistant && turn.text.hasPrefix(ToolFailureNotice.marker)
+        message.toolFailure = turn.role == .assistant && ToolFailureNotice.isNotice(turn.text)
         if let createdAt = turn.createdAt { message.sentAt = createdAt }
         return message
     }
@@ -405,13 +405,17 @@ public final class ChatViewModel: ObservableObject {
 
     /// "Hagámoslo": la propuesta queda aceptada Y el dueño se lo dice a ella,
     /// para que la EJECUTE (cree el recordatorio, el bloque…) y responda.
+    /// Batch 8 #6: el turno pide EJECUTARLA con la tool (ligada a la meta), no solo contestar.
     public func accept(_ message: DisplayMessage) async {
         await resolve(message, outcome: .accepted)
-        let text = Self.acceptText(message.text)
-        await run(DisplayMessage(role: .user, text: text), content: [.text(text)])
+        let goalId: String? = if let id = message.intentionId { await desireEngine?.intention(id: id)?.goalId } else { nil }
+        let text = Self.acceptText(message.text, goalId: goalId)
+        await run(DisplayMessage(role: .user, text: IntentionAcceptance.shownText), content: [.text(text)])
     }
 
-    public static func acceptText(_ proposal: String) -> String { "Acepto: \(proposal)" }
+    public static func acceptText(_ proposal: String, goalId: String? = nil) -> String {
+        IntentionAcceptance.prompt(proposal: proposal, goalId: goalId)
+    }
 
     public func dismiss(_ message: DisplayMessage) async {
         await resolve(message, outcome: .dismissed)
@@ -655,6 +659,9 @@ public final class ChatViewModel: ObservableObject {
                     let body = assistant.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     assistant.text = body.isEmpty ? notice : notice + "\n\n" + body
                 }
+            case .retracted:
+                // El loop descartó una respuesta que afirmaba algo no ejecutado: reintenta.
+                assistant.text = ""
             case .toolStarted, .toolFinished, .assistantMessage, .turnFinished:
                 break
             }

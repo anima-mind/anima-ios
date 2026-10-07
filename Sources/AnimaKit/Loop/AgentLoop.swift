@@ -28,6 +28,9 @@ public enum LoopEvent: Sendable, Equatable {
     /// Una tool falló y el texto final no lo admitía: la línea "⚠️ No pude …"
     /// que el loop antepuso al mensaje (la card la muestra con alerta).
     case toolFailure(String)
+    /// El texto ya emitido se descarta: afirmaba una escritura que no ocurrió y
+    /// el loop reintenta (batch 8 #6). La UI vacía la burbuja en curso.
+    case retracted
 }
 
 public actor AgentLoop {
@@ -273,7 +276,10 @@ public actor AgentLoop {
             emit(.context(fit.gauge(messages)))
             try store.append(sessionId: sessionId, message: Message(role: .user, content: content), surface: surface)
             // No se escribe al brain en caliente: se encola para el Consolidator (§5.4 a).
-            try? inbox?.enqueue(sessionId: sessionId, text: userText, source: "turn")
+            // La instrucción de "Hagámoslo" no es algo que el dueño dijo: no va al sueño.
+            if !IntentionAcceptance.isAcceptance(userText) {
+                try? inbox?.enqueue(sessionId: sessionId, text: userText, source: "turn")
+            }
 
             var iteration = 1
             var tokensUsed = 0
@@ -290,6 +296,14 @@ public actor AgentLoop {
             var localRedirected = false
             // Modelo local: ¿alguna tool del turno escribió (no solo leyó)?
             var localWrote = false
+            // Batch 8 #6: ¿hubo una escritura EXITOSA en el turno? y el único
+            // reintento por afirmar una escritura sin ejecutarla.
+            var wroteSuccessfully = false
+            // Una consulta exitosa (list/search/read) describe lo que YA existe
+            // ("Programados: …"): ahí un participio no es una afirmación nueva.
+            var readSucceeded = false
+            var claimRetried = false
+            let claimGuardActive = ActionClaimGuard.canWrite(allSpecs)
 
             while true {
                 let elapsed = Date().timeIntervalSince(turnStart)
@@ -374,11 +388,28 @@ public actor AgentLoop {
                 // Nunca mentir tras un error: si una intención falló y el texto
                 // final no lo admite, la línea fija va al frente.
                 var content = response.content
-                if response.stopReason != .toolUse, response.stopReason != .pauseTurn,
-                   let notice = ToolFailureNotice.notice(failures: failures.entries,
-                                                         finalText: Self.plainText(response.content)) {
+                let closes = response.stopReason != .toolUse && response.stopReason != .pauseTurn
+                var noticed = false
+                if closes, let notice = ToolFailureNotice.notice(failures: failures.entries,
+                                                                 finalText: Self.plainText(response.content)) {
                     content = ToolFailureNotice.prepend(notice, to: content)
                     emit(.toolFailure(notice))
+                    noticed = true
+                }
+                // Nunca afirmar una escritura que no ocurrió (todos los proveedores):
+                // un reintento pidiendo ejecutarla; si tampoco, la línea fija al frente.
+                if closes, !noticed, claimGuardActive, !wroteSuccessfully, !readSucceeded,
+                   ActionClaimGuard.claimsWrite(Self.plainText(content)) {
+                    if !claimRetried {
+                        claimRetried = true
+                        emit(.retracted)
+                        messages.append(.assistant(content))
+                        messages.append(.user(ActionClaimGuard.nudge))
+                        iteration += 1
+                        continue
+                    }
+                    content = ToolFailureNotice.prepend(ActionClaimGuard.notice, to: content)
+                    emit(.toolFailure(ActionClaimGuard.notice))
                 }
                 // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
                 // el turno cerró sin tools ⇒ dónde se hace, determinista.
@@ -479,6 +510,13 @@ public actor AgentLoop {
                             }
                             if parameterError {
                                 result.content = LocalToolAdapter.retryHint(tool: intended, message: result.content)
+                            }
+                        }
+                        if !result.isError, !adapterArtifact {
+                            if ActionClaimGuard.isWrite(tool: realName, input: realInput) {
+                                wroteSuccessfully = true
+                            } else if ActionClaimGuard.writeTools.contains(realName) {
+                                readSucceeded = true
                             }
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))

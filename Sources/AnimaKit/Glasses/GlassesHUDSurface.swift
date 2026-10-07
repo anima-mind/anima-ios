@@ -361,6 +361,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
                 reply += delta
                 if !refused { await streamed(delta, reply: reply, turn: turn) }
             case .refused: refused = true
+            case .retracted: reply = ""
             case .toolFailure(let notice) where !reply.hasPrefix(notice):
                 reply = reply.isEmpty ? notice : notice + "\n\n" + reply
             case .error(let message): failure = message

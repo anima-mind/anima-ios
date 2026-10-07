@@ -306,7 +306,11 @@ public struct VisibleTurn: Sendable, Equatable {
         for block in blocks {
             switch block {
             case .text(let t):
-                if role == .user, t == HUDPhoto.prompt {
+                if role == .user, ActionClaimGuard.isNudge(t) {
+                    return nil   // turno sintético del harness: jamás se pinta
+                } else if role == .user, IntentionAcceptance.isAcceptance(t) {
+                    texts.append(IntentionAcceptance.shownText)
+                } else if role == .user, t == HUDPhoto.prompt {
                     texts.append(HUDPhoto.question)   // foto del botón de las gafas
                 } else if role == .user, t.hasPrefix(AudioTool.transcriptPrefix) {
                     voice = true

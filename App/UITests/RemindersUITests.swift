@@ -22,6 +22,10 @@ final class RemindersUITests: AnimaUITestCase {
         XCTAssertFalse(app.tabBars.buttons["Aprobaciones"].exists)
 
         waitUntil(notificationsCount(app), "label == '1 recordatorio programado'")
+        // Batch 8 #7: "Avisarme cuando despierte" vive aquí (sin permiso del iPhone: deshabilitado).
+        let wake = element(app, "settings.notifications.wake")
+        waitFor(wake)
+        XCTAssertFalse(wake.isEnabled)
         // "N programados" → la tab Recordatorios.
         tap(element(app, "settings.notifications.list"))
         waitUntil(app.tabBars.buttons["Recordatorios"], "isSelected == true")

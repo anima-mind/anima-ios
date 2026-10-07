@@ -298,6 +298,8 @@ public final class ChatViewModel: ObservableObject {
     @Published public var pendingApprovals = 0
     /// Tap al aviso → Ajustes → Mente (lo cablea el shell).
     public var onOpenApprovals: (() -> Void)?
+    /// El Mind sheet (badge de plasticidad o el aviso de despertar, batch 8 #7).
+    @Published public var showMindSheet = false
     /// Deep link "ver en el teléfono": el turno al que hay que hacer scroll.
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
@@ -721,7 +723,6 @@ public struct ChatView: View {
     @ObservedObject private var model: ChatViewModel
     @State private var expandedThoughts: Set<UUID> = []
     @State private var expandedAutomations: Set<UUID> = []
-    @State private var showMindSheet = false
     @State private var showContextSheet = false
     /// Alto medido del sheet de contexto (abraza su contenido con cualquier Dynamic Type).
     @State private var contextSheetHeight = ContextSheet.initialHeight
@@ -834,7 +835,7 @@ public struct ChatView: View {
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Theme.Colors.surface)
         }
-        .sheet(isPresented: $showMindSheet) {
+        .sheet(isPresented: $model.showMindSheet) {
             MindSheet(mind: model.mind, glasses: model.glasses)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
@@ -892,7 +893,7 @@ public struct ChatView: View {
                     .frame(width: Self.headerMarkSize + Theme.Space.stack * 2)
                     .accessibilityHidden(true)
                 Button {
-                    showMindSheet = true
+                    model.showMindSheet = true
                     Task { await model.loadMind() }
                 } label: {
                     PlasticityBadge(mind: model.mind)

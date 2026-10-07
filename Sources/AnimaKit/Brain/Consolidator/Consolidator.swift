@@ -26,6 +26,8 @@ public actor Consolidator {
         public var completed: Bool
         /// Candidatos que el DistillGuard rechazó (eco/meta/pregunta), con razón en el cycle_log.
         public var rejected: Int = 0
+        /// Metas creadas o reforzadas durante el ciclo (el aviso de despertar: "1 meta al día").
+        public var goalsUpdated: Int = 0
     }
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
@@ -543,6 +545,12 @@ public actor Consolidator {
         let summary = logged?.summary ?? ""
         // Antes del reflection el cycle_log aún no existe: cuenta lo de cycle_distilled.
         let rejected = try logged?.rejected?.count ?? rejectedDistilled(cycle: cycle).count
+        let goalsUpdated = try queue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM goal WHERE status != 'abandoned'
+                AND updated_at >= (SELECT started_at FROM consolidation_cycle WHERE cycle=?)
+                """, arguments: [cycle]) ?? 0
+        }
         return CycleReport(
             cycle: cycle,
             distilled: distilledCount,
@@ -553,7 +561,8 @@ public actor Consolidator {
             reconsolidated: reconsolidated,
             reflectionSummary: summary,
             completed: completed,
-            rejected: rejected)
+            rejected: rejected,
+            goalsUpdated: goalsUpdated)
     }
 
     static let rejectedPrefix = "REJECTED: "

@@ -125,6 +125,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case goal(id: String)
     /// Una Intention del pulso en background: chat con el foco en la propuesta.
     case intention(id: String)
+    /// El aviso de despertar (batch 8 #7): abre el Mind sheet.
+    case mind
 
     public static let scheme = "anima"
 
@@ -146,6 +148,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case .intention(let id):
             components.host = "intention"
             components.queryItems = [URLQueryItem(name: "id", value: id)]
+        case .mind:
+            components.host = "mind"
         }
         return components.url!
     }
@@ -166,6 +170,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
             return id.map { .goal(id: $0) }
         case "intention":
             return id.map { .intention(id: $0) }
+        case "mind":
+            return .mind
         default:
             return nil
         }

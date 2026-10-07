@@ -104,6 +104,8 @@ final class AppModel: ObservableObject {
     // Capa proactiva: recordatorios de Anima, notificaciones locales y la
     // reconciliación de lo vencido mientras la app no miraba.
     private var reminderStore: AnimaReminderStore?
+    /// El aviso de despertar (batch 8 #7).
+    private var wakeNotifier: WakeNotifier?
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
@@ -246,11 +248,17 @@ final class AppModel: ObservableObject {
                                                          selfName: { await selfModel.name() },
                                                          preference: preference)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+            // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño.
+            let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
+            let wake = WakeNotifier(scheduler: notifications, general: preference, preference: wakePreference,
+                                    selfName: { await selfModel.name() })
+            self.wakeNotifier = wake
             let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
-                                                                preference: preference)
+                                                                preference: preference, wake: wakePreference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
             notificationsModel.onEnabledChanged = { await proactive?.sync() }
+            notificationsModel.onWakeChanged = { on in if !on { await wake.cancelPending() } }
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
             remindersList.onChange = { [weak notificationsModel] in
@@ -451,7 +459,10 @@ final class AppModel: ObservableObject {
                                             telemetry: telemetry, selfModel: selfModel,
                                             realRegister: realRegister, otherModel: otherModel)
             self.consolidator = consolidator
-            Self.shared.set(consolidator, scheduler: sleepScheduler)
+            let wake = wakeNotifier
+            Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night in
+                await wake?.cycleCompleted(report, night: night)
+            })
             // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
             let other = otherModel
             settingsModel?.nightSimulator = NightSimulator(consolidator: consolidator, goalCount: {
@@ -604,8 +615,8 @@ final class AppModel: ObservableObject {
     private func runForegroundFallbackIfNeeded(_ consolidator: Consolidator) async {
         let last = await consolidator.lastCycleAt()
         guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else { return }
-        let scheduler = sleepScheduler
-        Task.detached { await scheduler.runResumable(consolidator) }
+        // Por el holder: un ciclo completo también avisa que despertó (batch 8 #7).
+        Task.detached { await AppModel.shared.run(isExpired: { false }) }
     }
 
     /// Registro del BGProcessingTask (§5.4). Se llama en app launch; el runner
@@ -821,6 +832,14 @@ final class AppModel: ObservableObject {
             Task {
                 await chatModel?.loadProactiveIntentions()
                 chatModel?.focus(.intention(id: id))
+            }
+        case .mind:
+            // Aviso de despertar (batch 8 #7): el chat con el Mind sheet abierto.
+            guard deferUntilReady(link) else { return }
+            selectedTab = .chat
+            Task {
+                await chatModel?.loadMind()
+                chatModel?.showMindSheet = true
             }
         }
     }

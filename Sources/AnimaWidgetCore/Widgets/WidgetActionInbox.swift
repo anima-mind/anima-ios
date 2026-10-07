@@ -26,14 +26,6 @@ public struct WidgetAction: Codable, Equatable, Sendable, Identifiable {
         self.kind = kind
         self.createdAt = createdAt
     }
-
-    /// La misma acción que dispara el botón de la notificación equivalente.
-    public var proactiveAction: ProactiveNotificationAction {
-        switch kind {
-        case .reminderDone(let id): return .reminderDone(id: id)
-        case .checkInProgress(let goalId): return .checkIn(goalId: goalId, answer: .yes)
-        }
-    }
 }
 
 public struct WidgetActionInbox: Sendable {
@@ -114,8 +106,8 @@ extension WidgetSnapshot {
             let reminder = copy.reminders[index]
             if reminder.cadence == .none || reminder.delivered {
                 copy.reminders.remove(at: index)
-            } else if let next = AnimaReminderStore.nextOccurrence(after: max(now, reminder.fireAt), of: reminder.fireAt,
-                                                                    repeat: reminder.cadence, calendar: calendar) {
+            } else if let next = reminder.cadence.nextOccurrence(after: max(now, reminder.fireAt), of: reminder.fireAt,
+                                                                       calendar: calendar) {
                 copy.reminders[index].fireAt = next
             }
         case .checkInProgress(let goalId):

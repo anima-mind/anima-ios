@@ -194,8 +194,7 @@ extension WidgetSnapshot {
     static func occurrence(of reminder: Reminder, from start: Date, calendar: Calendar) -> Date {
         guard reminder.cadence != .none, reminder.fireAt < start, !reminder.delivered else { return reminder.fireAt }
         let probe = start.addingTimeInterval(-1)
-        return AnimaReminderStore.nextOccurrence(after: probe, of: reminder.fireAt, repeat: reminder.cadence,
-                                                 calendar: calendar) ?? reminder.fireAt
+        return reminder.cadence.nextOccurrence(after: probe, of: reminder.fireAt, calendar: calendar) ?? reminder.fireAt
     }
 
     /// Hora del seguimiento si toca el día `start` (nil si no toca o no hay).

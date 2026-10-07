@@ -6,21 +6,6 @@
 import Foundation
 import GRDB
 
-/// Cadencia compartida por recordatorios y check-ins.
-public enum ProactiveCadence: String, Sendable, Codable, Equatable, CaseIterable {
-    case none, daily, weekdays, weekly
-
-    /// "cada día", "entre semana", "cada semana" (nil si no se repite).
-    public var phrase: String? {
-        switch self {
-        case .none: return nil
-        case .daily: return "cada día"
-        case .weekdays: return "entre semana"
-        case .weekly: return "cada semana"
-        }
-    }
-}
-
 public struct AnimaReminder: Sendable, Equatable, Identifiable {
     public enum Status: String, Sendable, Equatable {
         case scheduled, fired, done, cancelled
@@ -209,25 +194,10 @@ public actor AnimaReminderStore {
 
     // MARK: - Repetición
 
-    /// Próxima ocurrencia estrictamente posterior a `reference`, a la hora/minuto
-    /// (y día de semana, si aplica) de `fireAt`. nil si no se repite.
+    /// Próxima ocurrencia estrictamente posterior a `reference` (ver ProactiveCadence).
     public static func nextOccurrence(after reference: Date, of fireAt: Date, repeat cadence: ProactiveCadence,
                                       calendar: Calendar) -> Date? {
-        let parts = calendar.dateComponents([.hour, .minute, .weekday], from: fireAt)
-        func next(weekday: Int?) -> Date? {
-            var c = DateComponents()
-            c.hour = parts.hour
-            c.minute = parts.minute
-            c.second = 0
-            c.weekday = weekday
-            return calendar.nextDate(after: reference, matching: c, matchingPolicy: .nextTime)
-        }
-        switch cadence {
-        case .none: return nil
-        case .daily: return next(weekday: nil)
-        case .weekly: return next(weekday: parts.weekday)
-        case .weekdays: return (2...6).compactMap { next(weekday: $0) }.min()
-        }
+        cadence.nextOccurrence(after: reference, of: fireAt, calendar: calendar)
     }
 
     /// Las próximas `count` ocurrencias desde fire_at (incluida) para programar

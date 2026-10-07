@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import GRDB
 @testable import AnimaKit
+@testable import AnimaWidgetCore
 
 /// Snapshot de widgets: contenido, orden, proyección del día y vacío amable.
 @Suite struct WidgetSnapshotTests {

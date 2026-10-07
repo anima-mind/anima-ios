@@ -11,11 +11,11 @@ public struct AnimaDateText: Sendable {
         self.calendar = calendar
     }
 
-    static let weekdays = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
-    static let weekdaysShort = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"]
-    static let months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+    package static let weekdays = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+    package static let weekdaysShort = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"]
+    package static let months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
                          "septiembre", "octubre", "noviembre", "diciembre"]
-    static let monthsShort = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+    package static let monthsShort = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
     /// "8:30 p. m." / "9:05 a. m." / "12:00 p. m.".
     public func time(_ date: Date) -> String {

@@ -64,3 +64,13 @@ public struct ProactiveActionHandler: Sendable {
         return handled
     }
 }
+
+extension WidgetAction {
+    /// La misma acción que dispara el botón de la notificación equivalente.
+    public var proactiveAction: ProactiveNotificationAction {
+        switch kind {
+        case .reminderDone(let id): return .reminderDone(id: id)
+        case .checkInProgress(let goalId): return .checkIn(goalId: goalId, answer: .yes)
+        }
+    }
+}

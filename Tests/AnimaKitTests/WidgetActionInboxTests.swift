@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import GRDB
 @testable import AnimaKit
+@testable import AnimaWidgetCore
 
 /// Botones de los widgets: cola durable en el App Group + el MISMO handler de
 /// las notificaciones + repintado optimista.

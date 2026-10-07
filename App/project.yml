@@ -62,6 +62,8 @@ targets:
     dependencies:
       - package: AnimaKit
         product: AnimaKit
+      - package: AnimaKit
+        product: AnimaWidgetCore
       - package: Firebase
         product: FirebaseRemoteConfig
       - package: Firebase
@@ -133,7 +135,8 @@ targets:
         # + App Group group.com.joshuamoreno1.anima.widgets (base + snapshot de widgets).
         CODE_SIGN_ENTITLEMENTS: Anima.entitlements
 
-  # Extensión de widgets: lee SOLO el snapshot JSON del App Group (jamás GRDB).
+  # Extensión de widgets: lee SOLO el snapshot JSON del App Group (jamás GRDB):
+  # linkea AnimaWidgetCore, no AnimaKit (sin GRDB ni el harness en el binario).
   # Comparte con la app App/WidgetsShared (intents, vistas, atributos de la Live
   # Activity). Mismo App Group que la app; bundle id registrado por el dueño.
   AnimaWidgets:
@@ -145,7 +148,7 @@ targets:
       - path: WidgetsShared
     dependencies:
       - package: AnimaKit
-        product: AnimaKit
+        product: AnimaWidgetCore
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
     info:

@@ -82,6 +82,10 @@ public struct WidgetCopy: Sendable {
     /// La primera letra en minúscula dentro de una frase ("Llamar" → "llamar"),
     /// salvo siglas/nombres propios (segunda letra mayúscula).
     public static func inline(_ text: String) -> String {
-        CheckInScheduler.inline(text)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first, first.isUppercase else { return trimmed }
+        let rest = trimmed.dropFirst()
+        guard let second = rest.first, second.isLowercase else { return trimmed }
+        return first.lowercased() + rest
     }
 }

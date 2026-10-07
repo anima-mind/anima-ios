@@ -9,7 +9,7 @@
 import AppIntents
 import Foundation
 import WidgetKit
-import AnimaKit
+import AnimaWidgetCore
 
 /// Puente con el proceso de la app: el shell instala `apply` al lanzar. En la
 /// extensión queda nil (la acción espera en la cola).

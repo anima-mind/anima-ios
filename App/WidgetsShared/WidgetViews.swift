@@ -5,7 +5,7 @@
 
 import SwiftUI
 import WidgetKit
-import AnimaKit
+import AnimaWidgetCore
 
 // MARK: - Piezas
 

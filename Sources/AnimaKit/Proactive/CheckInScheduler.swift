@@ -43,10 +43,6 @@ public enum CheckInScheduler {
     /// La meta dentro de una frase: "Ahorrar 10M" → "ahorrar 10M" (no toca
     /// siglas ni nombres propios: solo si la segunda letra es minúscula).
     static func inline(_ statement: String) -> String {
-        let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.first, first.isUppercase else { return trimmed }
-        let rest = trimmed.dropFirst()
-        guard let second = rest.first, second.isLowercase else { return trimmed }
-        return first.lowercased() + rest
+        WidgetCopy.inline(statement)
     }
 }

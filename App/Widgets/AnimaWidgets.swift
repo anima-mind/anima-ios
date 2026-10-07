@@ -6,7 +6,7 @@ import ActivityKit
 import AppIntents
 import SwiftUI
 import WidgetKit
-import AnimaKit
+import AnimaWidgetCore
 
 @main
 struct AnimaWidgetBundle: WidgetBundle {

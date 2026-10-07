@@ -115,7 +115,7 @@ final class AppModel: ObservableObject {
     private var reminderStore: AnimaReminderStore?
     /// Widgets: snapshot JSON en el App Group + la cola de sus botones.
     private var widgetPublisher: WidgetPublisher?
-    private var widgetDrain: Task<Void, Never>?
+    private let widgetDrain = SerialTaskChain()
     /// Live Activity del sueño en foreground.
     private let sleepActivity = SleepActivityController()
     private var proactiveScheduler: ProactiveScheduler?
@@ -595,20 +595,18 @@ final class AppModel: ObservableObject {
     /// Aplica la cola de botones de los widgets con el MISMO handler de las
     /// notificaciones. Serializado: nunca dos drenajes a la vez.
     func applyWidgetActions() async {
-        while let running = widgetDrain { await running.value }
+        await widgetDrain.run { [weak self] in await self?.drainWidgetActions() }
+    }
+
+    private func drainWidgetActions() async {
         guard reminderStore != nil, let inbox = WidgetActionInbox.shared(), !inbox.pending().isEmpty else { return }
         let handler = ProactiveActionHandler(reminders: reminderStore, otherModel: otherModel,
                                              scheduler: proactiveScheduler)
-        let task = Task { @MainActor in
-            await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) }
-            await self.goalsModel?.refresh()
-            await self.remindersModel?.refresh()
-            await self.settingsModel?.notifications?.refresh()
-            await self.publishWidgets()
-        }
-        widgetDrain = task
-        await task.value
-        widgetDrain = nil
+        await inbox.drain { await handler.handle($0.proactiveAction, note: ProactiveActionHandler.widgetNote) }
+        await goalsModel?.refresh()
+        await remindersModel?.refresh()
+        await settingsModel?.notifications?.refresh()
+        await publishWidgets()
     }
 
     /// El intent del widget corrió en el proceso de la app (posiblemente lanzada

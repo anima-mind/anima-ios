@@ -809,8 +809,13 @@ public struct ChatView: View {
                         .padding(Theme.Space.screenInset)
                     }
                     // Solo el offset INICIAL al fondo: anclar siempre al fondo peleaba
-                    // con el scrollTo por delta y el chat "bailaba" (5b #7).
-                    .followingBottom($followsBottom, slack: Self.followSlack)
+                    // con el scrollTo por delta y el chat "bailaba" (5b #7). Cualquier
+                    // crecimiento (texto, thought line, hora, cards, fotos) baja al
+                    // último si el dueño no subió a leer.
+                    .followingBottom($followsBottom, slack: Self.followSlack) {
+                        guard let last = model.messages.last else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
@@ -1499,13 +1504,59 @@ public struct ChatView: View {
 }
 
 extension View {
-    /// Ancla inicial al fondo + si el usuario sigue al fondo.
-    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat) -> some View {
-        defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onScrollGeometryChange(for: Bool.self) { geo in
-                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
-            } action: { _, value in
-                atBottom.wrappedValue = value
+    /// Ancla inicial al fondo + si el usuario sigue al fondo. Solo un scroll
+    /// hacia arriba (arrastre, inercia, animación) lo saca del fondo; que crezca
+    /// el contenido no (batch 10 #1: una ráfaga de más de `slack` pt lo apagaba
+    /// antes del scrollTo). Mientras sigue al fondo, todo crecimiento llama
+    /// `onGrowth` (al soltar, si creció durante el gesto).
+    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat,
+                         onGrowth: @escaping () -> Void) -> some View {
+        modifier(BottomFollower(atBottom: atBottom, slack: slack, onGrowth: onGrowth))
+    }
+}
+
+struct BottomFollower: ViewModifier {
+    @Binding var atBottom: Bool
+    let slack: CGFloat
+    let onGrowth: () -> Void
+    @State private var phase: ScrollPhase = .idle
+    @State private var grewDuringGesture = false
+
+    struct Metrics: Equatable {
+        var offset: CGFloat
+        var visibleBottom: CGFloat
+        var content: CGFloat
+
+        init(_ geo: ScrollGeometry) {
+            offset = geo.contentOffset.y
+            visibleBottom = geo.contentOffset.y + geo.containerSize.height
+            content = geo.contentSize.height
+        }
+
+        func atEnd(slack: CGFloat) -> Bool { visibleBottom >= content - slack }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollGeometryChange(for: Metrics.self) { Metrics($0) } action: { old, new in
+                if new.atEnd(slack: slack) {
+                    atBottom = true
+                } else if phase != .idle, new.offset < old.offset - 0.5 {
+                    atBottom = false
+                }
+                guard new.content > old.content else { return }
+                if phase != .idle {
+                    grewDuringGesture = true
+                } else if atBottom {
+                    onGrowth()
+                }
+            }
+            .onScrollPhaseChange { _, newPhase, _ in
+                phase = newPhase
+                guard newPhase == .idle, grewDuringGesture else { return }
+                grewDuringGesture = false
+                if atBottom { onGrowth() }
             }
     }
 }

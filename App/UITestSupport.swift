@@ -257,6 +257,14 @@ struct UITestScriptedProvider: Provider {
         ¿Te lo dejo como recordatorio?
         """
 
+    /// Respuesta larga (batch 10 #1): desborda la pantalla y llega en ráfagas de
+    /// 3 párrafos (>80 pt por frame, como un stream real que se acumula entre
+    /// frames) durante ~13 s: ejercita el auto-scroll y el "no me jales".
+    static let longReplyEnd = "Fin de la respuesta larga."
+    static let longReply = (1...48).map { "Punto \($0): una línea con texto suficiente para ocupar espacio en la pantalla del chat." }
+        .joined(separator: "\n\n") + "\n\n" + longReplyEnd
+    static let longReplyDelay: Duration = .milliseconds(800)
+
     static func plan(for ctx: AssembledContext) -> Plan {
         let inWorkshop = ctx.messages.contains { message in
             message.role == .system && message.content.contains { block in
@@ -276,6 +284,7 @@ struct UITestScriptedProvider: Provider {
             return nil
         }.joined(separator: " ")
         if text.lowercased().contains("markdown") { return .text(markdownReply) }
+        if text.lowercased().contains("respuesta larga") { return .text(longReply) }
         if text.lowercased().contains("agéndame") { return .calendarCreate }
         return text.lowercased().contains("calendario") ? .calendarTool : .text(fixedReply)
     }
@@ -294,9 +303,9 @@ struct UITestScriptedProvider: Provider {
                     // Resumen de razonamiento: la thought line queda en pantalla
                     // (expandible) para ejercitar su tap con el teclado abierto.
                     continuation.yield(.thinkingDelta(Self.thought))
-                    let delay: Duration = reply == Self.skillReply || reply == Self.markdownReply
-                        ? .milliseconds(40) : Self.chunkDelay
-                    for chunk in Self.chunks(reply) {
+                    let delay: Duration = reply == Self.longReply ? Self.longReplyDelay
+                        : reply == Self.skillReply || reply == Self.markdownReply ? .milliseconds(40) : Self.chunkDelay
+                    for chunk in reply == Self.longReply ? Self.bursts(reply) : Self.chunks(reply) {
                         try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }
                         continuation.yield(.textDelta(chunk))
@@ -325,6 +334,15 @@ struct UITestScriptedProvider: Provider {
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Ráfagas de 3 párrafos.
+    static func bursts(_ text: String) -> [String] {
+        let paragraphs = text.components(separatedBy: "\n\n")
+        return stride(from: 0, to: paragraphs.count, by: 3).map { start in
+            let end = min(start + 3, paragraphs.count)
+            return paragraphs[start..<end].joined(separator: "\n\n") + (end < paragraphs.count ? "\n\n" : "")
         }
     }
 

@@ -12,7 +12,7 @@ import AnimaKit
 struct AskAnimaIntent: AppIntent {
     static let title: LocalizedStringResource = "Preguntarle a Anima"
     static let description = IntentDescription(
-        "Habla con Anima sin abrir la app: Siri te dice su respuesta y la conversación queda en el chat.")
+        "Habla con Anima sin abrir la app: te responde en voz y la conversación queda en el chat.")
     static let openAppWhenRun = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
 

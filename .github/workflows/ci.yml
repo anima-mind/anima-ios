@@ -34,6 +34,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: Metadata de App Intents sin "Siri" (ITMS-90626)
+        run: ./scripts/check-app-intents-metadata.sh
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project

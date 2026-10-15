@@ -475,7 +475,7 @@ public actor AgentLoop {
                             if !LocalToolAdapter.readOnlyTools.contains(call.name) { localWrote = true }
                             emit(.toolStarted(name: name))
                             toolCallCount += 1
-                            let executed = await sensorimotor.execute(name: name, input: input)
+                            let executed = await sensorimotor.execute(name: name, input: input, surface: surface)
                             result = toolProfile == .onDevice
                                 ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
                                 : executed

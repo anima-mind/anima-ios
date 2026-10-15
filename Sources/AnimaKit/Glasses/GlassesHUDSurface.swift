@@ -344,6 +344,8 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         await handle(.speechWindow(window))
     }
 
+    static let interruptedText = "Se interrumpió la respuesta en las gafas."
+
     /// El turno por el AgentLoop normal, marcado como superficie gafas.
     private func runTurn(mirror: String, content: [ContentBlock]) async {
         turnGeneration += 1
@@ -377,7 +379,11 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             default: break
             }
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            // El chat espejaba el turno en curso: que no quede ocupado.
+            await deliver(.status(Self.interruptedText))
+            return
+        }
         if refused {
             let text = reply.isEmpty ? "Prefiero no hacer eso. Dime qué buscas y encontramos otra vía." : reply
             await deliver(.declined(text: text, origin: .glassesHUD))

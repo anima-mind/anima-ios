@@ -86,12 +86,17 @@ public struct ConfirmationRequest: Sendable, Equatable {
     public var operation: String
     public var summary: String   // "crear evento 'X' mañana 9:00"
     public var input: JSONValue
+    /// Superficie del turno que la pidió: cada una confirma las suyas (Siri
+    /// jamás resuelve una del chat o de las gafas).
+    public var surface: SurfaceID
 
-    public init(tool: String, operation: String, summary: String, input: JSONValue) {
+    public init(tool: String, operation: String, summary: String, input: JSONValue,
+                surface: SurfaceID = .phoneChat) {
         self.tool = tool
         self.operation = operation
         self.summary = summary
         self.input = input
+        self.surface = surface
     }
 }
 

@@ -39,21 +39,39 @@ public enum HUDSummary {
         return lines.joined(separator: " ")
     }
 
-    /// Divide en frases (., ?, !, …) conservando el signo.
+    /// Divide en frases (., ?, !, …) conservando el signo. Solo corta si al
+    /// signo le sigue un espacio (o el final): "1.250.000", "3.30" y
+    /// "anima.app/x" quedan enteros; "..." y "?!" van juntos; y un punto tras
+    /// una abreviatura común ("Sr.", "p. m.", "etc.") no corta.
     public static func sentences(_ text: String) -> [String] {
+        let chars = Array(text)
         var out: [String] = []
         var current = ""
-        for ch in text {
+        for (i, ch) in chars.enumerated() {
             current.append(ch)
-            if ".?!…".contains(ch) {
-                let s = current.trimmingCharacters(in: .whitespaces)
-                if !s.isEmpty { out.append(s) }
-                current = ""
-            }
+            guard ".?!…".contains(ch) else { continue }
+            let next = i + 1 < chars.count ? chars[i + 1] : nil
+            if let next, !next.isWhitespace { continue }
+            if ch == ".", isAbbreviation(current) { continue }
+            let s = current.trimmingCharacters(in: .whitespaces)
+            if !s.isEmpty { out.append(s) }
+            current = ""
         }
         let tail = current.trimmingCharacters(in: .whitespaces)
         if !tail.isEmpty { out.append(tail) }
         return out
+    }
+
+    static let abbreviations: Set<String> = [
+        "sr", "sra", "srta", "dr", "dra", "lic", "ing", "prof", "etc", "ej", "p.ej", "aprox", "núm",
+        "pág", "av", "cra", "cl", "tel", "a", "p", "m", "a.m", "p.m", "vs", "dto", "cía",
+    ]
+
+    /// ¿La palabra que termina en este punto es una abreviatura?
+    private static func isAbbreviation(_ current: String) -> Bool {
+        let word = current.dropLast().split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
+        let bare = word.trimmingCharacters(in: CharacterSet(charactersIn: "(¿¡\"'")).lowercased()
+        return abbreviations.contains(bare)
     }
 
     /// Recorta a `limit` en frontera de palabra, con "…".

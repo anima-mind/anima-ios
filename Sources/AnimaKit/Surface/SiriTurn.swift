@@ -4,33 +4,41 @@
 // con un deadline, Siri dice "Te respondo en el chat" y el turno sigue; su
 // respuesta queda en el chat y `settled` avisa que llegó tarde. Nunca se afirma
 // un éxito: el texto final es el del loop (ActionClaimGuard / ToolFailureNotice
-// ya lo corrigieron), un error se dice como error y una acción que pide el ok
-// del dueño se le pregunta (o se cancela, fail-closed, si ya nadie escucha).
+// ya lo corrigieron), un error se dice como error (aunque hubiera texto a medias)
+// y una acción que pide el ok del dueño se le pregunta por Siri; las
+// confirmaciones de Siri viven en su propio buzón (SiriApprovals): jamás toca
+// las del chat o las gafas, y cuando Siri ya contestó, las suyas se niegan.
 
 import Foundation
 
 public enum SiriTurn {
     /// Lo que Siri espera antes de soltar el turno al chat.
     public static let deadline: Duration = .seconds(12)
+    /// Tope duro del turno entero: después se cancela (la base no queda retenida).
+    public static let hardLimit: Duration = .seconds(90)
     public static let spokenLimit = HUDSummary.spokenLimit
     public static let chatTail = "El resto te lo dejo en el chat."
     public static let deferredText = "Te respondo en el chat."
     public static let declinedDefault = "Prefiero no hacer eso. Dime qué buscas y encontramos otra vía."
-    public static let busyText = "Estoy terminando otra respuesta en el chat. Pregúntame en un momento."
+    public static let busyText = "Sigo con lo anterior. Te respondo en el chat y me preguntas en un momento."
     public static let emptyText = "No te escuché. ¿Qué le quieres decir a Anima?"
     public static let offlineText = "Estoy sin conexión. Inténtalo cuando vuelva la red o escríbeme en el chat."
+    public static let timeoutText = "Se acabó el tiempo para responder. Inténtalo de nuevo en el chat."
+    public static let lateNoticeText = "Tu respuesta está en el chat."
+    public static let noAnswerText = "No obtuve respuesta."
 
     public enum Outcome: Sendable, Equatable {
         /// La respuesta completa del turno (la que quedó en el chat).
         case replied(String)
         case declined(String)
-        /// El turno falló sin respuesta (red, key, modelo local no disponible…).
+        /// El turno falló (red, key, modelo local, tope de tiempo…), aunque
+        /// alcanzara a decir algo antes.
         case failed(String)
         /// Una acción del turno espera el ok del dueño (resumen de la acción).
         case needsApproval(String)
         /// Venció el deadline: el turno sigue y su respuesta queda en el chat.
         case deferred
-        /// Ya hay un turno del chat en curso.
+        /// Ya hay otro turno en curso (chat, gafas u otro Siri).
         case busy
         case empty
         case offline
@@ -44,10 +52,11 @@ public enum SiriTurn {
         case .replied(let text), .declined(let text):
             return speech(text)
         case .failed(let message):
-            let reason = HUDSummary.clip(HUDSummary.plain(message), 140)
+            let reason = HUDSummary.clip(plainSpeech(message), 140)
             return "No pude responderte: \(reason)"
-        case .needsApproval(let summary):
-            return "Para eso necesito tu confirmación (\(summary)). Ábrelo en el chat de Anima."
+        case .needsApproval:
+            // Siri ya no la va a preguntar y su buzón la niega al soltar el turno.
+            return "Eso necesitaba tu confirmación y no la tuve, así que no lo hice. Te dejo el detalle en el chat."
         case .deferred: return deferredText
         case .busy: return busyText
         case .empty: return emptyText
@@ -61,20 +70,17 @@ public enum SiriTurn {
         "Para eso necesito tu ok: \(summary). ¿Lo hago?"
     }
 
-    /// El aviso cuando la respuesta llegó tarde (Siri ya había soltado el turno).
+    /// El aviso cuando la respuesta llegó tarde (Siri ya había soltado el turno):
+    /// genérico, sin contenido de la respuesta en la pantalla bloqueada.
     public static func lateNotice(_ outcome: Outcome) -> String? {
         switch outcome {
-        case .replied(let text), .declined(let text):
-            return HUDSummary.clip(plainSpeech(text), 160)
-        case .failed:
-            return "No pude responderte lo que me pediste por Siri. Míralo en el chat."
-        default:
-            return nil
+        case .replied, .declined, .failed: return lateNoticeText
+        default: return nil
         }
     }
 
-    /// Markdown y emojis de aviso fuera; si no cabe, las oraciones que caben +
-    /// la remisión al chat.
+    /// Markdown y emojis fuera; si no cabe, las oraciones que caben + la
+    /// remisión al chat.
     static func speech(_ text: String) -> String {
         let plain = plainSpeech(text)
         guard plain.count > spokenLimit else { return plain }
@@ -89,51 +95,172 @@ public enum SiriTurn {
     }
 
     static func plainSpeech(_ text: String) -> String {
-        HUDSummary.plain(text)
-            .replacingOccurrences(of: "⚠️", with: "")
+        String(String.UnicodeScalarView(HUDSummary.plain(text).unicodeScalars.filter { !isPictograph($0) }))
             .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// Emoji y pictogramas (con sus selectores y uniones), no dígitos ni "#"/"*".
+    static func isPictograph(_ scalar: Unicode.Scalar) -> Bool {
+        let p = scalar.properties
+        if p.isEmojiPresentation { return true }
+        if p.isEmoji, scalar.value > 0x7F { return true }
+        switch scalar.value {
+        case 0x200D, 0xFE0E, 0xFE0F, 0x20E3: return true
+        case 0x1F3FB...0x1F3FF, 0xE0020...0xE007F: return true
+        default: return false
+        }
+    }
+}
+
+/// El ÚNICO turno en vuelo sobre la sesión: chat, gafas y Siri lo piden antes
+/// de correr; si otro lo tiene, el nuevo dice que está ocupado.
+public final class TurnGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var holder: SurfaceID?
+
+    public init() {}
+
+    public var current: SurfaceID? { lock.withLock { holder } }
+
+    public func begin(_ surface: SurfaceID) -> Bool {
+        lock.withLock {
+            guard holder == nil else { return false }
+            holder = surface
+            return true
+        }
+    }
+
+    public func end(_ surface: SurfaceID) {
+        lock.withLock { if holder == surface { holder = nil } }
+    }
+
+    public static func busyText(_ holder: SurfaceID?) -> String {
+        switch holder {
+        case .siri: "Estoy respondiendo algo que me pediste por Siri. Inténtalo en un momento."
+        case .glassesHUD: "Estoy respondiendo en tus gafas. Inténtalo en un momento."
+        default: "Estoy terminando otra respuesta. Inténtalo en un momento."
+        }
+    }
+}
+
+/// El runner de una superficie tras la compuerta: si otra superficie tiene el
+/// turno, el stream es UN error amable (sin persistir nada).
+public struct GatedTurnRunner: TurnRunner {
+    private let runner: any TurnRunner
+    private let gate: TurnGate
+
+    public init(_ runner: any TurnRunner, gate: TurnGate) {
+        self.runner = runner
+        self.gate = gate
+    }
+
+    public func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID) async -> AsyncStream<LoopEvent> {
+        guard gate.begin(surface) else {
+            let text = TurnGate.busyText(gate.current)
+            return AsyncStream { c in
+                c.yield(.error(text))
+                c.finish()
+            }
+        }
+        let inner = await runner.run(sessionId: sessionId, content: content, surface: surface)
+        let gate = self.gate
+        return AsyncStream { c in
+            let task = Task {
+                for await event in inner { c.yield(event) }
+                gate.end(surface)
+                c.finish()
+            }
+            c.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// El buzón de confirmaciones de los turnos de Siri (SurfaceConfirmationRouter
+/// le manda SOLO las de `.siri`). Abierto mientras Siri puede preguntarle al
+/// dueño; cerrado, toda confirmación se niega (fail-closed).
+public final class SiriApprovals: ConfirmationProvider, @unchecked Sendable {
+    private let lock = NSLock()
+    private var listening = false
+    private var request: ConfirmationRequest?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    public init() {}
+
+    public var pendingSummary: String? { lock.withLock { request?.summary } }
+
+    public func open() { lock.withLock { listening = true } }
+
+    /// Siri ya no escucha: la pendiente (si hay) y las que vengan se niegan.
+    public func close() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            listening = false
+            return take()
+        }
+        waiting?.resume(returning: false)
+    }
+
+    public func resolve(_ approved: Bool) {
+        lock.withLock { take() }?.resume(returning: approved)
+    }
+
+    public func confirm(_ request: ConfirmationRequest) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let accepted = lock.withLock { () -> Bool in
+                guard listening, self.continuation == nil else { return false }
+                self.continuation = continuation
+                self.request = request
+                return true
+            }
+            if !accepted { continuation.resume(returning: false) }
+        }
+    }
+
+    private func take() -> CheckedContinuation<Bool, Never>? {
+        let waiting = continuation
+        continuation = nil
+        request = nil
+        return waiting
     }
 }
 
 /// Un turno de Siri sobre el loop. `ask` arranca el turno y espera hasta que
 /// termina, vence el deadline o pide confirmación; `resume` vuelve a esperar
-/// tras resolver la confirmación; `release` marca que Siri ya contestó: desde
-/// ahí una confirmación nueva se cancela (nadie puede darla) y, si la respuesta
-/// llega después, `settled` la recibe para avisar. `settled` corre UNA vez al
-/// cerrar el turno (nil si el dueño ya la oyó).
+/// tras resolverla; `release` marca que Siri ya contestó (cierra el buzón) y,
+/// si la respuesta llega después, `settled` la recibe para avisar. `settled`
+/// corre UNA vez al cerrar el turno (nil si el dueño ya la oyó). `cancel` (o el
+/// tope duro) corta el turno: la base no queda retenida por un provider colgado.
 public actor SiriTurnRunner {
     public typealias Sleep = @Sendable (Duration) async throws -> Void
 
     private let runner: any TurnRunner
     private let sessionId: SessionID
+    private let approvals: SiriApprovals
     private let deadline: Duration
+    private let hardLimit: Duration
     private let pollInterval: Duration
-    private let pendingApproval: @Sendable () async -> String?
-    private let declineApproval: @Sendable () async -> Void
     private let deliver: @Sendable (SurfaceContent) async -> Void
     private let settled: @Sendable (SiriTurn.Outcome?) async -> Void
     private let sleep: Sleep
 
     private var turn: Task<SiriTurn.Outcome, Never>?
-    private var baseline: String?
     private var final: SiriTurn.Outcome?
     private var heard = false
     private var released = false
     private var didSettle = false
+    private let cut = CutFlag()
 
-    public init(runner: any TurnRunner, sessionId: SessionID, deadline: Duration = SiriTurn.deadline,
+    public init(runner: any TurnRunner, sessionId: SessionID, approvals: SiriApprovals = SiriApprovals(),
+                deadline: Duration = SiriTurn.deadline, hardLimit: Duration = SiriTurn.hardLimit,
                 pollInterval: Duration = .milliseconds(250),
-                pendingApproval: @escaping @Sendable () async -> String? = { nil },
-                declineApproval: @escaping @Sendable () async -> Void = {},
                 deliver: @escaping @Sendable (SurfaceContent) async -> Void = { _ in },
                 settled: @escaping @Sendable (SiriTurn.Outcome?) async -> Void = { _ in },
                 sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
         self.runner = runner
         self.sessionId = sessionId
+        self.approvals = approvals
         self.deadline = deadline
+        self.hardLimit = hardLimit
         self.pollInterval = pollInterval
-        self.pendingApproval = pendingApproval
-        self.declineApproval = declineApproval
         self.deliver = deliver
         self.settled = settled
         self.sleep = sleep
@@ -141,53 +268,55 @@ public actor SiriTurnRunner {
 
     public func ask(_ text: String) async -> SiriTurn.Outcome {
         let said = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard turn == nil else { return .busy }
+        guard turn == nil, !didSettle else { return .busy }
         guard !said.isEmpty else {
             await settle(nil)
             return .empty
         }
-        baseline = await pendingApproval()
+        approvals.open()
         await deliver(.userTurn(text: said, origin: .siri))
         let stream = await runner.run(sessionId: sessionId, content: [AudioTool.transcriptBlock(said)],
                                       surface: .siri)
         let deliver = self.deliver
+        let cut = self.cut
         let task = Task { () -> SiriTurn.Outcome in
             var collector = SiriTurnCollector()
             for await event in stream { collector.apply(event) }
-            let outcome = collector.outcome
+            let outcome = cut.value ? .failed(SiriTurn.timeoutText) : collector.outcome
             if let mirror = SiriTurnCollector.mirror(outcome) { await deliver(mirror) }
             return outcome
         }
         turn = task
         Task { await self.finished(await task.value) }
+        let limit = hardLimit
+        let sleep = self.sleep
+        Task {
+            try? await sleep(limit)
+            self.cancel()
+        }
         return await wait()
     }
 
     /// Tras resolver la confirmación pedida: vuelve a esperar el turno.
     public func resume() async -> SiriTurn.Outcome {
         guard turn != nil else { return .failed("No había un turno en curso.") }
-        baseline = await pendingApproval()
         return await wait()
     }
 
-    /// Siri ya contestó: lo que falte del turno corre sin nadie escuchando.
+    /// Siri ya contestó: el buzón se cierra (fail-closed) y lo que falte del
+    /// turno corre sin nadie escuchando.
     public func release() async {
         released = true
-        if final != nil { await settle(heard ? nil : final) }
-        guard final == nil else { return }
-        let poll = pollInterval
-        let sleep = self.sleep
-        Task {
-            while self.final == nil {
-                if await self.hasNewApproval() { await self.declineApproval() }
-                try? await sleep(poll)
-            }
-        }
+        approvals.close()
+        if let final { await settle(heard ? nil : final) }
     }
 
-    private func hasNewApproval() async -> Bool {
-        guard let pending = await pendingApproval() else { return false }
-        return pending != baseline
+    /// Corta el turno en vuelo (tope duro o fin del tiempo en background).
+    public func cancel() {
+        guard final == nil, let turn else { return }
+        cut.mark()
+        approvals.close()
+        turn.cancel()
     }
 
     private enum Race: Sendable {
@@ -201,8 +330,7 @@ public actor SiriTurnRunner {
         let deadline = self.deadline
         let poll = self.pollInterval
         let sleep = self.sleep
-        let baseline = self.baseline
-        let pendingApproval = self.pendingApproval
+        let approvals = self.approvals
         // Carrera sin task group: esperar `turn.value` no se cancela, y un grupo
         // esperaría al turno entero aunque gane el deadline.
         let result = await withCheckedContinuation { (continuation: CheckedContinuation<Race, Never>) in
@@ -214,7 +342,7 @@ public actor SiriTurnRunner {
             }
             let watcher = Task {
                 while !Task.isCancelled {
-                    if let pending = await pendingApproval(), pending != baseline {
+                    if let pending = approvals.pendingSummary {
                         first.resume(.approval(pending))
                         return
                     }
@@ -248,6 +376,13 @@ public actor SiriTurnRunner {
         didSettle = true
         await settled(late)
     }
+}
+
+private final class CutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cut = false
+    var value: Bool { lock.withLock { cut } }
+    func mark() { lock.withLock { cut = true } }
 }
 
 /// Resuelve la continuación con el PRIMER resultado; los demás se ignoran.
@@ -285,7 +420,8 @@ private final class FirstWins<Value: Sendable>: @unchecked Sendable {
 }
 
 /// LoopEvent → la respuesta del turno, con la MISMA semántica que el chat y
-/// las gafas: lo retraído se quita, el aviso de fallo va al frente.
+/// las gafas: lo retraído se quita, el aviso de fallo va al frente, y un error
+/// o una parada a mitad gana a lo que se alcanzó a decir.
 struct SiriTurnCollector {
     var reply = ""
     var committed = ""
@@ -310,7 +446,8 @@ struct SiriTurnCollector {
     var outcome: SiriTurn.Outcome {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         if refused { return .declined(text.isEmpty ? SiriTurn.declinedDefault : text) }
-        if text.isEmpty { return .failed(failure ?? "No obtuve respuesta.") }
+        if let failure { return .failed(failure) }
+        if text.isEmpty { return .failed(SiriTurn.noAnswerText) }
         return .replied(text)
     }
 

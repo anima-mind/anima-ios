@@ -67,11 +67,12 @@ public actor Sensorimotor {
 
     /// Ejecuta una tool aplicando la capa 1 (PermissionPolicy) y un timeout.
     /// Fail-closed: tool desconocida = deny; eferente sin confirmación = no ejecuta.
-    public func execute(name: String, input: JSONValue) async -> ToolResult {
+    public func execute(name: String, input: JSONValue, surface: SurfaceID = .phoneChat) async -> ToolResult {
         switch await executePreauthorized(name: name, input: input) {
         case .executed(let result), .denied(let result):
             return result
-        case .needsConfirmation(let request):
+        case .needsConfirmation(var request):
+            request.surface = surface
             guard await confirmation.confirm(request) else {
                 return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }

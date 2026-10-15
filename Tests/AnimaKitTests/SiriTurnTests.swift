@@ -24,13 +24,51 @@ final class SiriGatedRunner: TurnRunner, @unchecked Sendable {
         let events = self.events
         let started = self.started
         return AsyncStream { c in
-            Task {
+            let task = Task {
                 started.mutate { $0 = true }
                 for await _ in wait {}
                 for e in events { c.yield(e) }
                 c.finish()
             }
+            c.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+/// Runner cuya tool pide `asks` confirmaciones por el router (como el
+/// Sensorimotor de un turno de Siri) y responde según lo decidido.
+final class SiriApprovalRunner: TurnRunner, @unchecked Sendable {
+    let router: SurfaceConfirmationRouter
+    let asks: Int
+    let decisions = Locked<[Bool]>([])
+
+    init(router: SurfaceConfirmationRouter, asks: Int = 1) {
+        self.router = router
+        self.asks = asks
+    }
+
+    func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID) async -> AsyncStream<LoopEvent> {
+        let router = self.router, asks = self.asks, decisions = self.decisions
+        return AsyncStream { c in
+            Task {
+                for i in 0..<asks {
+                    let ok = await router.confirm(ConfirmationRequest(
+                        tool: "calendar", operation: "create", summary: "crear evento \(i + 1)", input: .null,
+                        surface: surface))
+                    decisions.mutate { $0.append(ok) }
+                }
+                c.yield(.textDelta(decisions.value.allSatisfy { $0 } ? "Creé el evento." : "No lo hice: no lo confirmaste."))
+                c.finish()
+            }
+        }
+    }
+}
+
+struct AskingPhone: ConfirmationProvider {
+    let asked: Locked<[String]>
+    func confirm(_ request: ConfirmationRequest) async -> Bool {
+        asked.mutate { $0.append(request.summary) }
+        return true
     }
 }
 
@@ -38,13 +76,12 @@ final class SiriGatedRunner: TurnRunner, @unchecked Sendable {
 final class SiriSpy: @unchecked Sendable {
     let delivered = Locked<[SurfaceContent]>([])
     let settled = Locked<[SiriTurn.Outcome?]>([])
-    let declines = Locked(0)
-    let pending = Locked<String?>(nil)
+    let approvals = SiriApprovals()
 
-    func runner(_ runner: any TurnRunner, deadline: Duration = .seconds(5)) -> SiriTurnRunner {
-        SiriTurnRunner(runner: runner, sessionId: "s1", deadline: deadline, pollInterval: .milliseconds(5),
-                       pendingApproval: { self.pending.value },
-                       declineApproval: { self.declines.mutate { $0 += 1 }; self.pending.mutate { $0 = nil } },
+    func runner(_ runner: any TurnRunner, deadline: Duration = .seconds(5),
+                hardLimit: Duration = .seconds(60)) -> SiriTurnRunner {
+        SiriTurnRunner(runner: runner, sessionId: "s1", approvals: approvals, deadline: deadline,
+                       hardLimit: hardLimit, pollInterval: .milliseconds(5),
                        deliver: { content in self.delivered.mutate { $0.append(content) } },
                        settled: { late in self.settled.mutate { $0.append(late) } })
     }
@@ -88,7 +125,8 @@ struct SiriTurnTests {
         await spy.waitSettled()
         #expect(spy.settled.value == [.replied("Listo: tu semana está libre.")])
         #expect(spy.delivered.value.last == .assistantTurn(text: "Listo: tu semana está libre.", origin: .siri))
-        #expect(SiriTurn.lateNotice(.replied("Listo: tu semana está libre.")) == "Listo: tu semana está libre.")
+        // Me4: el aviso tardío es genérico (nada de la respuesta en la pantalla bloqueada).
+        #expect(SiriTurn.lateNotice(.replied("Listo: tu semana está libre.")) == SiriTurn.lateNoticeText)
     }
 
     @Test func nuncaAfirmaLoRetraidoYDiceElFallo() async {
@@ -129,44 +167,6 @@ struct SiriTurnTests {
         let outcome = await spy.runner(SiriGatedRunner([.refused])).ask("algo raro")
         #expect(outcome == .declined(SiriTurn.declinedDefault))
         #expect(spy.delivered.value.last == .declined(text: SiriTurn.declinedDefault, origin: .siri))
-    }
-
-    @Test func confirmacionPendienteSePreguntaYLuegoSigue() async {
-        let runner = SiriGatedRunner([.textDelta("Creé el evento."), .turnFinished(stopReason: .endTurn)], gated: true)
-        let spy = SiriSpy()
-        let siri = spy.runner(runner)
-        Task {
-            for _ in 0..<400 where !runner.started.value { try? await Task.sleep(for: .milliseconds(2)) }
-            spy.pending.mutate { $0 = "crear evento 'Reunión' mañana 9:00" }
-        }
-        let first = await siri.ask("agéndame la reunión")
-        #expect(first == .needsApproval("crear evento 'Reunión' mañana 9:00"))
-        #expect(SiriTurn.confirmationPrompt("crear evento 'Reunión' mañana 9:00")
-            == "Para eso necesito tu ok: crear evento 'Reunión' mañana 9:00. ¿Lo hago?")
-        #expect(SiriTurn.spoken(first).contains("confirmación"))
-        // El dueño aprobó por Siri: la app resuelve y el turno sigue.
-        spy.pending.mutate { $0 = nil }
-        runner.open()
-        #expect(await siri.resume() == .replied("Creé el evento."))
-        await siri.release()
-        await spy.waitSettled()
-        #expect(spy.settled.value == [nil])
-        #expect(spy.declines.value == 0)
-    }
-
-    @Test func trasSoltarSiriUnaConfirmacionNuevaSeCancela() async {
-        let runner = SiriGatedRunner([.textDelta("No lo hice: lo cancelaste."), .turnFinished(stopReason: .endTurn)],
-                                 gated: true)
-        let spy = SiriSpy()
-        let siri = spy.runner(runner, deadline: .milliseconds(30))
-        #expect(await siri.ask("borra mi recordatorio") == .deferred)
-        await siri.release()
-        spy.pending.mutate { $0 = "borrar recordatorio" }
-        for _ in 0..<400 where spy.declines.value == 0 { try? await Task.sleep(for: .milliseconds(5)) }
-        #expect(spy.declines.value == 1)   // fail-closed: nadie puede darla
-        runner.open()
-        await spy.waitSettled()
-        #expect(spy.settled.value == [.replied("No lo hice: lo cancelaste.")])
     }
 
     @Test func textoVacioNoCorreTurnoYCierra() async {
@@ -232,5 +232,230 @@ struct SiriTurnTests {
         #expect(SurfaceID(rawValue: "siri") == .siri)
         #expect(AgentLoop.surfaceHint(.phoneChat) == nil)
         #expect(AgentLoop.surfaceHint(.glassesHUD) == AgentLoop.glassesSurfaceHint)
+    }
+}
+
+@Suite("Review #38 — Siri: confirmaciones propias, un turno a la vez, voz y honestidad")
+struct SiriReviewTests {
+    private func router(_ approvals: SiriApprovals, phone: Locked<[String]>) -> SurfaceConfirmationRouter {
+        SurfaceConfirmationRouter(phone: AskingPhone(asked: phone), glasses: nil, siri: approvals)
+    }
+
+    // M1: un mensaje vacío no deja nada vivo que cancele aprobaciones futuras.
+    @Test func mensajeVacioNoCancelaAprobacionesFuturas() async {
+        let spy = SiriSpy()
+        let siri = spy.runner(SiriGatedRunner([]))
+        #expect(await siri.ask("   ") == .empty)
+        await siri.release()
+        let phone = Locked<[String]>([])
+        let chatAsk = ConfirmationRequest(tool: "calendar", operation: "create", summary: "Crear evento del chat",
+                                          input: .null, surface: .phoneChat)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await router(spy.approvals, phone: phone).confirm(chatAsk))
+        #expect(phone.value == ["Crear evento del chat"])
+    }
+
+    // Me1: tras soltar Siri, las confirmaciones del chat y las gafas siguen yendo
+    // a su dueño; solo las de Siri se niegan.
+    @Test func siriSoloResuelveLasSuyas() async {
+        let spy = SiriSpy()
+        let siri = spy.runner(SiriGatedRunner([.textDelta("ok")], gated: true), deadline: .milliseconds(20))
+        #expect(await siri.ask("algo largo") == .deferred)
+        await siri.release()
+        let phone = Locked<[String]>([])
+        let route = router(spy.approvals, phone: phone)
+        #expect(await route.confirm(ConfirmationRequest(tool: "calendar", operation: "create", summary: "del chat",
+                                                        input: .null, surface: .phoneChat)))
+        #expect(await route.confirm(ConfirmationRequest(tool: "reminders", operation: "create", summary: "de gafas",
+                                                        input: .null, surface: .glassesHUD)))
+        #expect(phone.value == ["del chat", "de gafas"])
+        #expect(await route.confirm(ConfirmationRequest(tool: "calendar", operation: "create", summary: "de siri",
+                                                        input: .null, surface: .siri)) == false)
+        // Sin buzón de Siri cableado: fail-closed.
+        #expect(await SurfaceConfirmationRouter(phone: AskingPhone(asked: phone), glasses: nil)
+            .confirm(ConfirmationRequest(tool: "x", operation: "y", summary: "z", input: .null, surface: .siri)) == false)
+    }
+
+    @Test func confirmacionPorSiriSePreguntaYLuegoSigue() async {
+        let spy = SiriSpy()
+        let phone = Locked<[String]>([])
+        let runner = SiriApprovalRunner(router: router(spy.approvals, phone: phone))
+        let siri = spy.runner(runner)
+        let first = await siri.ask("agéndame la reunión")
+        #expect(first == .needsApproval("crear evento 1"))
+        spy.approvals.resolve(true)
+        #expect(await siri.resume() == .replied("Creé el evento."))
+        #expect(phone.value.isEmpty)   // jamás pasó por el sheet del teléfono
+        await siri.release()
+        await spy.waitSettled()
+        #expect(spy.settled.value == [nil])
+    }
+
+    // Menor: con más aprobaciones de las que Siri pregunta, lo dicho es verdad:
+    // al soltar, la pendiente se niega y Siri dice que no lo hizo.
+    @Test func siYaNoPreguntaDiceQueNoLoHizo() async {
+        let spy = SiriSpy()
+        let phone = Locked<[String]>([])
+        let runner = SiriApprovalRunner(router: router(spy.approvals, phone: phone), asks: 2)
+        let siri = spy.runner(runner)
+        let outcome = await siri.ask("agenda dos cosas")
+        #expect(outcome == .needsApproval("crear evento 1"))
+        await siri.release()
+        await spy.waitSettled()
+        #expect(runner.decisions.value == [false, false])
+        #expect(spy.settled.value == [.replied("No lo hice: no lo confirmaste.")])
+        let spoken = SiriTurn.spoken(outcome)
+        #expect(spoken.contains("no lo hice"))
+        #expect(!spoken.contains("Ábrelo"))
+    }
+
+    // Me2: un turno a la vez sobre la sesión (Siri, chat y gafas).
+    @Test func compuertaDeTurnoUnoALaVez() async {
+        let gate = TurnGate()
+        #expect(gate.begin(.siri))
+        #expect(gate.begin(.siri) == false)
+        #expect(gate.begin(.phoneChat) == false)
+        gate.end(.phoneChat)   // solo quien la tiene la suelta
+        #expect(gate.current == .siri)
+        let inner = SiriGatedRunner([.textDelta("hola")])
+        var events: [LoopEvent] = []
+        for await e in await GatedTurnRunner(inner, gate: gate).run(sessionId: "s", content: [], surface: .glassesHUD) {
+            events.append(e)
+        }
+        #expect(events == [.error(TurnGate.busyText(.siri))])
+        #expect(inner.received.value.isEmpty)
+        gate.end(.siri)
+        events = []
+        for await e in await GatedTurnRunner(inner, gate: gate).run(sessionId: "s", content: [], surface: .glassesHUD) {
+            events.append(e)
+        }
+        #expect(events == [.textDelta("hola")])
+        #expect(gate.current == nil)
+        #expect(SiriTurn.spoken(.busy) == SiriTurn.busyText)
+        #expect(TurnGate.busyText(.glassesHUD).contains("gafas"))
+        #expect(TurnGate.busyText(.phoneChat).contains("otra respuesta"))
+    }
+
+    // Me3: la voz no rompe números, horas, abreviaturas ni URLs.
+    @Test func lasOracionesNoCortanNumerosNiAbreviaturas() {
+        #expect(HUDSummary.sentences("El vuelo cuesta 1.250.000 pesos y sale a las 3.30. Llega temprano.")
+            == ["El vuelo cuesta 1.250.000 pesos y sale a las 3.30.", "Llega temprano."])
+        #expect(HUDSummary.sentences("Habla con el Sr. Pérez a las 4 p. m. Luego descansa.")
+            == ["Habla con el Sr. Pérez a las 4 p. m. Luego descansa."])
+        #expect(HUDSummary.sentences("Míralo en anima.app/ayuda. ¿Listo?!") == ["Míralo en anima.app/ayuda.", "¿Listo?!"])
+        #expect(HUDSummary.sentences("Espera... ya.") == ["Espera...", "ya."])
+        let long = "El vuelo cuesta 1.250.000 pesos y sale a las 3.30 desde el terminal 2. "
+            + String(repeating: "Lleva el pasaporte y llega con tiempo de sobra al aeropuerto. ", count: 5)
+        let siri = SiriTurn.spoken(.replied(long))
+        #expect(siri.hasPrefix("El vuelo cuesta 1.250.000 pesos y sale a las 3.30 desde el terminal 2."))
+        #expect(siri.hasSuffix(SiriTurn.chatTail))
+        let glasses = HUDSummary.spoken(from: long)
+        #expect(glasses.hasPrefix("El vuelo cuesta 1.250.000 pesos y sale a las 3.30 desde el terminal 2."))
+        #expect(glasses.hasSuffix(HUDSummary.phoneTail))
+    }
+
+    // Menor: un error (o una parada) después de texto a medias se dice como fallo.
+    @Test func errorTrasTextoParcialEsFallo() async {
+        let partial = await SiriSpy().runner(SiriGatedRunner([.textDelta("Voy a revisar tu agenda y"),
+                                                              .error("Sin conexión")])).ask("¿qué tengo?")
+        #expect(partial == .failed("Sin conexión"))
+        #expect(SiriTurn.spoken(partial) == "No pude responderte: Sin conexión")
+        let stopped = await SiriSpy().runner(SiriGatedRunner([.textDelta("Empiezo"), .stopped(.loopDetected)]))
+            .ask("hazlo")
+        guard case .failed(let reason) = stopped else {
+            Issue.record("esperaba fallo: \(stopped)")
+            return
+        }
+        #expect(reason.hasPrefix("Turno detenido"))
+    }
+
+    // Menor: la voz no lee emojis ni pictogramas.
+    @Test func laVozNoLeeEmojis() {
+        let spoken = SiriTurn.spoken(.replied("⚠️ No pude 📅 agendarlo 👍🏽 Te aviso ✅ mañana #1 a las 9*"))
+        #expect(spoken == "No pude agendarlo Te aviso mañana #1 a las 9*")
+        #expect(SiriTurn.spoken(.failed("❌ Sin red 🌐")) == "No pude responderte: Sin red")
+    }
+
+    // Menor: Híbrido conversa en el remoto (el modelo local es solo para el
+    // sueño y el pulso), así que sin red Siri dice lo mismo que hace el chat.
+    @Test func sinRedLaMismaReglaQueElChat() {
+        #expect(OperatingMode.hybrid.conversationNeedsNetwork)
+        #expect(OperatingMode.remote.conversationNeedsNetwork)
+        #expect(!OperatingMode.onDeviceOnly.conversationNeedsNetwork)
+    }
+
+    // Menor: un provider que nunca termina no retiene la base: el tope duro
+    // corta el turno y lo cierra como fallo.
+    @Test func elTopeDuroCortaUnTurnoColgado() async {
+        let spy = SiriSpy()
+        let runner = SiriGatedRunner([.textDelta("nunca")], gated: true)
+        let siri = spy.runner(runner, deadline: .milliseconds(20), hardLimit: .milliseconds(60))
+        #expect(await siri.ask("hola") == .deferred)
+        await siri.release()
+        await spy.waitSettled()
+        #expect(spy.settled.value == [.failed(SiriTurn.timeoutText)])
+        #expect(spy.delivered.value.last == .status(SiriTurn.timeoutText))
+    }
+
+    @Test func cancelarExplicitoTambienCierra() async {
+        let spy = SiriSpy()
+        let siri = spy.runner(SiriGatedRunner([.textDelta("x")], gated: true), deadline: .milliseconds(20))
+        #expect(await siri.ask("hola") == .deferred)
+        await siri.cancel()
+        await siri.release()
+        await spy.waitSettled()
+        #expect(spy.settled.value == [.failed(SiriTurn.timeoutText)])
+    }
+}
+
+@MainActor
+@Suite("Review #38 — el chat ve ocupado el turno de otra superficie y muestra su error")
+struct MirroredTurnChatTests {
+    private func chat() throws -> ChatViewModel {
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        return ChatViewModel(loop: try FullHistoryStoreTests.loop(store, queue), sessionId: try store.startSession())
+    }
+
+    @Test func turnoDeSiriOcupaElChatHastaLaRespuesta() async throws {
+        let chat = try chat()
+        await chat.render(.userTurn(text: "¿qué tengo?", origin: .siri))
+        #expect(chat.isStreaming)
+        #expect(chat.messages.last?.isStreaming == true)
+        #expect(chat.messages.first?.channelChip?.label == "Siri")
+        await chat.render(.assistantTurn(text: "Nada hoy.", origin: .siri))
+        #expect(!chat.isStreaming)
+        #expect(chat.messages.count == 2)
+        #expect(chat.messages.last?.text == "Nada hoy.")
+        #expect(chat.lastMirroredTurnID == chat.messages.last?.id)
+    }
+
+    @Test func elFalloDeSiriLlegaAlChat() async throws {
+        let chat = try chat()
+        await chat.render(.userTurn(text: "hola", origin: .siri))
+        await chat.render(.status("Sin conexión"))
+        #expect(!chat.isStreaming)
+        #expect(chat.messages.count == 2)
+        #expect(chat.messages.last?.isError == true)
+        #expect(chat.messages.last?.text == "Sin conexión")
+        // Un status suelto (sin turno espejado) no pinta nada.
+        await chat.render(.status("otro"))
+        #expect(chat.messages.count == 2)
+        await chat.render(.userTurn(text: "algo raro", origin: .glassesHUD))
+        await chat.render(.declined(text: "Prefiero no.", origin: .glassesHUD))
+        #expect(chat.messages.last?.isRefusal == true)
+        #expect(!chat.isStreaming)
+    }
+
+    @Test func conLaCompuertaTomadaElChatNoCorreOtroTurno() async throws {
+        let chat = try chat()
+        let gate = TurnGate()
+        chat.turnGate = gate
+        #expect(gate.begin(.siri))
+        chat.input = "hola"
+        await chat.send()
+        #expect(chat.errorText == TurnGate.busyText(.siri))
+        #expect(chat.messages.isEmpty)
+        gate.end(.siri)
     }
 }

@@ -322,6 +322,11 @@ public final class ChatViewModel: ObservableObject {
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
     public private(set) var lastMirroredTurnID: UUID?
+    /// Un turno de otra superficie (gafas, Siri) en vuelo: su burbuja en curso y
+    /// el chat ocupado hasta que llegue la respuesta o el error.
+    private var mirroredTurnId: UUID?
+    /// El único turno en vuelo sobre la sesión (lo comparten chat, gafas y Siri).
+    public var turnGate: TurnGate?
     public let events: AsyncStream<SurfaceEvent>
     private let eventSink: AsyncStream<SurfaceEvent>.Continuation
 
@@ -643,6 +648,11 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
+        if let turnGate, !turnGate.begin(.phoneChat) {
+            errorText = TurnGate.busyText(turnGate.current)
+            return
+        }
+        defer { turnGate?.end(.phoneChat) }
         errorText = nil
         lastUserContent = content
         if let bubble {
@@ -725,17 +735,34 @@ extension ChatViewModel: PhoneChatSurface {
             var message = DisplayMessage(role: .user, text: text)
             message.surface = origin
             messages.append(message)
+            let pending = DisplayMessage(role: .assistant, isStreaming: true)
+            messages.append(pending)
+            mirroredTurnId = pending.id
+            isStreaming = true
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
-            let message = DisplayMessage(role: .assistant, text: text)
-            messages.append(message)
-            lastMirroredTurnID = message.id
+            lastMirroredTurnID = closeMirrored(DisplayMessage(role: .assistant, text: text))
         case .declined(let text, let origin) where origin != .phoneChat:
-            let message = DisplayMessage(role: .assistant, text: text, isRefusal: true)
-            messages.append(message)
-            lastMirroredTurnID = message.id
+            lastMirroredTurnID = closeMirrored(DisplayMessage(role: .assistant, text: text, isRefusal: true))
+        case .status(let text) where mirroredTurnId != nil:
+            // El turno de la otra superficie falló: el error queda en el chat.
+            _ = closeMirrored(DisplayMessage(role: .assistant, text: text, isError: true))
         default:
             break
         }
+    }
+
+    /// Reemplaza la burbuja en curso del turno espejado (o agrega) y libera el chat.
+    private func closeMirrored(_ message: DisplayMessage) -> UUID {
+        defer {
+            mirroredTurnId = nil
+            isStreaming = false
+        }
+        if let id = mirroredTurnId, let index = messages.firstIndex(where: { $0.id == id }) {
+            messages[index] = message
+            return message.id
+        }
+        messages.append(message)
+        return message.id
     }
 
     public func focus(turn: UUID?) {

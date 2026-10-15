@@ -189,19 +189,25 @@ public actor ProjectionRateLimiter {
 }
 
 /// Enruta el `ask`: `glasses_camera` se confirma EN LAS GAFAS (card + pinch,
-/// consentimiento en el mismo dispositivo, §8); todo lo demás, el sheet del
-/// teléfono. Fail-closed: sin confirmador de gafas, la cámara se niega.
+/// consentimiento en el mismo dispositivo, §8); lo pedido por un turno de Siri,
+/// por Siri (batch 10 #2); todo lo demás, el sheet del teléfono. Fail-closed:
+/// sin confirmador de gafas la cámara se niega; sin el de Siri, lo de Siri.
 public struct SurfaceConfirmationRouter: ConfirmationProvider {
     public typealias GlassesConfirm = @Sendable (ConfirmationRequest) async -> Bool
     private let phone: ConfirmationProvider
     private let glasses: GlassesConfirm?
+    private let siri: ConfirmationProvider?
 
-    public init(phone: ConfirmationProvider, glasses: GlassesConfirm?) {
+    public init(phone: ConfirmationProvider, glasses: GlassesConfirm?, siri: ConfirmationProvider? = nil) {
         self.phone = phone
         self.glasses = glasses
+        self.siri = siri
     }
 
     public func confirm(_ request: ConfirmationRequest) async -> Bool {
+        if request.surface == .siri {
+            return await siri?.confirm(request) ?? false
+        }
         if request.tool == GlassesCameraTool.name {
             guard let glasses else { return false }
             return await glasses(request)

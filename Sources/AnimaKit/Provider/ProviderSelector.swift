@@ -42,6 +42,13 @@ public enum OperatingMode: String, Sendable, CaseIterable, Codable {
         }
     }
 
+    /// La conversación corre en el remoto (Claude / Híbrido): sin red no hay
+    /// turno (el chat lo encola y Siri lo dice). Híbrido solo usa el modelo local
+    /// para el sueño y el pulso, no para conversar.
+    public var conversationNeedsNetwork: Bool {
+        ProviderSelector.plannedBackend(mode: self, turn: .interactive) == .remote
+    }
+
     /// Necesita el token del provider remoto en Keychain.
     public var requiresToken: Bool { self != .onDeviceOnly }
     /// Necesita el modelo local (Apple Intelligence).

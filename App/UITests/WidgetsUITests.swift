@@ -55,7 +55,14 @@ final class WidgetsUITests: AnimaUITestCase {
         openTab(app, "Metas")
         // "Hablar con Anima" (control / botón de Acción): chat + mic escuchando.
         app.open(try XCTUnwrap(URL(string: "anima://chat?mic=1")))
+        // El mic guionado escucha ~1,2 s × escala y envía "hola por voz": vale la
+        // barra en pantalla o el turno de voz que dejó (solo el mic lo produce).
+        // Se mira ANTES de las aserciones de la tab: en un simulador frío cada
+        // snapshot cuesta y la barra podía irse sin que el test la viera.
+        let heard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier IN %@", ["chat.listeningBar", "chat.userMessage.voice"]))
+            .firstMatch
+        waitFor(heard, timeout: 30)
         waitTabSelected(app, "Chat")
-        waitFor(element(app, "chat.listeningBar"), timeout: 30)
     }
 }

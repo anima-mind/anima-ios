@@ -387,17 +387,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         if let gate, let token { await gate.end(token, after: runner) }
     }
 
-    /// Toma la compuerta. Si la tiene un turno de gafas (el que se acaba de
-    /// cancelar y aún suelta su productor), reintenta brevemente antes de
-    /// decir que está ocupado; otra superficie ⇒ ocupado de inmediato.
+    /// Toma la compuerta (reintenta si la suelta un turno de gafas recién cancelado).
     static func acquire(_ gate: TurnGate, wait: Duration) async -> TurnGate.Token? {
-        if let token = gate.begin(.glassesHUD) { return token }
-        let deadline = ContinuousClock.now.advanced(by: wait)
-        while gate.current == .glassesHUD, ContinuousClock.now < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(50))
-            if let token = gate.begin(.glassesHUD) { return token }
-        }
-        return Task.isCancelled ? nil : gate.begin(.glassesHUD)
+        await gate.acquire(.glassesHUD, retrying: wait)
     }
 
     private func consumeTurn(content: [ContentBlock], turn: Int) async {

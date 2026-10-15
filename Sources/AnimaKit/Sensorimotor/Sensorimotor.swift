@@ -74,6 +74,7 @@ public actor Sensorimotor {
         case .needsConfirmation(var request):
             request.surface = surface
             if let refusal = SurfaceConfirmationRouter.refusal(for: request) {
+                await confirmation.refused(request)
                 return ToolResult(content: refusal, isError: true, isRejection: true)
             }
             // Turno ya cancelado: no se le pide confirmación a nadie (un sheet

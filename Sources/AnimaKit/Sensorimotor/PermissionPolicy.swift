@@ -104,6 +104,14 @@ public struct ConfirmationRequest: Sendable, Equatable {
 /// UI; los tests inyectan una versión determinista.
 public protocol ConfirmationProvider: Sendable {
     func confirm(_ request: ConfirmationRequest) async -> Bool
+    /// La política de la superficie la negó SIN preguntar (cámara de las gafas
+    /// desde Siri, acciones de riesgo desde CarPlay): quien lleva la cuenta de
+    /// lo que quedó pendiente se entera aquí. Por defecto, nada.
+    func refused(_ request: ConfirmationRequest) async
+}
+
+extension ConfirmationProvider {
+    public func refused(_ request: ConfirmationRequest) async {}
 }
 
 /// Default FAIL-CLOSED: sin UI conectada, todo `ask` se niega. La app inyecta la

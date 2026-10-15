@@ -36,11 +36,12 @@ public final class ChatViewModel: ObservableObject {
         /// Por dónde llegó el turno del dueño: gafas ⇒ chip "gafas" (batch 8 #2).
         public var surface: SurfaceID?
 
-        /// El chip del canal del turno del dueño: "gafas" y "Siri" ganan a "voz".
+        /// El chip del canal del turno del dueño: "gafas", "Siri" y "CarPlay" ganan a "voz".
         public var channelChip: (label: String, glyph: String, id: String)? {
             guard role == .user else { return nil }
             if surface == .glassesHUD { return ("gafas", "eyeglasses", "chat.userMessage.glasses") }
             if surface == .siri { return ("Siri", "mic.circle", "chat.userMessage.siri") }
+            if surface == .carplay { return ("CarPlay", "car", "chat.userMessage.carplay") }
             if isVoice { return ("voz", "waveform", "chat.userMessage.voice") }
             return nil
         }

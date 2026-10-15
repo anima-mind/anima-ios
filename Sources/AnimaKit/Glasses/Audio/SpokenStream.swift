@@ -45,6 +45,12 @@ public struct StreamingSentenceSegmenter: Sendable, Equatable {
         return out
     }
 
+    /// El texto se cortó por una pausa del turno (una tool que pide el ok del
+    /// dueño): lo que quede es una oración completa; el stream puede seguir.
+    public mutating func flush() -> [String] {
+        finish()
+    }
+
     /// Fin del stream: lo que quede es la última oración.
     public mutating func finish() -> [String] {
         let plain = Array(HUDSummary.plain(raw))
@@ -57,18 +63,22 @@ public struct StreamingSentenceSegmenter: Sendable, Equatable {
 
 public struct SpokenScript: Sendable, Equatable {
     public let limit: Int
+    /// La remisión que cierra lo que no cupo (gafas: al teléfono; CarPlay: al chat).
+    public let tail: String
     public private(set) var utterances: [String] = []
     public private(set) var truncated = false
     public private(set) var finished = false
     private var segmenter = StreamingSentenceSegmenter()
 
-    public init(limit: Int = HUDSummary.spokenLimit) {
+    public init(limit: Int = HUDSummary.spokenLimit, tail: String = HUDSummary.phoneTail) {
         self.limit = limit
+        self.tail = tail
     }
 
     /// Un texto ya completo, dicho como UNA utterance (camino sin stream).
     public init(whole text: String) {
         self.limit = .max
+        self.tail = HUDSummary.phoneTail
         if !text.isEmpty { utterances = [text] }
         finished = true
     }
@@ -82,14 +92,20 @@ public struct SpokenScript: Sendable, Equatable {
         return segmenter.feed(delta).compactMap { admit($0) }
     }
 
+    /// Pausa del turno (antes de preguntar algo al dueño): lo pendiente se dice ya.
+    public mutating func flush() -> [String] {
+        guard !finished else { return [] }
+        return segmenter.flush().compactMap { admit($0) }
+    }
+
     /// Fin del stream → la última oración (si cabe) + la remisión al teléfono.
     public mutating func finish() -> [String] {
         guard !finished else { return [] }
         var out = segmenter.finish().compactMap { admit($0) }
         finished = true
         if truncated {
-            utterances.append(HUDSummary.phoneTail)
-            out.append(HUDSummary.phoneTail)
+            utterances.append(tail)
+            out.append(tail)
         }
         return out
     }

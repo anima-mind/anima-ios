@@ -190,39 +190,60 @@ public actor ProjectionRateLimiter {
 
 /// Enruta el `ask`: `glasses_camera` se confirma EN LAS GAFAS (card + pinch,
 /// consentimiento en el mismo dispositivo, §8); lo pedido por un turno de Siri,
-/// por Siri (batch 10 #2); todo lo demás, el sheet del teléfono. Fail-closed:
-/// sin confirmador de gafas la cámara se niega; sin el de Siri, lo de Siri.
+/// por Siri (batch 10 #2); lo pedido desde CarPlay, en el carro por voz o con
+/// los botones del template; todo lo demás, el sheet del teléfono. Fail-closed:
+/// sin confirmador de gafas la cámara se niega; sin el de Siri o CarPlay, lo suyo.
 public struct SurfaceConfirmationRouter: ConfirmationProvider {
     public typealias GlassesConfirm = @Sendable (ConfirmationRequest) async -> Bool
     private let phone: ConfirmationProvider
     private let glasses: GlassesConfirm?
     private let siri: ConfirmationProvider?
+    private let carplay: ConfirmationProvider?
 
-    public init(phone: ConfirmationProvider, glasses: GlassesConfirm?, siri: ConfirmationProvider? = nil) {
+    public init(phone: ConfirmationProvider, glasses: GlassesConfirm?, siri: ConfirmationProvider? = nil,
+                carplay: ConfirmationProvider? = nil) {
         self.phone = phone
         self.glasses = glasses
         self.siri = siri
+        self.carplay = carplay
     }
 
-    /// Consentimiento en el MISMO dispositivo (§8): la cámara de las gafas no se
-    /// confirma por voz desde Siri. nil = la confirmación sigue su camino.
+    /// Lo que se niega SIN preguntar, según la superficie: la cámara de las
+    /// gafas no se confirma por voz desde Siri ni desde el carro (consentimiento
+    /// en el MISMO dispositivo, §8), y desde CarPlay solo se confirma por voz lo
+    /// de bajo riesgo (CarPlayTurn.voiceConfirmable). nil = sigue su camino.
     public static func refusal(for request: ConfirmationRequest) -> String? {
-        guard request.surface == .siri, request.tool == GlassesCameraTool.name else { return nil }
-        return siriCameraRefusal
+        switch request.surface {
+        case .siri where request.tool == GlassesCameraTool.name: siriCameraRefusal
+        case .carplay: CarPlayTurn.refusal(for: request)
+        default: nil
+        }
     }
 
     public static let siriCameraRefusal = "Para usar la cámara de las gafas, pídemelo desde las gafas."
 
     public func confirm(_ request: ConfirmationRequest) async -> Bool {
         if Self.refusal(for: request) != nil { return false }
-        if request.surface == .siri {
-            return await siri?.confirm(request) ?? false
+        switch request.surface {
+        case .siri: return await siri?.confirm(request) ?? false
+        case .carplay: return await carplay?.confirm(request) ?? false
+        default: break
         }
         if request.tool == GlassesCameraTool.name {
             guard let glasses else { return false }
             return await glasses(request)
         }
         return await phone.confirm(request)
+    }
+
+    /// Lo negado por política llega al buzón de su superficie (CarPlay lleva la
+    /// cuenta de lo que deja pendiente en el teléfono).
+    public func refused(_ request: ConfirmationRequest) async {
+        switch request.surface {
+        case .siri: await siri?.refused(request)
+        case .carplay: await carplay?.refused(request)
+        default: break
+        }
     }
 }
 

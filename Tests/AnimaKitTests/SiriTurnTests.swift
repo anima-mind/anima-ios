@@ -314,12 +314,12 @@ struct SiriReviewTests {
         let gate = TurnGate()
         let seen = Locked<[SurfaceID?]>([])
         gate.observe { holder in seen.mutate { $0.append(holder) } }
-        #expect(gate.begin(.siri))
-        #expect(gate.begin(.siri) == false)
-        #expect(gate.begin(.phoneChat) == false)
-        gate.end(.phoneChat)   // solo quien la tiene la suelta
+        let siri = try? #require(gate.begin(.siri))
+        #expect(gate.begin(.siri) == nil)
+        #expect(gate.begin(.phoneChat) == nil)
+        gate.end(TurnGate.Token(surface: .siri))   // un token ajeno (aunque sea de Siri) no la suelta
         #expect(gate.current == .siri)
-        gate.end(.siri)
+        if let siri { gate.end(siri) }
         #expect(gate.current == nil)
         #expect(seen.value == [.siri, nil])
         #expect(SiriTurn.spoken(.busy) == SiriTurn.busyText)
@@ -446,13 +446,13 @@ struct MirroredTurnChatTests {
         let chat = try chat()
         let gate = TurnGate()
         chat.turnGate = gate
-        #expect(gate.begin(.siri))
+        let siri = try #require(gate.begin(.siri))
         #expect(chat.isStreaming)   // derivado de la compuerta
         chat.input = "hola"
         await chat.send()
         #expect(chat.input == "hola")
         #expect(chat.messages.isEmpty)
-        gate.end(.siri)
+        gate.end(siri)
         for _ in 0..<200 where chat.isStreaming { try await Task.sleep(for: .milliseconds(5)) }
         #expect(!chat.isStreaming)
     }
@@ -473,12 +473,12 @@ struct MirroredTurnChatTests {
         await chat.send()
         #expect(chat.hasQueuedTurn)
         // Vuelve la red con otra superficie respondiendo: sigue encolado (no se pierde).
-        #expect(gate.begin(.siri))
+        let siri = try #require(gate.begin(.siri))
         await chat.setOffline(false)
         #expect(chat.hasQueuedTurn)
         #expect(provider.captures.value.isEmpty)
         // Se libera la compuerta: sale solo.
-        gate.end(.siri)
+        gate.end(siri)
         for _ in 0..<400 where chat.hasQueuedTurn || chat.isStreaming { try await Task.sleep(for: .milliseconds(5)) }
         #expect(!chat.hasQueuedTurn)
         #expect(provider.captures.value.count == 1)

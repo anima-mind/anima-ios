@@ -594,7 +594,11 @@ final class AppModel: ObservableObject {
         // no vuelve a correr — sin esto el header quedaba con el nombre semilla.
         await chat.loadMind()
         await chat.refreshContext()
+        chatModel?.detachFromGate()
         chat.turnGate = turnGate
+        // Lo encolado solo sale con la app al frente (en background la base
+        // puede estar por suspenderse); al volver, didBecomeActive lo retoma.
+        chat.canSendQueued = { Self.isForeground }
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
@@ -624,6 +628,7 @@ final class AppModel: ObservableObject {
             await reconcileProactive()
             await approvalsModel?.refresh()
             await applyWidgetActions()
+            await chatModel?.resumeQueued()
         }
     }
 
@@ -679,12 +684,15 @@ final class AppModel: ObservableObject {
             return SiriTurn.spoken(.notReady(Self.siriNotReady))
         }
         // Un solo turno en vuelo: si el chat, las gafas u otro Siri lo tienen, ocupado.
-        guard turnGate.begin(.siri) else {
+        guard let token = turnGate.begin(.siri) else {
             hold.end()
             return SiriTurn.spoken(.busy)
         }
         let gate = turnGate
-        hold.onEnd = { gate.end(.siri) }
+        hold.onEnd = { gate.end(token) }
+        // Tope de seguridad: aunque el productor jamás termine, la base y la
+        // compuerta se sueltan (tope duro + espera al productor + margen).
+        hold.endAfter(SiriTurn.hardLimit + TurnGate.idleLimit + .seconds(5))
         let router = surfaceRouter
         let runner = SiriTurnRunner(
             runner: loop, sessionId: activeSessionId, approvals: siriApprovals,
@@ -1291,6 +1299,13 @@ final class SiriHold {
             if let runner = self?.runner { Task { await runner.cancel() } }
             DatabaseSuspension.shared.expire()
         })
+    }
+
+    func endAfter(_ limit: Duration) {
+        Task { [weak self] in
+            try? await Task.sleep(for: limit)
+            self?.end()
+        }
     }
 
     func end() {

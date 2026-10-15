@@ -124,45 +124,87 @@ public enum SiriTurn {
 
 /// El ÚNICO turno en vuelo sobre la sesión: chat, gafas y Siri lo piden antes
 /// de correr (y antes de espejar nada); si otro lo tiene, el nuevo dice que
-/// está ocupado. Se suelta cuando el turno de verdad terminó (`end(_:after:)`
-/// espera al productor del loop), y avisa cada cambio (el chat se ve ocupado).
+/// está ocupado. `begin` entrega un TOKEN y solo ese token la suelta: un
+/// `end` tardío jamás libera el turno de otro. Se suelta cuando el turno de
+/// verdad terminó (`end(_:after:)` espera al productor del loop, con tope), y
+/// avisa cada cambio a sus observadores (el chat se ve ocupado).
 public final class TurnGate: @unchecked Sendable {
+    public struct Token: Sendable, Equatable {
+        public let id = UUID()
+        public let surface: SurfaceID
+    }
+
+    /// Lo que se espera al productor antes de soltar igual (no queda tomada
+    /// para siempre si un provider no respeta la cancelación).
+    public static let idleLimit: Duration = .seconds(10)
+
     private let lock = NSLock()
-    private var holder: SurfaceID?
-    private var observers: [@Sendable (SurfaceID?) -> Void] = []
+    private var holder: Token?
+    private var observers: [UUID: @Sendable (SurfaceID?) -> Void] = [:]
 
     public init() {}
 
-    public var current: SurfaceID? { lock.withLock { holder } }
+    public var current: SurfaceID? { lock.withLock { holder?.surface } }
 
-    public func observe(_ handler: @escaping @Sendable (SurfaceID?) -> Void) {
-        lock.withLock { observers.append(handler) }
+    @discardableResult
+    public func observe(_ handler: @escaping @Sendable (SurfaceID?) -> Void) -> UUID {
+        let id = UUID()
+        lock.withLock { observers[id] = handler }
+        return id
     }
 
-    public func begin(_ surface: SurfaceID) -> Bool {
+    public func removeObserver(_ id: UUID) {
+        _ = lock.withLock { observers.removeValue(forKey: id) }
+    }
+
+    public var observerCount: Int { lock.withLock { observers.count } }
+
+    public func begin(_ surface: SurfaceID) -> Token? {
+        let token = Token(surface: surface)
         let notify = lock.withLock { () -> [@Sendable (SurfaceID?) -> Void]? in
             guard holder == nil else { return nil }
-            holder = surface
-            return observers
+            holder = token
+            return Array(observers.values)
         }
-        notify?.forEach { $0(surface) }
-        return notify != nil
+        guard let notify else { return nil }
+        notify.forEach { $0(surface) }
+        return token
     }
 
-    public func end(_ surface: SurfaceID) {
+    public func end(_ token: Token) {
         let notify = lock.withLock { () -> [@Sendable (SurfaceID?) -> Void]? in
-            guard holder == surface else { return nil }
+            guard holder == token else { return nil }
             holder = nil
-            return observers
+            return Array(observers.values)
         }
         notify?.forEach { $0(nil) }
     }
 
-    /// Suelta la compuerta cuando el loop ya no produce (aunque el stream se
-    /// cortara antes): un `begin` justo después nunca la encuentra tomada.
-    public func end(_ surface: SurfaceID, after runner: any TurnRunner) async {
-        await runner.waitUntilIdle()
-        end(surface)
+    /// Suelta cuando el loop ya no produce (aunque el stream se cortara antes):
+    /// un `begin` justo después nunca la encuentra tomada. Con tope.
+    public func end(_ token: Token, after runner: any TurnRunner, limit: Duration = TurnGate.idleLimit) async {
+        await Self.waitIdle(runner, limit: limit)
+        end(token)
+    }
+
+    /// Espera a que el runner no produzca, como mucho `limit`. false = venció.
+    @discardableResult
+    public static func waitIdle(_ runner: any TurnRunner, limit: Duration) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let first = FirstWins(continuation)
+            let idle = Task {
+                await runner.waitUntilIdle()
+                first.resume(true)
+            }
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                first.resume(false)
+            }
+            first.onResume = {
+                timer.cancel()
+                _ = idle
+            }
+        }
     }
 
     public static func busyText(_ holder: SurfaceID?) -> String {
@@ -282,8 +324,9 @@ public actor SiriTurnRunner {
         let task = Task { () -> SiriTurn.Outcome in
             var collector = SiriTurnCollector()
             for await event in stream { collector.apply(event) }
-            // Cortado o no, el turno termina cuando el loop deja de producir.
-            await runner.waitUntilIdle()
+            // Cortado o no, el turno termina cuando el loop deja de producir
+            // (con tope: un productor que ignora la cancelación no lo retiene).
+            await TurnGate.waitIdle(runner, limit: TurnGate.idleLimit)
             let outcome = cut.value ? .failed(SiriTurn.timeoutText) : collector.outcome
             if let mirror = SiriTurnCollector.mirror(outcome) { await deliver(mirror) }
             return outcome

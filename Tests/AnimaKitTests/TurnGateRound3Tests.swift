@@ -60,7 +60,10 @@ struct TurnGateRound3Tests {
         return ChatViewModel(loop: try FullHistoryStoreTests.loop(store, queue), sessionId: try store.startSession())
     }
 
-    private func glasses(gate: TurnGate, chat: ChatViewModel) async -> (GlassesHUDSurface, MockRunner, MockVoice) {
+    /// El router se devuelve para RETENERLO: la superficie lo guarda weak y,
+    /// si se liberara, un espejo indebido no llegaría al chat (m4).
+    private func glasses(gate: TurnGate, chat: ChatViewModel)
+        async -> (GlassesHUDSurface, MockRunner, MockVoice, SurfaceRouter) {
         let body = await readyBody(MockRuntime())
         let voice = MockVoice()
         let runner = MockRunner()
@@ -71,7 +74,7 @@ struct TurnGateRound3Tests {
         await surface.start()
         try? await body.ensureActive()
         _ = await body.waitUntilActive()
-        return (surface, runner, voice)
+        return (surface, runner, voice, router)
     }
 
     // MEDIO A: el chat responde y el dueño habla por las gafas. Las gafas no
@@ -80,8 +83,8 @@ struct TurnGateRound3Tests {
         let chat = try chat()
         let gate = TurnGate()
         chat.turnGate = gate
-        #expect(gate.begin(.phoneChat))   // el run() del chat en vuelo
-        let (surface, runner, voice) = await glasses(gate: gate, chat: chat)
+        let chatTurn = try #require(gate.begin(.phoneChat))   // el run() del chat en vuelo
+        let (surface, runner, voice, router) = await glasses(gate: gate, chat: chat)
         voice.transcripts.mutate { $0 = ["¿qué tengo?"] }
         await surface.handle(.action(.talk))
         await surface.handle(.transcript("¿qué tengo?"))
@@ -95,7 +98,8 @@ struct TurnGateRound3Tests {
         await chat.send()
         #expect(chat.input == "otra cosa")   // no se pierde
         surface.stop()
-        gate.end(.phoneChat)
+        withExtendedLifetime(router) {}
+        gate.end(chatTurn)
     }
 
     // MEDIO B: Siri y gafas espejados a la vez (orden cruzado): cada respuesta
@@ -124,9 +128,9 @@ struct TurnGateRound3Tests {
         let gate = TurnGate()
         chat.turnGate = gate
         #expect(!chat.isStreaming)
-        #expect(gate.begin(.glassesHUD))
+        let glassesTurn = try #require(gate.begin(.glassesHUD))
         #expect(chat.isStreaming)
-        gate.end(.glassesHUD)
+        gate.end(glassesTurn)
         #expect(!chat.isStreaming)
     }
 
@@ -156,14 +160,14 @@ struct TurnGateRound3Tests {
     }
 
     // Menor 7: la compuerta se suelta cuando el productor terminó, no antes.
-    @Test func laCompuertaSeSueltaCuandoElProductorTermina() async {
+    @Test func laCompuertaSeSueltaCuandoElProductorTermina() async throws {
         let gate = TurnGate()
         let runner = LingeringRunner()
-        #expect(gate.begin(.glassesHUD))
+        let token = try #require(gate.begin(.glassesHUD))
         for await _ in await runner.run(sessionId: "s", content: [], surface: .glassesHUD) {}
         let released = Locked(false)
         let ending = Task {
-            await gate.end(.glassesHUD, after: runner)
+            await gate.end(token, after: runner)
             released.mutate { $0 = true }
         }
         // El stream terminó pero el productor no: la compuerta sigue tomada.
@@ -172,8 +176,9 @@ struct TurnGateRound3Tests {
         #expect(gate.current == .glassesHUD)
         runner.finishProducer()
         await ending.value
-        #expect(gate.begin(.siri))                 // justo después: libre, siempre
-        gate.end(.siri)
+        let next = gate.begin(.siri)               // justo después: libre, siempre
+        #expect(next != nil)
+        if let next { gate.end(next) }
     }
 
     @Test func elLoopEsperaAlProductorAunqueElConsumidorCorte() async throws {
@@ -191,10 +196,10 @@ struct TurnGateRound3Tests {
         }
         await consumer.value
         let gate = TurnGate()
-        #expect(gate.begin(.siri))
+        let siri = try #require(gate.begin(.siri))
         // El consumidor cortó: el loop cancela su turno, pero la compuerta
         // espera a que la tarea del turno de verdad termine.
-        await gate.end(.siri, after: loop)
+        await gate.end(siri, after: loop)
         #expect(await loop.turnsInFlight == 0)
         #expect(gate.current == nil)
     }

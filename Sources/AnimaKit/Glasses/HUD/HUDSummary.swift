@@ -71,8 +71,14 @@ public enum HUDSummary {
         let word = wordBefore(chars, at: i)
         let previous = wordBefore(chars, at: i - word.count - 1, skippingSpaces: true)
         var rule = abbreviation(word)
-        if rule == nil, ["a", "p"].contains(word), nextWord(chars, after: i) == "m." { return false }
-        if rule == nil, word == "p", nextWord(chars, after: i) == "ej." { return false }
+        if rule == nil, ["a", "p"].contains(word) {
+            let next = nextWord(chars, after: i)
+            let patterns = word == "p" ? ["m.", "ej."] : ["m."]
+            if patterns.contains(next.word) { return false }
+            // La palabra siguiente llegó a medias ("m", "e", "ej") al final del
+            // buffer: en un stream, aún no se sabe.
+            if !next.complete, patterns.contains(where: { $0.hasPrefix(next.word) }) { return nil }
+        }
         if rule == nil, word == "m", ["a.", "p."].contains(previous + ".") { rule = .beforeLowercase }
         if rule == nil, word == "ej", previous == "p" { rule = .beforeLowercase }
         switch rule {
@@ -117,7 +123,8 @@ public enum HUDSummary {
         return j < chars.count ? chars[j] : nil
     }
 
-    private static func nextWord(_ chars: [Character], after i: Int) -> String {
+    /// La palabra que sigue a `i` y si está completa (le sigue un espacio).
+    private static func nextWord(_ chars: [Character], after i: Int) -> (word: String, complete: Bool) {
         var j = i + 1
         while j < chars.count, chars[j].isWhitespace { j += 1 }
         var word = ""
@@ -125,7 +132,7 @@ public enum HUDSummary {
             word.append(chars[j])
             j += 1
         }
-        return word.lowercased()
+        return (word.lowercased(), j < chars.count)
     }
 
     /// Recorta a `limit` en frontera de palabra, con "…".

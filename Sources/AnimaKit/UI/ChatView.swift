@@ -331,7 +331,8 @@ public final class ChatViewModel: ObservableObject {
     /// El único turno en vuelo sobre la sesión (lo comparten chat, gafas y Siri).
     public var turnGate: TurnGate? {
         didSet {
-            turnGate?.observe { [weak self] _ in
+            if let observer = gateObserver { oldValue?.removeObserver(observer) }
+            gateObserver = turnGate?.observe { [weak self] _ in
                 if Thread.isMainThread {
                     MainActor.assumeIsolated { self?.gateChanged() }
                 } else {
@@ -341,6 +342,17 @@ public final class ChatViewModel: ObservableObject {
             refreshBusy()
         }
     }
+    private var gateObserver: UUID?
+
+    /// El shell lo reemplaza al re-cablear: suelta su observer de la compuerta.
+    public func detachFromGate() {
+        if let gateObserver { turnGate?.removeObserver(gateObserver) }
+        gateObserver = nil
+    }
+
+    /// ¿Puede salir lo encolado ahora? (el shell: solo con la app al frente;
+    /// en background la base puede estar por suspenderse).
+    public var canSendQueued: @MainActor () -> Bool = { true }
 
     private func refreshBusy() {
         let busy = ownTurn || !mirroredTurns.isEmpty || turnGate?.current != nil
@@ -351,8 +363,13 @@ public final class ChatViewModel: ObservableObject {
     /// liberarse sale lo encolado.
     private func gateChanged() {
         refreshBusy()
-        guard turnGate?.current == nil, hasQueuedTurn else { return }
+        guard turnGate?.current == nil, hasQueuedTurn, canSendQueued() else { return }
         Task { await sendQueuedIfOnline() }
+    }
+
+    /// La app volvió al frente: lo que quedó encolado sale.
+    public func resumeQueued() async {
+        await sendQueuedIfOnline()
     }
     public let events: AsyncStream<SurfaceEvent>
     private let eventSink: AsyncStream<SurfaceEvent>.Continuation
@@ -631,7 +648,7 @@ public final class ChatViewModel: ObservableObject {
     /// El turno encolado sin red sale apenas hay red y nada en curso (si la red
     /// volvió a mitad de un turno, sale al terminarlo).
     private func sendQueuedIfOnline() async {
-        guard !isOffline, let content = queuedContent, !isStreaming else { return }
+        guard !isOffline, let content = queuedContent, !isStreaming, canSendQueued() else { return }
         queuedContent = nil
         // Si otra superficie toma la compuerta en el medio, run() lo re-encola.
         await run(nil, content: content)
@@ -677,7 +694,8 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
-        if let turnGate, !turnGate.begin(.phoneChat) {
+        let token = turnGate?.begin(.phoneChat)
+        if turnGate != nil, token == nil {
             // Otra superficie tiene el turno: el mensaje no se pierde, queda
             // pendiente y sale cuando la compuerta se libere.
             if let bubble {
@@ -689,12 +707,9 @@ public final class ChatViewModel: ObservableObject {
             refreshBusy()
             return
         }
+        // Se suelta en UN solo lugar (al cerrar el turno, antes de la cola), y
+        // con su token: jamás libera el turno de un run() posterior.
         ownTurn = true
-        defer {
-            ownTurn = false
-            turnGate?.end(.phoneChat)
-            refreshBusy()
-        }
         errorText = nil
         lastUserContent = content
         if let bubble {
@@ -757,7 +772,7 @@ public final class ChatViewModel: ObservableObject {
         assistant.isStreaming = false
         if messages.indices.contains(index) { messages[index] = assistant }
         ownTurn = false
-        turnGate?.end(.phoneChat)
+        if let token { turnGate?.end(token) }
         refreshBusy()
         await loadMind()
         await refreshContext()
@@ -776,6 +791,11 @@ extension ChatViewModel: PhoneChatSurface {
     public func render(_ content: SurfaceContent) async {
         switch content {
         case .userTurn(let text, let origin) where origin != .phoneChat:
+            // Un turno nuevo del mismo origen: la burbuja vacía del anterior no
+            // queda girando para siempre.
+            if let stale = mirroredTurns.removeValue(forKey: origin) {
+                messages.removeAll { $0.id == stale && $0.text.isEmpty }
+            }
             var message = DisplayMessage(role: .user, text: text)
             message.surface = origin
             messages.append(message)

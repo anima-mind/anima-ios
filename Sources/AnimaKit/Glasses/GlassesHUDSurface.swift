@@ -37,6 +37,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private let runner: any TurnRunner
     /// Un solo turno en vuelo sobre la sesión (chat, gafas, Siri). nil ⇒ sin compuerta.
     private let gate: TurnGate?
+    /// Cuánto espera un turno nuevo a que suelte la compuerta el turno de gafas
+    /// recién cancelado.
+    private let gateRetry: Duration
     private let sessionId: SessionID
     private let voice: any VoiceCapturePort
     private let speech: any SpeechOutputPort
@@ -73,13 +76,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private var cameraRequestID = 0
 
     public init(body: GlassesBody, activation: GlassesActivation? = nil, runner: any TurnRunner,
-                gate: TurnGate? = nil, sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
+                gate: TurnGate? = nil, gateRetry: Duration = .milliseconds(1500), sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
                 router: SurfaceRouter? = nil, cameraTimeout: TimeInterval = 60, errorDwell: TimeInterval = 4,
                 openPhone: @escaping @MainActor (UUID?) -> Void = { _ in }) {
         self.body = body
         self.activation = activation
         self.runner = runner
         self.gate = gate
+        self.gateRetry = gateRetry
         self.sessionId = sessionId
         self.voice = voice
         self.speech = speech
@@ -361,9 +365,13 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private func runTurn(mirror: String, content: [ContentBlock]) async {
         // La compuerta ANTES de espejar: si otra superficie responde, nada llega
         // al chat y las gafas lo dicen.
-        if let gate, !gate.begin(.glassesHUD) {
-            await handle(.turnFailed(Self.busyText))
-            return
+        var token: TurnGate.Token?
+        if let gate {
+            token = await Self.acquire(gate, wait: gateRetry)
+            guard token != nil else {
+                await handle(.turnFailed(Self.busyText))
+                return
+            }
         }
         turnGeneration += 1
         let turn = turnGeneration
@@ -371,7 +379,20 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         turnSpeechDismissed = false
         await deliver(.userTurn(text: mirror, origin: .glassesHUD))
         await consumeTurn(content: content, turn: turn)
-        await gate?.end(.glassesHUD, after: runner)
+        if let gate, let token { await gate.end(token, after: runner) }
+    }
+
+    /// Toma la compuerta. Si la tiene un turno de gafas (el que se acaba de
+    /// cancelar y aún suelta su productor), reintenta brevemente antes de
+    /// decir que está ocupado; otra superficie ⇒ ocupado de inmediato.
+    static func acquire(_ gate: TurnGate, wait: Duration) async -> TurnGate.Token? {
+        if let token = gate.begin(.glassesHUD) { return token }
+        let deadline = ContinuousClock.now.advanced(by: wait)
+        while gate.current == .glassesHUD, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+            if let token = gate.begin(.glassesHUD) { return token }
+        }
+        return gate.begin(.glassesHUD)
     }
 
     private func consumeTurn(content: [ContentBlock], turn: Int) async {

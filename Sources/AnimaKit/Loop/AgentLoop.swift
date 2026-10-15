@@ -157,6 +157,15 @@ public actor AgentLoop {
 
     /// Pista volátil por superficie de origen (el HUD es para vistazos).
     public static let glassesSurfaceHint = "[Superficie: gafas] El dueño te habla por voz desde sus gafas y oirá tu respuesta: responde en 1–2 frases cortas, sin markdown ni listas. Si hace falta más, dilo breve y ofrece verlo en el teléfono."
+    public static let siriSurfaceHint = "[Superficie: Siri] El dueño te habla por Siri, quizá con el teléfono bloqueado, y oirá tu respuesta en voz: responde en 1–3 frases cortas, sin markdown, listas ni emojis. Si hace falta más, dilo breve y avisa que el detalle queda en el chat."
+
+    static func surfaceHint(_ surface: SurfaceID) -> String? {
+        switch surface {
+        case .glassesHUD: glassesSurfaceHint
+        case .siri: siriSurfaceHint
+        case .phoneChat: nil
+        }
+    }
 
 
     /// Turno multimodal: los content blocks (texto + image blocks de una foto, o
@@ -223,7 +232,7 @@ public actor AgentLoop {
             if let bodyStatus {
                 await workingMemory.updateBodyStatus(await bodyStatus())
             }
-            await workingMemory.updateSurfaceHint(surface == .glassesHUD ? Self.glassesSurfaceHint : nil)
+            await workingMemory.updateSurfaceHint(Self.surfaceHint(surface))
             if let taskInstructions { await workingMemory.updateTaskInstructions(taskInstructions) }
             await workingMemory.updateClock(clock?())
 

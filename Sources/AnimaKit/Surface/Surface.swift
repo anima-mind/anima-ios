@@ -10,6 +10,9 @@ import Foundation
 public enum SurfaceID: String, Sendable, Codable, Equatable, CaseIterable {
     case phoneChat
     case glassesHUD
+    /// Siri / Atajos sin abrir el teléfono (batch 10 #2). Columna TEXT: un
+    /// build viejo que lea "siri" lo trata como sin superficie (nil).
+    case siri
 }
 
 public struct SurfaceCapabilities: Sendable, Equatable {
@@ -33,6 +36,9 @@ public struct SurfaceCapabilities: Sendable, Equatable {
     public static let glassesHUD = SurfaceCapabilities(freeText: false, images: true,
                                                        maxButtons: HUDValidator.maxButtons,
                                                        voiceIn: true, audioOut: true)
+    /// Siri: entra un transcript y sale voz; sin pantalla propia ni botones.
+    public static let siri = SurfaceCapabilities(freeText: false, images: false, maxButtons: 0,
+                                                 voiceIn: true, audioOut: true)
 }
 
 /// Contenido SEMÁNTICO (nunca visual) que la mente emite.

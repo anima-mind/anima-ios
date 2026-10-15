@@ -39,6 +39,13 @@ el argumento nada de esto se activa:
   UI-test persiste en `Library/uitest-sticky.plist`, para que el lanzamiento
   que hace iOS al tocar el push (sin argumentos) siga aislado. Cualquier
   lanzamiento con `--uitest` sin `--uitest-sticky` lo borra.
+- `SiriShortcutUITests`: corre "Pregúntale a Anima" desde la app Atajos con la
+  app cerrada (lanzamiento en background con `--uitest-sticky`). linkd solo
+  ejecuta App Shortcuts de un binario con team ID: con la firma ad-hoc de
+  `scripts/ui-test.sh` el test se salta; para correrlo, re-firmar el build del
+  simulador con un certificado de desarrollo (`codesign --force --sign
+  "Apple Development: …" --preserve-metadata=entitlements` sobre el `.appex` y
+  el `.app`) y `xcodebuild test-without-building`.
 
 ## Notificaciones
 

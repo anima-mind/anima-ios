@@ -140,6 +140,8 @@ final class AppModel: ObservableObject {
     private var glassesSurface: GlassesHUDSurface?
     private var activeSessionId: SessionID?
     private var previousSessionId: SessionID?
+    /// El loop cableado (Siri corre sus turnos sobre el mismo que el chat).
+    private var loop: AgentLoop?
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
     /// "Hey Meta, start Anima" (DAT 1.0): el stream se abre en el init — ANTES de
@@ -483,6 +485,8 @@ final class AppModel: ObservableObject {
             skillEngine: skillEngine,
             bodyStatus: bodyStatus)
 
+        self.loop = loop
+
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
         // extracción de Stated Goals es una etapa nueva del ciclo (§5.8).
@@ -649,6 +653,71 @@ final class AppModel: ObservableObject {
         await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         await applyWidgetActions()
         DatabaseSuspension.shared.end()
+    }
+
+    // MARK: - Siri (batch 10 #2)
+
+    /// Un turno por Siri sin abrir la app: el MISMO loop y sesión que el chat
+    /// (superficie `.siri`, espejado en el chat). La base queda despierta y un
+    /// background task cubre el resto del turno si vence el deadline; la
+    /// respuesta tardía queda en el chat y se avisa con una notificación.
+    /// `confirm`: Siri le pregunta al dueño por una acción que pide su ok.
+    func askFromSiri(_ text: String, confirm: @MainActor (String) async -> Bool) async -> String {
+        DatabaseSuspension.shared.begin()
+        let flush = BackgroundFlush.begin(onExpire: { DatabaseSuspension.shared.expire() })
+        let release: @MainActor () -> Void = {
+            DatabaseSuspension.shared.end()
+            flush.end()
+        }
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
+        if let blocked = siriBlocker() {
+            release()
+            return SiriTurn.spoken(blocked)
+        }
+        guard let loop, let activeSessionId else {
+            release()
+            return SiriTurn.spoken(.notReady(Self.siriNotReady))
+        }
+        let confirmation = self.confirmation
+        let router = surfaceRouter
+        let runner = SiriTurnRunner(
+            runner: loop, sessionId: activeSessionId,
+            pendingApproval: { await MainActor.run { confirmation.pending?.summary } },
+            declineApproval: { await MainActor.run { confirmation.resolve(.cancel) } },
+            deliver: { content in await router.route(content) },
+            settled: { late in
+                await MainActor.run {
+                    if let late, let body = SiriTurn.lateNotice(late) {
+                        HandoffNotifications.post(.chat(turn: nil), body: body)
+                    }
+                    release()
+                }
+            })
+        var outcome = await runner.ask(text)
+        var asked = 0
+        while case .needsApproval(let summary) = outcome, asked < 3 {
+            asked += 1
+            let approved = await confirm(summary)
+            confirmation.resolve(approved ? .once : .cancel)
+            outcome = await runner.resume()
+        }
+        await runner.release()
+        return SiriTurn.spoken(outcome)
+    }
+
+    static let siriNotReady = "Anima todavía no está lista. Ábrela para terminar de configurarla."
+
+    /// Por qué Siri no puede correr un turno ahora (nil = puede).
+    private func siriBlocker() -> SiriTurn.Outcome? {
+        guard onboarded else { return .notReady(Self.siriNotReady) }
+        switch phase {
+        case .ready: break
+        case .needsToken: return .notReady("Anima necesita tu API key. Ábrela y agrégala en Ajustes.")
+        case .misconfigured, .loading: return .notReady(Self.siriNotReady)
+        }
+        if chatModel?.isStreaming == true { return .busy }
+        if offline, Self.onboardingDefaults.modeStore.mode != .onDeviceOnly { return .offline }
+        return nil
     }
 
     /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;

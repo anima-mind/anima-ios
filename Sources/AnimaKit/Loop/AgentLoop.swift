@@ -181,6 +181,12 @@ public actor AgentLoop {
         let stream = AsyncStream<LoopEvent> { continuation in
             let task = Task {
                 await previous?.value
+                // Cancelado mientras esperaba en la cola: no corre ni persiste nada.
+                guard !Task.isCancelled else {
+                    continuation.finish()
+                    self.untrack(id, sessionId: sessionId)
+                    return
+                }
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()

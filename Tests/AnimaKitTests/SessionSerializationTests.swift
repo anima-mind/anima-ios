@@ -69,8 +69,11 @@ struct SessionSerializationTests {
         return Set(allResults).count == allResults.count
     }
 
-    // Repro del review: turno de gafas con una tool que ignora la cancelación,
-    // cancel + compuerta soltada por tope (50 ms) y el chat pregunta algo nuevo.
+    // Repro del review (ronda 5): la compuerta se soltó por tope (50 ms) con el
+    // turno de gafas aún en su tool (que ignora la cancelación) y el chat
+    // pregunta algo nuevo. Desde la ronda 6 un turno CANCELADO suelta su tool al
+    // instante (resultado de cancelación), así que el caso que queda es el de
+    // un turno vivo: las gafas siguen consumiendo y el chat entra igual.
     @Test func elTurnoNuevoEsperaYLaVentanaQuedaPareada() async throws {
         let queue = try AnimaDatabase.temporary()
         let store = SymbolicStore(queue: queue)
@@ -82,12 +85,13 @@ struct SessionSerializationTests {
         let sid = try store.startSession()
         let gate = TurnGate()
         let glasses = try #require(gate.begin(.glassesHUD))
+        let started = Locked(false)
         let old = Task {
             for await event in await loop.run(sessionId: sid, content: [.text("pregunta vieja")], surface: .glassesHUD) {
-                if case .toolStarted = event { return }
+                if case .toolStarted = event { started.mutate { $0 = true } }
             }
         }
-        await old.value          // el consumidor de las gafas cortó (cancel)
+        #expect(await eventually { started.value })
         await gate.end(glasses, after: loop, limit: .milliseconds(50))
         #expect(gate.current == nil)
         #expect(await loop.turnsInFlight == 1)   // el productor sigue en la tool
@@ -98,6 +102,7 @@ struct SessionSerializationTests {
         }
         #expect(reply == "Respuesta 2")
         #expect(tool.finished.value == 1)        // el nuevo esperó a que terminara el viejo
+        await old.value
 
         let window = try store.window(sessionId: sid)
         #expect(Self.paired(window))
@@ -143,19 +148,20 @@ struct SessionSerializationTests {
                              token: "sk-ant-api03-xyz", clientTools: [tool], serverTools: [],
                              permissionPolicy: .app(ownerAllowlist: { [] }), sleep: { _ in })
         let a = try store.startSession(), b = try store.startSession()
+        let started = Locked(false)
         let old = Task {
             for await event in await loop.run(sessionId: a, content: [.text("pregunta vieja")]) {
-                if case .toolStarted = event { return }
+                if case .toolStarted = event { started.mutate { $0 = true } }
             }
         }
-        await old.value
+        #expect(await eventually { started.value })
         var reply = ""
         for await event in await loop.run(sessionId: b, content: [.text("pregunta nueva")]) {
             if case .textDelta(let d) = event { reply += d }
         }
         #expect(reply == "Respuesta 2")
         #expect(tool.finished.value == 0)   // la otra sesión no esperó
-        await loop.waitUntilIdle()
+        await old.value
         #expect(tool.finished.value == 1)
     }
 }

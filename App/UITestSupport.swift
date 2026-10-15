@@ -88,6 +88,10 @@ enum UITestMode {
         }
     }
 
+    /// Un turno de CarPlay sin la pantalla del carro (la conversación con voz
+    /// guionada): queda en el chat con el chip "CarPlay".
+    static let runsCarPlayTurn = isActive && arguments.contains("--uitest-carplay-turn")
+
     /// Simula >8 h sin actividad: el lanzamiento abre sesión nueva (historial completo, batch 8 #3).
     static let forcesFreshSession = isActive && arguments.contains("--uitest-fresh-session")
 

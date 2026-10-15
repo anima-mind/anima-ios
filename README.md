@@ -88,7 +88,7 @@ Requisitos: Xcode 26, iOS 26. Las credenciales (keys de proveedores, Firebase, M
 
 ## Estado
 
-🧪 **En pruebas de campo** (TestFlight interno). Próximo: widgets, CarPlay (voz) y App Store.
+🧪 **En pruebas de campo** (TestFlight interno). Próximo: App Store.
 
 ## Widgets y App Group
 
@@ -97,6 +97,13 @@ Requisitos: Xcode 26, iOS 26. Las credenciales (keys de proveedores, Firebase, M
 - **Widgets** (`App/Widgets`, vistas e intents compartidos en `App/WidgetsShared`): leen SOLO `<grupo>/Widgets/WidgetSnapshot.json`, que la app reescribe tras cada sync proactivo, al cerrar una noche y al ir a background. La extensión jamás abre GRDB: linkea solo `AnimaWidgetCore` (snapshot, copy, deep links, tema, BreathMark, cola de botones; sin GRDB), que `AnimaKit` re-exporta.
 - **Botones** ("Hecho", "Sí, avancé"): cada tap queda durable en `<grupo>/Widgets/Actions/` (un archivo por acción) y el widget se repinta optimista; la app los aplica con el mismo `ProactiveActionHandler` de las notificaciones — de inmediato si iOS corre el intent en su proceso (`LiveActivityIntent`), o al abrir / volver / en el pulso de background.
 - Deep links: `anima://reminders`, `anima://goals[?id=]`, `anima://chat?mic=1` (Centro de control / botón de Acción).
+
+## CarPlay (voz)
+
+- Categoría **voice-based conversation** (iOS 26.4+), entitlement `com.apple.developer.carplay-voice-based-conversation` en `App/Anima.entitlements`. El App ID debe tener la capacidad activa o el archive del deploy falla.
+- Escena `CPTemplateApplicationSceneSessionRoleApplication` → `App/CarPlay/CarPlaySceneDelegate.swift`: un `CPVoiceControlTemplate` raíz con 5 estados (Hablar con …, Te escucho…, Pensando…, … responde…, ¿Lo hago?) y ≤2 botones por estado. Al abrir Anima en el carro escucha de una (voz primero).
+- La lógica vive en AnimaKit (`Surface/CarPlayConversation.swift`, `CarPlayTurn.swift`): superficie `.carplay` sobre el mismo loop, compuerta de turnos y espejo en el chat (chip "CarPlay"); respuesta dicha por oración con tope; audio `.playAndRecord`/default sin mezclar, solo mientras hay voz. Desde el carro solo se confirma por voz (o Sí/No) crear/completar cosas reversibles; lo de riesgo se niega y queda pendiente en el teléfono; la cámara de las gafas se niega.
+- Probar: correr en un simulador iOS 26.4+ → *I/O → External Displays → CarPlay* → tocar Anima en la pantalla del carro (en simulador conviene `--uitest --uitest-sticky`: sin Firebase y con voz guionada). Con iPhone real: CarPlay Simulator (Device Hub / Additional Tools for Xcode) o el carro.
 
 ## Licencia
 

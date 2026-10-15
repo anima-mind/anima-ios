@@ -59,7 +59,7 @@ jobs:
       # (com.joshuamoreno1.anima) y la extensión (com.joshuamoreno1.anima.widgets),
       # ambas con el App Group group.com.joshuamoreno1.anima.widgets. Si el perfil
       # de alguna no trae el grupo, se corta aquí y no se sube un build roto.
-      - name: Verificar firma + App Group de la app y la extensión
+      - name: Verificar firma + App Group (app y extensión) + CarPlay (app)
         run: |
           APP=build/Anima.xcarchive/Products/Applications/Anima.app
           APPEX="$APP/PlugIns/AnimaWidgets.appex"
@@ -69,6 +69,10 @@ jobs:
             codesign -d --entitlements :- "$bundle" 2>/dev/null | grep -q "group.com.joshuamoreno1.anima.widgets" \
               || { echo "Sin App Group en $bundle" >&2; exit 1; }
           done
+          # CarPlay (voice-based conversation): el perfil de la app debe traer el
+          # entitlement; sin la capacidad en el App ID el archive ya falló arriba.
+          codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q "com.apple.developer.carplay-voice-based-conversation" \
+            || { echo "Sin el entitlement de CarPlay en $APP" >&2; exit 1; }
       - name: Export + upload a TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}

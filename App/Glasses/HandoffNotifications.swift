@@ -16,10 +16,14 @@ enum HandoffNotifications {
     static let categoryPrefix = "handoff-"
     static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
 
-    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {
+    /// `evenIfActive`: con CarPlay al frente la app cuenta como activa aunque el
+    /// teléfono esté en el bolsillo; lo pendiente de CarPlay se avisa igual (en
+    /// el teléfono: la categoría no se muestra en CarPlay).
+    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.",
+                     evenIfActive: Bool = false) {
         Task { @MainActor in
             // Con la app al frente el shell ya saltó al turno: sin notificación.
-            guard UIApplication.shared.applicationState != .active else { return }
+            guard evenIfActive || UIApplication.shared.applicationState != .active else { return }
             guard await NotificationPermission.shared.requestIfNeeded() else { return }
             let center = UNUserNotificationCenter.current()
             let content = UNMutableNotificationContent()
@@ -35,6 +39,7 @@ enum HandoffNotifications {
 #else
 enum HandoffNotifications {
     static let reentryText = "Anima sigue aquí — toca para volver a las gafas."
-    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.") {}
+    static func post(_ link: AnimaDeepLink, body: String = "Sigue la conversación en el teléfono.",
+                     evenIfActive: Bool = false) {}
 }
 #endif

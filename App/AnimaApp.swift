@@ -146,6 +146,11 @@ final class AppModel: ObservableObject {
     private let turnGate = TurnGate()
     /// Las confirmaciones de los turnos de Siri (las pregunta Siri, no el sheet).
     private let siriApprovals = SiriApprovals()
+    /// Las de los turnos de CarPlay (se preguntan en el carro, por voz o Sí/No).
+    private let carPlayApprovals = CarPlayApprovals()
+    /// La conversación del carro (una por proceso; la escena de CarPlay la proyecta).
+    private var carPlay: CarPlayConversation?
+    private var ranUITestCarPlayTurn = false
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
     /// "Hey Meta, start Anima" (DAT 1.0): el stream se abre en el init — ANTES de
@@ -481,7 +486,7 @@ final class AppModel: ObservableObject {
             // §8: la cámara de las gafas se confirma con pinch EN las gafas; el resto, sheet.
             confirmation: SurfaceConfirmationRouter(phone: confirmation, glasses: { [glassesHost] request in
                 await glassesHost.confirm(request)
-            }, siri: siriApprovals),
+            }, siri: siriApprovals, carplay: carPlayApprovals),
             brain: brain,
             inbox: inbox,
             selfModel: selfModel,
@@ -611,6 +616,11 @@ final class AppModel: ObservableObject {
             pendingLink = nil
             open(link)
         }
+        // XCUITest: un turno de CarPlay sin pantalla del carro (voz guionada).
+        if UITestMode.runsCarPlayTurn, onboarded, !ranUITestCarPlayTurn {
+            ranUITestCarPlayTurn = true
+            carPlayConversation().talk()
+        }
     }
 
     /// Recordatorios vencidos → mensajes de Anima en el chat + re-sync de las
@@ -718,6 +728,60 @@ final class AppModel: ObservableObject {
     }
 
     static let siriNotReady = "Anima todavía no está lista. Ábrela para terminar de configurarla."
+
+    // MARK: - CarPlay (voice-based conversation, iOS 26.4+)
+
+    /// La conversación del carro: el MISMO loop, sesión, compuerta y espejo en
+    /// el chat que Siri y las gafas. La crea la escena de CarPlay al conectarse.
+    func carPlayConversation() -> CarPlayConversation {
+        if let carPlay { return carPlay }
+        let ports = Self.makeCarPlayVoice()
+        let conversation = CarPlayConversation(
+            readiness: { [weak self] in await self?.carPlayReadiness() ?? .blocked(CarPlayTurn.notReadyText) },
+            gate: turnGate, voice: ports.voice, answerVoice: ports.answer, speech: ports.speech, audio: ports.audio,
+            approvals: carPlayApprovals, router: surfaceRouter,
+            onPending: { _ in
+                // Lo que se negó por riesgo queda en el chat y se avisa EN EL TELÉFONO
+                // (genérico: el detalle no va a la pantalla bloqueada).
+                HandoffNotifications.post(.chat(turn: nil), body: CarPlayTurn.pendingNotice, evenIfActive: true)
+            })
+        carPlay = conversation
+        return conversation
+    }
+
+    /// El nombre del título "Hablar con …" (el del self vivo, o el semilla).
+    var carPlaySelfName: String { chatModel?.selfName ?? "Anima" }
+
+    /// ¿Se puede conversar desde el carro? Las MISMAS reglas que Siri, dichas
+    /// sin mandar a nadie al teléfono.
+    private func carPlayReadiness() async -> CarPlayConversation.Readiness {
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
+        switch siriBlocker() {
+        case .busy?: return .blocked(CarPlayTurn.busyText(turnGate.current))
+        case .offline?: return .blocked(CarPlayTurn.offlineText)
+        case .some: return .blocked(CarPlayTurn.notReadyText)
+        case nil: break
+        }
+        guard let loop, let activeSessionId else { return .blocked(CarPlayTurn.notReadyText) }
+        return .ready(runner: loop, sessionId: activeSessionId)
+    }
+
+    /// Mic + TTS del carro: el pipeline de voz de las gafas (STT on-device, TTS
+    /// por oración) sobre la sesión de audio de CarPlay. `--uitest`: guionado.
+    static func makeCarPlayVoice() -> (voice: any VoiceCapturePort, answer: any VoiceCapturePort,
+                                       speech: any SpeechOutputPort, audio: any CarPlayAudioPort) {
+        if UITestMode.isActive {
+            return (UITestScriptedVoice(), UITestScriptedVoice(), SilentVoice(), SilentCarPlayAudio())
+        }
+        #if os(iOS)
+        let audio = CarPlayVoiceAudioSession()
+        return (GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.requestDetector, diagnostics: .shared),
+                GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.answerDetector, diagnostics: .shared),
+                GlassesSpeaker(audio: audio), audio)
+        #else
+        return (SilentVoice(), SilentVoice(), SilentVoice(), SilentCarPlayAudio())
+        #endif
+    }
 
     /// Por qué Siri no puede correr un turno ahora (nil = puede).
     private func siriBlocker() -> SiriTurn.Outcome? {

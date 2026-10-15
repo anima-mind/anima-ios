@@ -19,8 +19,11 @@ el argumento nada de esto se activa:
 - Modelo local forzado a `.available`; Claude y on-device responden con
   `UITestScriptedProvider`: streamea una respuesta fija (~3 s) o, si el mensaje
   menciona "calendario", pide la tool `calendar` para ejercitar el TCC real.
-  Con "respuesta larga" streamea 48 párrafos en ráfagas de 3 (~13 s, desborda
-  la pantalla): auto-scroll del chat y "no jalar" si el dueño sube a leer.
+  Con "respuesta larga" streamea 48 párrafos en ráfagas de 3 (desborda la
+  pantalla) y se PAUSA tras "Punto 21:" y "Punto 33:" hasta que el test la
+  suelta con la notificación Darwin `com.joshuamoreno1.anima.uitest.stream.resume`
+  (UITestStreamGate; tope 120 s por pausa): auto-scroll del chat y "no jalar"
+  si el dueño sube a leer, sin depender del reloj del runner.
 - Estado aislado: suite de UserDefaults, servicio de Keychain y SQLite propios;
   `--uitest-reset` los borra al arrancar.
 - Sin validar la key contra el API: el paso API key acepta offline con warning.

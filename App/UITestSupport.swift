@@ -259,11 +259,14 @@ struct UITestScriptedProvider: Provider {
 
     /// Respuesta larga (batch 10 #1): desborda la pantalla y llega en ráfagas de
     /// 3 párrafos (>80 pt por frame, como un stream real que se acumula entre
-    /// frames) durante ~13 s: ejercita el auto-scroll y el "no me jales".
+    /// frames): ejercita el auto-scroll y el "no me jales". Se PAUSA tras los
+    /// párrafos de `longReplyPauses` hasta que el test la suelte
+    /// (UITestStreamGate): sin depender del reloj en un runner lento.
     static let longReplyEnd = "Fin de la respuesta larga."
     static let longReply = (1...48).map { "Punto \($0): una línea con texto suficiente para ocupar espacio en la pantalla del chat." }
         .joined(separator: "\n\n") + "\n\n" + longReplyEnd
-    static let longReplyDelay: Duration = .milliseconds(800)
+    static let longReplyDelay: Duration = .milliseconds(300)
+    static let longReplyPauses = ["Punto 21:", "Punto 33:"]
 
     static func plan(for ctx: AssembledContext) -> Plan {
         let inWorkshop = ctx.messages.contains { message in
@@ -305,10 +308,16 @@ struct UITestScriptedProvider: Provider {
                     continuation.yield(.thinkingDelta(Self.thought))
                     let delay: Duration = reply == Self.longReply ? Self.longReplyDelay
                         : reply == Self.skillReply || reply == Self.markdownReply ? .milliseconds(40) : Self.chunkDelay
+                    let gate = UITestStreamGate.passes
+                    var paused = 0
                     for chunk in reply == Self.longReply ? Self.bursts(reply) : Self.chunks(reply) {
                         try? await Task.sleep(for: delay)
                         if Task.isCancelled { break }
                         continuation.yield(.textDelta(chunk))
+                        if reply == Self.longReply, Self.longReplyPauses.contains(where: chunk.contains) {
+                            paused += 1
+                            await UITestStreamGate.wait(until: gate + paused)
+                        }
                     }
                     continuation.yield(.blockStop(index: 0))
                     continuation.yield(.messageDelta(stopReason: .endTurn,
@@ -357,6 +366,38 @@ struct UITestScriptedProvider: Provider {
             index += 2
         }
         return out
+    }
+}
+
+/// Compuerta del stream largo: el XCUITest la suelta con una notificación
+/// Darwin (cruza del runner a la app en el simulador, sin permisos ni red).
+/// Tope de seguridad: 120 s por pausa.
+enum UITestStreamGate {
+    static let name = "com.joshuamoreno1.anima.uitest.stream.resume"
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var count = 0
+    nonisolated(unsafe) private static var installed = false
+
+    static var passes: Int {
+        install()
+        return lock.withLock { count }
+    }
+
+    static func install() {
+        let first = lock.withLock { () -> Bool in
+            defer { installed = true }
+            return !installed
+        }
+        guard first else { return }
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil, { _, _, _, _, _ in
+            UITestStreamGate.lock.withLock { UITestStreamGate.count += 1 }
+        }, name as CFString, nil, .deliverImmediately)
+    }
+
+    static func wait(until target: Int) async {
+        for _ in 0..<1200 where lock.withLock({ count }) < target {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
     }
 }
 

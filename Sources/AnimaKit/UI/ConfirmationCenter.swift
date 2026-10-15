@@ -15,7 +15,6 @@ public enum ConfirmationDecision: Sendable, Equatable {
 public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     @Published public var pending: ConfirmationRequest?
     private var continuation: CheckedContinuation<Bool, Never>?
-    private var pendingID: UUID?
     /// "Autorizar siempre": el shell persiste la (tool, operación).
     public var onAlwaysAllow: ((ConfirmationRequest) -> Void)?
 
@@ -25,34 +24,38 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     /// (no queda la sesión retenida esperando al dueño).
     public nonisolated func confirm(_ request: ConfirmationRequest) async -> Bool {
         guard !Task.isCancelled else { return false }
-        let id = UUID()
+        let ticket = Ticket()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { cont in
                 Task { @MainActor in
-                    guard self.continuation == nil else {
-                        cont.resume(returning: false)   // ya hay una pendiente → fail-closed
+                    ticket.registered = true
+                    guard self.continuation == nil, !ticket.cancelled else {
+                        cont.resume(returning: false)   // pendiente ajena o ya cancelada → fail-closed
                         return
                     }
                     self.continuation = cont
-                    self.pendingID = id
+                    self.pendingTicket = ticket
                     self.pending = request
-                    if self.cancelledIDs.remove(id) != nil { self.resolve(.cancel) }
                 }
             }
         } onCancel: {
-            Task { @MainActor in self.cancel(id) }
+            Task { @MainActor in self.cancel(ticket) }
         }
     }
 
-    /// Cancelaciones que llegaron antes de registrar la solicitud.
-    private var cancelledIDs: Set<UUID> = []
+    /// Una solicitud: su cancelación se recuerda en ELLA (no en un registro
+    /// global que crecería con cancelaciones tardías).
+    @MainActor
+    final class Ticket {
+        var registered = false
+        var cancelled = false
+    }
 
-    private func cancel(_ id: UUID) {
-        guard pendingID == id else {
-            cancelledIDs.insert(id)
-            return
-        }
-        resolve(.cancel)
+    private var pendingTicket: Ticket?
+
+    private func cancel(_ ticket: Ticket) {
+        ticket.cancelled = true
+        if pendingTicket === ticket { resolve(.cancel) }
     }
 
     public func resolve(_ approved: Bool) {
@@ -62,7 +65,7 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     public func resolve(_ decision: ConfirmationDecision) {
         if decision == .always, let request = pending { onAlwaysAllow?(request) }
         pending = nil
-        pendingID = nil
+        pendingTicket = nil
         let cont = continuation
         continuation = nil
         cont?.resume(returning: decision != .cancel)

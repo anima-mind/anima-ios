@@ -269,8 +269,23 @@ public enum Pricing {
     /// Sobreescribe la tabla desde config remota: {"<prefijo>": {"in": x, "out": y}}.
     /// Claves/formas desconocidas se ignoran (forward-compatible, como todo RC).
     public static func load(_ json: JSONValue) {
-        if let parsed = parse(json) { table = parsed }
+        guard let parsed = parse(json) else { return }
+        if let sandbox { sandbox.table = parsed } else { table = parsed }
     }
+
+    /// Tabla "global" de la tarea actual (tests): `load` escribe aquí en vez de
+    /// en la global que leen en paralelo los demás tests de costo.
+    final class Sandbox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [(prefix: String, rate: Rate)]?
+        var table: [(prefix: String, rate: Rate)]? {
+            get { lock.withLock { stored } }
+            set { lock.withLock { stored = newValue } }
+        }
+        init() {}
+    }
+
+    @TaskLocal static var sandbox: Sandbox?
 
     /// La tabla de un JSON de RC; nil si no trae ninguna tarifa válida.
     /// Prefijos más largos primero: "gpt-5-mini" gana sobre "gpt-5".
@@ -301,7 +316,9 @@ public enum Pricing {
     static func rate(for model: String) -> Rate {
         // Modelo local de Apple (§4.9): gratis, cero red.
         if OnDeviceProvider.isOnDevice(model: model) { return Rate(input: 0, output: 0) }
-        if let hit = (override ?? table).first(where: { model.hasPrefix($0.prefix) }) { return hit.rate }
+        if let hit = (override ?? sandbox?.table ?? table).first(where: { model.hasPrefix($0.prefix) }) {
+            return hit.rate
+        }
         return Rate(input: 5, output: 25)  // desconocido: asumir caro, jamás barato
     }
 

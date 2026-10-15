@@ -487,6 +487,8 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     /// Fail-closed: sin gafas activas, otra confirmación pendiente o timeout → no.
     public func confirmCamera(_ request: ConfirmationRequest) async -> Bool {
         guard !Task.isCancelled, await glassesActive(), cameraContinuation == nil else { return false }
+        // La cancelación pudo llegar durante el chequeo de las gafas.
+        guard !Task.isCancelled else { return false }
         cameraRequestID += 1
         let requestID = cameraRequestID
         let timeout = cameraTimeout
@@ -497,12 +499,29 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         // Turno cancelado con la card en las gafas: se niega y la card se cierra.
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
+                // Cancelada justo antes: ni se registra ni se muestra la card.
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
                 cameraContinuation = continuation
-                Task { await self.handle(.cameraRequested(reason: request.summary)) }
+                Task {
+                    // Ya resuelta (cancelada) antes de mostrarse: la card no aparece.
+                    guard self.cameraContinuation != nil, self.cameraRequestID == requestID else { return }
+                    await self.handle(.cameraRequested(reason: request.summary))
+                }
             }
         } onCancel: {
-            Task { @MainActor [weak self] in await self?.cameraTimedOut(requestID) }
+            Task { @MainActor [weak self] in await self?.cameraCancelled(requestID) }
         }
+    }
+
+    /// El turno se canceló: se niega YA (aunque la card aún no se mostrara) y,
+    /// si está en pantalla, se cierra.
+    private func cameraCancelled(_ requestID: Int) async {
+        guard requestID == cameraRequestID, cameraContinuation != nil else { return }
+        resolveCamera(false)
+        if case .cameraConfirm = state.screen { await handle(.action(.cameraDeny)) }
     }
 
     private func cameraTimedOut(_ requestID: Int) async {

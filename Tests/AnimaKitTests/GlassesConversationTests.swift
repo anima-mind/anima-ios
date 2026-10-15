@@ -52,6 +52,7 @@ final class MockRunner: TurnRunner, @unchecked Sendable {
         received.mutate { $0.append((content, surface)) }
         let events = replies.mutate { $0.isEmpty ? [] : $0.removeFirst() }
         return AsyncStream { c in
+            c.yield(.started)   // como el loop: el turno salió de la cola
             for e in events { c.yield(e) }
             c.finish()
         }

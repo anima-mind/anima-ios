@@ -229,6 +229,7 @@ struct DroppedMirrorTests {
         await siri.release()
         await spy.waitSettled()
         #expect(spy.delivered.value.last == .turnDropped(origin: .siri))
-        #expect(spy.settled.value == [.failed(SiriTurn.timeoutText)])
+        // Su pregunta se quitó del chat: no hay "tu respuesta está en el chat".
+        #expect(spy.settled.value == [nil])
     }
 }

@@ -333,6 +333,7 @@ public actor SiriTurnRunner {
             await TurnGate.waitIdle(runner, limit: TurnGate.idleLimit)
             let outcome = cut.value ? .failed(SiriTurn.timeoutText) : collector.outcome
             if cut.value, !collector.started {
+                cut.markDropped()
                 await deliver(.turnDropped(origin: .siri))   // cortado en la cola: no corrió
             } else if let mirror = SiriTurnCollector.mirror(outcome) {
                 await deliver(mirror)
@@ -361,7 +362,7 @@ public actor SiriTurnRunner {
     public func release() async {
         released = true
         approvals.close()
-        if let final { await settle(heard ? nil : final) }
+        if let final { await settle(lateNoticeFor(final)) }
     }
 
     /// Corta el turno en vuelo (tope duro o fin del tiempo en background).
@@ -421,7 +422,13 @@ public actor SiriTurnRunner {
 
     private func finished(_ outcome: SiriTurn.Outcome) async {
         final = outcome
-        if released { await settle(heard ? nil : outcome) }
+        if released { await settle(lateNoticeFor(outcome)) }
+    }
+
+    /// Qué avisar al cerrar: nada si el dueño ya lo oyó o si el turno se cortó
+    /// en la cola (su pregunta se quitó del chat: no hay respuesta que mirar).
+    private func lateNoticeFor(_ outcome: SiriTurn.Outcome) -> SiriTurn.Outcome? {
+        heard || cut.dropped ? nil : outcome
     }
 
     private func settle(_ late: SiriTurn.Outcome?) async {
@@ -434,8 +441,11 @@ public actor SiriTurnRunner {
 private final class CutFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var cut = false
+    private var droppedInQueue = false
     var value: Bool { lock.withLock { cut } }
+    var dropped: Bool { lock.withLock { droppedInQueue } }
     func mark() { lock.withLock { cut = true } }
+    func markDropped() { lock.withLock { droppedInQueue = true } }
 }
 
 /// Resuelve la continuación con el PRIMER resultado; los demás se ignoran.

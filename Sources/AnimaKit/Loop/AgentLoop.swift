@@ -185,12 +185,15 @@ public actor AgentLoop {
             let task = Task {
                 await previous?.value
                 // Cancelado mientras esperaba en la cola: no corre ni persiste nada.
-                guard !Task.isCancelled else {
+                // `.started` se emite PRIMERO y decide: si el consumidor ya no lo
+                // recibe (cortó), el turno no corre — su pregunta espejada se quita
+                // y no debe quedar persistida.
+                let started = continuation.yield(.started)
+                guard !Task.isCancelled, case .enqueued = started else {
                     continuation.finish()
                     self.untrack(id, sessionId: sessionId)
                     return
                 }
-                continuation.yield(.started)
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
@@ -857,6 +860,8 @@ final class SkillTurn {
         if ownerRejected { return .neutral }
         switch end {
         case .finished(.endTurn): return .success
+        // El dueño canceló el turno: no dice nada del skill (ni práctica ni fallo).
+        case .stopped(.cancelled): return .neutral
         case .stopped: return .failure
         case .finished, .refused, .error: return .neutral
         }

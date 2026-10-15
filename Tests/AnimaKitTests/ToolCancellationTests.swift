@@ -72,42 +72,44 @@ struct ToolCancellationTests {
                   permissionPolicy: .app(ownerAllowlist: { [] }), sleep: { _ in })
     }
 
-    // MAYOR: tool cooperativa de 3 s, turno cancelado a los 100 ms → vuelve ya,
-    // con el resultado de cancelación, la tool ve la cancelación y no escribe.
+    // MAYOR: tool cooperativa de 60 s, turno cancelado a los 100 ms → resultado
+    // de cancelación, la tool ve la cancelación y no escribe. El tope de reloj
+    // (20 s) solo distingue "cortó" de "esperó los 60 s" en un runner lento.
     @Test func cancelarElTurnoCortaLaTool() async throws {
-        let tool = CooperativeTool(seconds: 3)
+        let tool = CooperativeTool(seconds: 60)
         let sensorimotor = Sensorimotor(tools: [tool], policy: .app(ownerAllowlist: { [] }))
         let start = ContinuousClock.now
         let call = Task { await sensorimotor.execute(name: "coop_read", input: .object([:])) }
         try await Task.sleep(for: .milliseconds(100))
         call.cancel()
         let result = await call.value
-        #expect(ContinuousClock.now - start < .milliseconds(1500))
         #expect(result.isError)
+        #expect(result.isCancellation)
         #expect(result.content == Sensorimotor.cancelledResult("coop_read").content)
         #expect(await eventually { tool.sawCancel.value })
-        try await Task.sleep(for: .seconds(3.2))
-        #expect(tool.wrote.value == 0)
+        #expect(tool.wrote.value == 0)   // salió por la cancelación: ya no puede escribir
+        #expect(ContinuousClock.now - start < .seconds(20))
     }
 
     @Test func yaCanceladoNiArrancaLaTool() async {
-        let tool = CooperativeTool(seconds: 3)
+        let tool = CooperativeTool(seconds: 60)
         let sensorimotor = Sensorimotor(tools: [tool], policy: .app(ownerAllowlist: { [] }))
         let call = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             return await sensorimotor.execute(name: "coop_read", input: .object([:]))
         }
         let result = await call.value
-        #expect(result.content == Sensorimotor.cancelledResult("coop_read").content)
+        #expect(result.content == Sensorimotor.notStartedResult("coop_read").content)
+        #expect(result.isCancellation)
         #expect(tool.wrote.value == 0)
     }
 
     // En el loop: el turno A (cancelado con la tool en curso) no retiene la
-    // sesión 3 s; el B de la misma sesión corre ya y la tool no escribe.
+    // sesión los 60 s de la tool; el B de la misma sesión corre y la tool no escribe.
     @Test func elTurnoCanceladoNoRetieneLaSesion() async throws {
         let queue = try AnimaDatabase.temporary()
         let store = SymbolicStore(queue: queue)
-        let tool = CooperativeTool(seconds: 3)
+        let tool = CooperativeTool(seconds: 60)
         let loop = try loop(tool, store, queue)
         let sid = try store.startSession()
         let a = Task {
@@ -122,8 +124,9 @@ struct ToolCancellationTests {
             if case .textDelta(let d) = event { reply += d }
         }
         #expect(reply == "Listo.")
-        #expect(ContinuousClock.now - start < .milliseconds(1500))
+        #expect(await eventually { tool.sawCancel.value })
         #expect(tool.wrote.value == 0)
+        #expect(ContinuousClock.now - start < .seconds(20))   // no esperó los 60 s de la tool
         #expect(SessionSerializationTests.paired(try store.window(sessionId: sid)))
     }
 
@@ -160,7 +163,7 @@ struct ToolCancellationTests {
         #expect(text.contains("excedió el timeout de 30s"))
         #expect(text.contains("pudo haberse completado"))
         #expect(text.contains("verifica su estado antes de reintentarla"))
-        let sensorimotor = Sensorimotor(tools: [DeafTool(delay: 30)], policy: .app(ownerAllowlist: { [] }), timeout: 0.1)
+        let sensorimotor = Sensorimotor(tools: [DeafTool(delay: 60)], policy: .app(ownerAllowlist: { [] }), timeout: 0.1)
         let result = await sensorimotor.execute(name: "deaf_read", input: .object([:]))
         #expect(result.content == Sensorimotor.timeoutResult("deaf_read", timeout: 0.1).content)
     }

@@ -26,6 +26,7 @@ final class SiriGatedRunner: TurnRunner, @unchecked Sendable {
         return AsyncStream { c in
             let task = Task {
                 started.mutate { $0 = true }
+                c.yield(.started)   // como el loop: el turno salió de la cola
                 for await _ in wait {}
                 for e in events { c.yield(e) }
                 c.finish()

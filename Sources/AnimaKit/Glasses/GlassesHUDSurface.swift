@@ -405,9 +405,11 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         var committed = ""
         var refused = false
         var failure: String?
+        var started = false
         let stream = await runner.run(sessionId: sessionId, content: content, surface: .glassesHUD)
         for await event in stream {
             switch event {
+            case .started: started = true
             case .textDelta(let delta):
                 reply += delta
                 if !refused { await streamed(delta, reply: reply, turn: turn) }
@@ -428,8 +430,10 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             }
         }
         guard !Task.isCancelled else {
-            // El chat espejaba el turno en curso: se cierra el SUYO.
-            await deliver(.turnFailed(text: Self.interruptedText, origin: .glassesHUD))
+            // El chat espejaba el turno en curso: se cierra el SUYO (o se quita
+            // si se canceló en la cola, sin llegar a correr ni persistirse).
+            await deliver(started ? .turnFailed(text: Self.interruptedText, origin: .glassesHUD)
+                                  : .turnDropped(origin: .glassesHUD))
             return
         }
         if refused {
@@ -482,7 +486,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     /// El `ask` de `glasses_camera`: card "¿Tomo una foto?" + pinch EN las gafas.
     /// Fail-closed: sin gafas activas, otra confirmación pendiente o timeout → no.
     public func confirmCamera(_ request: ConfirmationRequest) async -> Bool {
-        guard await glassesActive(), cameraContinuation == nil else { return false }
+        guard !Task.isCancelled, await glassesActive(), cameraContinuation == nil else { return false }
         cameraRequestID += 1
         let requestID = cameraRequestID
         let timeout = cameraTimeout
@@ -490,9 +494,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             await self?.cameraTimedOut(requestID)
         }
-        return await withCheckedContinuation { continuation in
-            cameraContinuation = continuation
-            Task { await self.handle(.cameraRequested(reason: request.summary)) }
+        // Turno cancelado con la card en las gafas: se niega y la card se cierra.
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                cameraContinuation = continuation
+                Task { await self.handle(.cameraRequested(reason: request.summary)) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in await self?.cameraTimedOut(requestID) }
         }
     }
 

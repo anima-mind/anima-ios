@@ -11,6 +11,9 @@ import Foundation
 
 /// Eventos que el loop emite para la UI (streaming token a token, estados).
 public enum LoopEvent: Sendable, Equatable {
+    /// El turno salió de la cola de su sesión y empieza a correr (desde aquí
+    /// queda persistido). Un turno cancelado en la cola jamás lo emite.
+    case started
     case textDelta(String)
     case thinkingDelta(String)
     case toolStarted(name: String)
@@ -187,6 +190,7 @@ public actor AgentLoop {
                     self.untrack(id, sessionId: sessionId)
                     return
                 }
+                continuation.yield(.started)
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
@@ -540,7 +544,7 @@ public actor AgentLoop {
                                 failures.record(verb: verb, result: ToolResult(
                                     content: LocalToolAdapter.ownerFacing(result.content), isError: true))
                             }
-                        } else {
+                        } else if !result.isCancellation {
                             failures.record(verb: verb, result: result)
                         }
                         if toolProfile == .onDevice, result.isError, !result.isRejection {
@@ -566,12 +570,14 @@ public actor AgentLoop {
                             }
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
-                        if !adapterArtifact {
+                        // Una cancelación del turno no es un fallo: ni práctica ni RealRegister
+                        // (tres cancelaciones del dueño dispararían un restructure).
+                        if !adapterArtifact, !result.isCancellation {
                             skillTurn.recordTool(realName, isError: result.isError && !result.isRejection,
                                                  rejected: result.isRejection)
                         }
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
-                        if result.isError, !adapterArtifact {
+                        if result.isError, !adapterArtifact, !result.isCancellation {
                             await realRegister?.record(.tool(name: realName, input: realInput,
                                                              result: result, sessionId: sessionId, now: Date()))
                         }

@@ -328,6 +328,8 @@ public final class ChatViewModel: ObservableObject {
     /// Turnos de otras superficies (gafas, Siri) en vuelo: la burbuja en curso
     /// de CADA uno; solo su respuesta o su fallo la cierran.
     private var mirroredTurns: [SurfaceID: UUID] = [:]
+    /// La pregunta espejada de cada turno en vuelo (se quita si el turno no corrió).
+    private var mirroredAsks: [SurfaceID: UUID] = [:]
     /// El único turno en vuelo sobre la sesión (lo comparten chat, gafas y Siri).
     public var turnGate: TurnGate? {
         didSet {
@@ -762,7 +764,7 @@ public final class ChatViewModel: ObservableObject {
                 assistant.text = committedText
             case .assistantMessage:
                 committedText = assistant.text
-            case .toolStarted, .toolFinished, .turnFinished:
+            case .started, .toolStarted, .toolFinished, .turnFinished:
                 break
             }
             assistant.isStreaming = true
@@ -802,7 +804,15 @@ extension ChatViewModel: PhoneChatSurface {
             let pending = DisplayMessage(role: .assistant, isStreaming: true)
             messages.append(pending)
             mirroredTurns[origin] = pending.id
+            mirroredAsks[origin] = message.id
             refreshBusy()
+        case .turnDropped(let origin) where origin != .phoneChat:
+            // Se canceló antes de correr (nada quedó persistido): ni la pregunta
+            // ni la burbuja quedan en el chat, que al relanzar no las tendría.
+            let ids = [mirroredTurns.removeValue(forKey: origin), mirroredAsks.removeValue(forKey: origin)]
+            messages.removeAll { ids.contains($0.id) }
+            refreshBusy()
+            await sendQueuedIfOnline()
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
             lastMirroredTurnID = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text))
         case .declined(let text, let origin) where origin != .phoneChat:
@@ -818,6 +828,7 @@ extension ChatViewModel: PhoneChatSurface {
     /// Reemplaza la burbuja en curso del turno espejado de `origin` (o agrega),
     /// recalcula si el chat sigue ocupado y reintenta lo encolado.
     private func closeMirrored(_ origin: SurfaceID, _ message: DisplayMessage) async -> UUID {
+        mirroredAsks[origin] = nil
         if let id = mirroredTurns.removeValue(forKey: origin),
            let index = messages.firstIndex(where: { $0.id == id }) {
             messages[index] = message

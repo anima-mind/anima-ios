@@ -15,22 +15,44 @@ public enum ConfirmationDecision: Sendable, Equatable {
 public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     @Published public var pending: ConfirmationRequest?
     private var continuation: CheckedContinuation<Bool, Never>?
+    private var pendingID: UUID?
     /// "Autorizar siempre": el shell persiste la (tool, operación).
     public var onAlwaysAllow: ((ConfirmationRequest) -> Void)?
 
     public init() {}
 
+    /// Si el turno se cancela con el sheet abierto, se niega y el sheet se cierra
+    /// (no queda la sesión retenida esperando al dueño).
     public nonisolated func confirm(_ request: ConfirmationRequest) async -> Bool {
-        await withCheckedContinuation { cont in
-            Task { @MainActor in
-                guard self.continuation == nil else {
-                    cont.resume(returning: false)   // ya hay una pendiente → fail-closed
-                    return
+        guard !Task.isCancelled else { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                Task { @MainActor in
+                    guard self.continuation == nil else {
+                        cont.resume(returning: false)   // ya hay una pendiente → fail-closed
+                        return
+                    }
+                    self.continuation = cont
+                    self.pendingID = id
+                    self.pending = request
+                    if self.cancelledIDs.remove(id) != nil { self.resolve(.cancel) }
                 }
-                self.continuation = cont
-                self.pending = request
             }
+        } onCancel: {
+            Task { @MainActor in self.cancel(id) }
         }
+    }
+
+    /// Cancelaciones que llegaron antes de registrar la solicitud.
+    private var cancelledIDs: Set<UUID> = []
+
+    private func cancel(_ id: UUID) {
+        guard pendingID == id else {
+            cancelledIDs.insert(id)
+            return
+        }
+        resolve(.cancel)
     }
 
     public func resolve(_ approved: Bool) {
@@ -40,6 +62,7 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     public func resolve(_ decision: ConfirmationDecision) {
         if decision == .always, let request = pending { onAlwaysAllow?(request) }
         pending = nil
+        pendingID = nil
         let cont = continuation
         continuation = nil
         cont?.resume(returning: decision != .cancel)

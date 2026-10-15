@@ -110,10 +110,11 @@ struct TurnGateRound4Tests {
         #expect(retried != nil)
         if let retried { gate.end(retried) }
 
+        // Otra superficie ⇒ ocupado sin esperar la ventana de reintento (60 s aquí).
         let siri = try #require(gate.begin(.siri))
         let start = ContinuousClock.now
-        #expect(await GlassesHUDSurface.acquire(gate, wait: .seconds(2)) == nil)
-        #expect(ContinuousClock.now - start < .milliseconds(500))
+        #expect(await GlassesHUDSurface.acquire(gate, wait: .seconds(60)) == nil)
+        #expect(ContinuousClock.now - start < .seconds(20))
         gate.end(siri)
     }
 

@@ -128,12 +128,12 @@ struct SessionSerializationTests {
     // El timeout de una tool que ignora la cancelación no espera a la tool: el
     // resultado es el error de timeout (uno solo) y la tool se abandona.
     @Test func elTimeoutNoEsperaAUnaToolTerca() async {
-        // La tool tarda 30 s; si el timeout la esperara, la llamada duraría eso.
-        let tool = StubbornReadTool(delay: 30)
+        // La tool tarda 60 s; si el timeout la esperara, la llamada duraría eso.
+        let tool = StubbornReadTool(delay: 60)
         let sensorimotor = Sensorimotor(tools: [tool], policy: .app(ownerAllowlist: { [] }), timeout: 0.1)
         let start = ContinuousClock.now
         let result = await sensorimotor.execute(name: "slow_read", input: .object([:]))
-        #expect(ContinuousClock.now - start < .seconds(15))
+        #expect(ContinuousClock.now - start < .seconds(20))
         #expect(result.isError)
         #expect(result.content.contains("timeout"))
         #expect(tool.finished.value == 0)

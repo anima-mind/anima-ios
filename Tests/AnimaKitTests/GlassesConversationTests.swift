@@ -207,7 +207,7 @@ struct GlassesConversationTests {
         await rig.surface.handle(.action(.talk))
         rig.runtime.lastSession?.endFromDevice()
         #expect(await eventually { if case .home = await rig.surface.state.screen { return true } else { return false } })
-        #expect(rig.voice.cancels.value >= 1)
+        #expect(await eventually { rig.voice.cancels.value >= 1 })
         #expect(rig.runtime.liveSessions == 0)
         // La Home queda como vista actual: al reconectar se re-envía sola.
         #expect(await rig.body.lastRendered()?.name == "home")

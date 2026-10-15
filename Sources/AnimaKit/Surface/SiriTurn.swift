@@ -244,8 +244,12 @@ public final class SiriApprovals: ConfirmationProvider, @unchecked Sendable {
         lock.withLock { take() }?.resume(returning: approved)
     }
 
+    /// Un turno de Siri cancelado (tope duro, fin del tiempo en background)
+    /// cierra el buzón con `close()` desde SiriTurnRunner.cancel: la pendiente
+    /// se niega ahí. Un turno ya cancelado no llega a preguntar (Sensorimotor).
     public func confirm(_ request: ConfirmationRequest) async -> Bool {
-        await withCheckedContinuation { continuation in
+        guard !Task.isCancelled else { return false }
+        return await withCheckedContinuation { continuation in
             let accepted = lock.withLock { () -> Bool in
                 guard listening, self.continuation == nil else { return false }
                 self.continuation = continuation
@@ -328,7 +332,11 @@ public actor SiriTurnRunner {
             // (con tope: un productor que ignora la cancelación no lo retiene).
             await TurnGate.waitIdle(runner, limit: TurnGate.idleLimit)
             let outcome = cut.value ? .failed(SiriTurn.timeoutText) : collector.outcome
-            if let mirror = SiriTurnCollector.mirror(outcome) { await deliver(mirror) }
+            if cut.value, !collector.started {
+                await deliver(.turnDropped(origin: .siri))   // cortado en la cola: no corrió
+            } else if let mirror = SiriTurnCollector.mirror(outcome) {
+                await deliver(mirror)
+            }
             return outcome
         }
         turn = task
@@ -472,9 +480,11 @@ struct SiriTurnCollector {
     var committed = ""
     var refused = false
     var failure: String?
+    var started = false
 
     mutating func apply(_ event: LoopEvent) {
         switch event {
+        case .started: started = true
         case .textDelta(let delta): reply += delta
         case .refused: refused = true
         case .assistantMessage: committed = reply

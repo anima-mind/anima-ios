@@ -76,7 +76,13 @@ public actor Sensorimotor {
             if let refusal = SurfaceConfirmationRouter.refusal(for: request) {
                 return ToolResult(content: refusal, isError: true, isRejection: true)
             }
-            guard await confirmation.confirm(request) else {
+            // Turno ya cancelado: no se le pide confirmación a nadie (un sheet
+            // abierto retendría la sesión).
+            guard !Task.isCancelled else { return Self.notStartedResult(name) }
+            let approved = await confirmation.confirm(request)
+            // El confirmador se cerró por la cancelación del turno, no por el dueño.
+            guard !Task.isCancelled else { return Self.notStartedResult(name) }
+            guard approved else {
                 return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }
             guard let tool = tools[name] else { return Self.unknown(name) }
@@ -119,7 +125,7 @@ public actor Sensorimotor {
     private func runWithTimeout(tool: any SensorimotorTool, input: JSONValue) async -> ToolResult {
         let name = tool.spec.name
         let cancelled = Self.cancelledResult(name)
-        guard !Task.isCancelled else { return cancelled }
+        guard !Task.isCancelled else { return Self.notStartedResult(name) }
         let timeout = self.timeout
         let expired = Self.timeoutResult(name, timeout: timeout)
         let call = ToolCall(cancelled: cancelled)
@@ -142,16 +148,33 @@ public actor Sensorimotor {
         }
     }
 
+    /// Aviso honesto cuando una tool se cortó o se abandonó: pudo haber escrito
+    /// igual (ninguna tool eferente revisa la cancelación), no duplicar un create.
+    static let mayHaveCompleted = "La acción pudo haberse completado igual: verifica su estado antes de reintentarla."
+
+    /// La tool estaba corriendo cuando el turno se canceló.
     static func cancelledResult(_ name: String) -> ToolResult {
-        ToolResult(content: "La tool '\(name)' se canceló: el turno se interrumpió antes de que terminara.",
-                   isError: true)
+        ToolResult(content: "La tool '\(name)' se interrumpió porque el turno se canceló. " + mayHaveCompleted,
+                   isError: true, isCancellation: true)
+    }
+
+    /// El turno ya estaba cancelado: la tool ni arrancó.
+    static func notStartedResult(_ name: String) -> ToolResult {
+        ToolResult(content: "La tool '\(name)' no se ejecutó: el turno se canceló.", isError: true, isCancellation: true)
     }
 
     /// El modelo puede reintentar tras un timeout: la tool abandonada pudo
     /// haber completado la acción igual (no duplicar un create).
     static func timeoutResult(_ name: String, timeout: TimeInterval) -> ToolResult {
-        ToolResult(content: "La tool '\(name)' excedió el timeout de \(Int(timeout))s. La acción pudo haberse "
-                   + "completado igual: verifica su estado antes de reintentarla.", isError: true)
+        ToolResult(content: "La tool '\(name)' excedió el timeout de \(seconds(timeout)). " + mayHaveCompleted,
+                   isError: true)
+    }
+
+    /// "30s", "0.1s", "1.5s": sin "0s" para topes de menos de un segundo.
+    static func seconds(_ value: TimeInterval) -> String {
+        if value == value.rounded() { return "\(Int(value))s" }
+        return String(format: "%.1fs", locale: Locale(identifier: "en_US_POSIX"), value)
+            .replacingOccurrences(of: ".0s", with: "s")
     }
 }
 

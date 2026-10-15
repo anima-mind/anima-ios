@@ -50,6 +50,9 @@ public enum SurfaceContent: Sendable, Equatable {
     case declined(text: String, origin: SurfaceID)
     /// El turno de esa superficie falló (o se cortó): cierra SU turno espejado.
     case turnFailed(text: String, origin: SurfaceID)
+    /// El turno de esa superficie se canceló antes de correr: no quedó nada
+    /// persistido, su pregunta espejada se quita del chat.
+    case turnDropped(origin: SurfaceID)
     /// "pensando…", errores amables.
     case status(String)
 }
@@ -110,7 +113,7 @@ public final class SurfaceRouter {
     static func origin(of content: SurfaceContent) -> SurfaceID? {
         switch content {
         case .userTurn(_, let origin), .assistantTurn(_, let origin), .declined(_, let origin),
-             .turnFailed(_, let origin): return origin
+             .turnFailed(_, let origin), .turnDropped(let origin): return origin
         case .status: return nil
         }
     }

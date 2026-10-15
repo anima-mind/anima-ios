@@ -48,7 +48,6 @@ import Testing
 
 @Suite struct PricingTests {
     @Test func bundledDefaultsCoverAllDialModels() {
-        defer { Pricing.resetForTests() }
         #expect(Pricing.rate(for: "gpt-5.2").input == 1.75)
         #expect(Pricing.rate(for: "gpt-5-mini").output == 2)
         #expect(Pricing.rate(for: "gemini-3.1-pro-preview").output == 12)  // prefijo cubre -preview
@@ -57,15 +56,20 @@ import Testing
         #expect(Pricing.rate(for: "modelo-desconocido").output == 25)  // caro, jamás barato
     }
 
+    // La tabla remota se prueba en un TaskLocal: Pricing.load cambiaba la tabla
+    // global mientras otros tests de costo la leían en paralelo (flake).
     @Test func remoteOverrideWinsAndLongestPrefixFirst() throws {
-        defer { Pricing.resetForTests() }
         let json = try JSONDecoder().decode(JSONValue.self, from: Data("""
         {"gpt-5": {"in": 9, "out": 90}, "gpt-5-mini": {"in": 0.1, "out": 1}, "rota": "ignorada"}
         """.utf8))
-        Pricing.load(json)
-        #expect(Pricing.rate(for: "gpt-5-mini-2027").input == 0.1)  // el largo gana
-        #expect(Pricing.rate(for: "gpt-5.9").input == 9)
-        #expect(Pricing.rate(for: "system_language_model").input == 0)  // el local SIEMPRE es gratis, tabla aparte
+        let parsed = try #require(Pricing.parse(json))
+        Pricing.$override.withValue(parsed) {
+            #expect(Pricing.rate(for: "gpt-5-mini-2027").input == 0.1)  // el largo gana
+            #expect(Pricing.rate(for: "gpt-5.9").input == 9)
+            #expect(Pricing.rate(for: "system_language_model").input == 0)  // el local SIEMPRE es gratis, tabla aparte
+        }
+        #expect(Pricing.rate(for: "gpt-5.2").input == 1.75)   // la global, intacta
+        #expect(Pricing.parse(.object(["rota": .string("x")])) == nil)
     }
 
     @Test func pricingKeyExtractedFromProviderConfig() {

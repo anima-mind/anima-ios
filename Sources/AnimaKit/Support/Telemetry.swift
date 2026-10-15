@@ -269,16 +269,25 @@ public enum Pricing {
     /// Sobreescribe la tabla desde config remota: {"<prefijo>": {"in": x, "out": y}}.
     /// Claves/formas desconocidas se ignoran (forward-compatible, como todo RC).
     public static func load(_ json: JSONValue) {
-        guard case .object(let entries) = json else { return }
-        var parsed: [(String, Rate)] = []
+        if let parsed = parse(json) { table = parsed }
+    }
+
+    /// La tabla de un JSON de RC; nil si no trae ninguna tarifa válida.
+    /// Prefijos más largos primero: "gpt-5-mini" gana sobre "gpt-5".
+    static func parse(_ json: JSONValue) -> [(prefix: String, rate: Rate)]? {
+        guard case .object(let entries) = json else { return nil }
+        var parsed: [(prefix: String, rate: Rate)] = []
         for (prefix, value) in entries {
             guard case .object(let o) = value,
                   let i = Self.number(o["in"]), let out = Self.number(o["out"]) else { continue }
             parsed.append((prefix, Rate(input: i, output: out)))
         }
-        // Prefijos más largos primero: "gpt-5-mini" gana sobre "gpt-5".
-        if !parsed.isEmpty { table = parsed.sorted { $0.0.count > $1.0.count } }
+        return parsed.isEmpty ? nil : parsed.sorted { $0.prefix.count > $1.prefix.count }
     }
+
+    /// Tabla de la tarea actual (tests): sin tocar el estado global que leen
+    /// en paralelo los demás tests de costo.
+    @TaskLocal static var override: [(prefix: String, rate: Rate)]?
 
     private static func number(_ v: JSONValue?) -> Double? {
         switch v {
@@ -288,12 +297,11 @@ public enum Pricing {
         }
     }
 
-    static func resetForTests() { table = defaults }
 
     static func rate(for model: String) -> Rate {
         // Modelo local de Apple (§4.9): gratis, cero red.
         if OnDeviceProvider.isOnDevice(model: model) { return Rate(input: 0, output: 0) }
-        if let hit = table.first(where: { model.hasPrefix($0.prefix) }) { return hit.rate }
+        if let hit = (override ?? table).first(where: { model.hasPrefix($0.prefix) }) { return hit.rate }
         return Rate(input: 5, output: 25)  // desconocido: asumir caro, jamás barato
     }
 

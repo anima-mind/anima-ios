@@ -81,3 +81,12 @@ jobs:
           -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           -authenticationKeyID "$ASC_KEY_ID"
           -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+      # Cada runner efímero crea su propio "Apple Development: Created via API"
+      # y Apple tiene tope por cuenta: al terminar (aunque falle o se cancele) se
+      # revoca el de ESTE runner, identificado por número de serie del keychain.
+      - name: Revocar el certificado de desarrollo de este runner
+        if: always()
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: ruby scripts/revoke-run-dev-cert.rb

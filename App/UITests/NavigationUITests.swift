@@ -31,7 +31,7 @@ final class NavigationUITests: AnimaUITestCase {
         waitFor(app.keyboards.firstMatch)
         assistantMessage(app, value: "done").tap()
         waitUntil(app.keyboards.firstMatch, "exists == false")
-        let settingsTab = app.tabBars.buttons["Ajustes"]
+        let settingsTab = tabButton(app, "Ajustes")
         waitUntil(settingsTab, "isHittable == true")
     }
 
@@ -76,12 +76,12 @@ final class NavigationUITests: AnimaUITestCase {
         waitFor(element(app, "mind.sheet"))
         tap(app.buttons["nav.close.mind"])
         waitUntil(element(app, "mind.sheet"), "exists == false")
-        waitUntil(app.tabBars.buttons["Memoria"], "isHittable == true")
+        waitUntil(tabButton(app, "Memoria"), "isHittable == true")
 
         // Tabs: cada una deja la tab bar usable.
         for tab in ["Memoria", "Metas", "Recordatorios", "Ajustes", "Chat"] {
             openTab(app, tab)
-            waitUntil(app.tabBars.buttons[tab], "isSelected == true")
+            waitTabSelected(app, tab)
         }
 
         // Repetir onboarding desde Ajustes → Mente → abandonarlo a mitad con la X → de vuelta en Ajustes.
@@ -101,7 +101,7 @@ final class NavigationUITests: AnimaUITestCase {
         waitFor(text(app, "Tu cuenta"))
         tap(app.buttons["nav.close.onboarding"])
         waitFor(app.tabBars.firstMatch)
-        waitUntil(app.tabBars.buttons["Ajustes"], "isSelected == true")
+        waitTabSelected(app, "Ajustes")
         XCTAssertFalse(app.buttons["landing.begin"].exists)
     }
 }

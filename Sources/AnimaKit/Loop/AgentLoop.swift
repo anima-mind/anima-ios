@@ -11,6 +11,9 @@ import Foundation
 
 /// Eventos que el loop emite para la UI (streaming token a token, estados).
 public enum LoopEvent: Sendable, Equatable {
+    /// El turno salió de la cola de su sesión y empieza a correr (desde aquí
+    /// queda persistido). Un turno cancelado en la cola jamás lo emite.
+    case started
     case textDelta(String)
     case thinkingDelta(String)
     case toolStarted(name: String)
@@ -157,19 +160,69 @@ public actor AgentLoop {
 
     /// Pista volátil por superficie de origen (el HUD es para vistazos).
     public static let glassesSurfaceHint = "[Superficie: gafas] El dueño te habla por voz desde sus gafas y oirá tu respuesta: responde en 1–2 frases cortas, sin markdown ni listas. Si hace falta más, dilo breve y ofrece verlo en el teléfono."
+    public static let siriSurfaceHint = "[Superficie: Siri] El dueño te habla por Siri, quizá con el teléfono bloqueado, y oirá tu respuesta en voz: responde en 1–3 frases cortas, sin markdown, listas ni emojis. Si hace falta más, dilo breve y avisa que el detalle queda en el chat."
+
+    static func surfaceHint(_ surface: SurfaceID) -> String? {
+        switch surface {
+        case .glassesHUD: glassesSurfaceHint
+        case .siri: siriSurfaceHint
+        case .phoneChat: nil
+        }
+    }
 
 
     /// Turno multimodal: los content blocks (texto + image blocks de una foto, o
     /// texto de un transcript de audio) forman el mensaje user del turno.
     public func run(sessionId: SessionID, content: [ContentBlock],
                     surface: SurfaceID = .phoneChat) -> AsyncStream<LoopEvent> {
-        AsyncStream { continuation in
+        let id = UUID()
+        // Serializado POR SESIÓN: el turno espera a que termine el anterior de
+        // la misma sesión (aunque su consumidor ya cortó), así jamás se
+        // intercalan dos turnos en el transcript y cada tool_use queda pareado
+        // con su tool_result. La compuerta de superficies queda solo como UX.
+        let previous = sessionTail[sessionId]
+        let stream = AsyncStream<LoopEvent> { continuation in
             let task = Task {
+                await previous?.value
+                // Cancelado mientras esperaba en la cola: no corre ni persiste nada.
+                // `.started` se emite PRIMERO y decide: si el consumidor ya no lo
+                // recibe (cortó), el turno no corre — su pregunta espejada se quita
+                // y no debe quedar persistida.
+                let started = continuation.yield(.started)
+                guard !Task.isCancelled, case .enqueued = started else {
+                    continuation.finish()
+                    self.untrack(id, sessionId: sessionId)
+                    return
+                }
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
+                self.untrack(id, sessionId: sessionId)
             }
+            inFlight[id] = task
+            sessionTail[sessionId] = task
             continuation.onTermination = { _ in task.cancel() }
+        }
+        return stream
+    }
+
+    /// Turnos cuyo productor sigue vivo (aunque su consumidor ya cortó).
+    private var inFlight: [UUID: Task<Void, Never>] = [:]
+    /// El último turno encolado de cada sesión (el siguiente lo espera).
+    private var sessionTail: [SessionID: Task<Void, Never>] = [:]
+
+    private func untrack(_ id: UUID, sessionId: SessionID) {
+        if let task = inFlight.removeValue(forKey: id), sessionTail[sessionId] == task {
+            sessionTail[sessionId] = nil
+        }
+    }
+
+    public var turnsInFlight: Int { inFlight.count }
+
+    /// Vuelve cuando ningún turno sigue produciendo (escrituras incluidas).
+    public func waitUntilIdle() async {
+        while let task = inFlight.values.first {
+            await task.value
         }
     }
 
@@ -223,7 +276,7 @@ public actor AgentLoop {
             if let bodyStatus {
                 await workingMemory.updateBodyStatus(await bodyStatus())
             }
-            await workingMemory.updateSurfaceHint(surface == .glassesHUD ? Self.glassesSurfaceHint : nil)
+            await workingMemory.updateSurfaceHint(Self.surfaceHint(surface))
             if let taskInstructions { await workingMemory.updateTaskInstructions(taskInstructions) }
             await workingMemory.updateClock(clock?())
 
@@ -466,7 +519,7 @@ public actor AgentLoop {
                             if !LocalToolAdapter.readOnlyTools.contains(call.name) { localWrote = true }
                             emit(.toolStarted(name: name))
                             toolCallCount += 1
-                            let executed = await sensorimotor.execute(name: name, input: input)
+                            let executed = await sensorimotor.execute(name: name, input: input, surface: surface)
                             result = toolProfile == .onDevice
                                 ? LocalToolAdapter.present(executed, local: call.name, input: input, ownerText: userText)
                                 : executed
@@ -494,7 +547,7 @@ public actor AgentLoop {
                                 failures.record(verb: verb, result: ToolResult(
                                     content: LocalToolAdapter.ownerFacing(result.content), isError: true))
                             }
-                        } else {
+                        } else if !result.isCancellation {
                             failures.record(verb: verb, result: result)
                         }
                         if toolProfile == .onDevice, result.isError, !result.isRejection {
@@ -520,12 +573,14 @@ public actor AgentLoop {
                             }
                         }
                         emit(.toolFinished(name: realName, isError: result.isError))
-                        if !adapterArtifact {
+                        // Una cancelación del turno no es un fallo: ni práctica ni RealRegister
+                        // (tres cancelaciones del dueño dispararían un restructure).
+                        if !adapterArtifact, !result.isCancellation {
                             skillTurn.recordTool(realName, isError: result.isError && !result.isRejection,
                                                  rejected: result.isRejection)
                         }
                         // RealRegister (§5.6): captura el fallo de tool, costo 0 LLM.
-                        if result.isError, !adapterArtifact {
+                        if result.isError, !adapterArtifact, !result.isCancellation {
                             await realRegister?.record(.tool(name: realName, input: realInput,
                                                              result: result, sessionId: sessionId, now: Date()))
                         }
@@ -805,6 +860,8 @@ final class SkillTurn {
         if ownerRejected { return .neutral }
         switch end {
         case .finished(.endTurn): return .success
+        // El dueño canceló el turno: no dice nada del skill (ni práctica ni fallo).
+        case .stopped(.cancelled): return .neutral
         case .stopped: return .failure
         case .finished, .refused, .error: return .neutral
         }

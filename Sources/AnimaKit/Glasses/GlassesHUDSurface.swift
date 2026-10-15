@@ -12,6 +12,13 @@ import Foundation
 /// Lo que la superficie necesita del loop (AgentLoop lo cumple).
 public protocol TurnRunner: Sendable {
     func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID) async -> AsyncStream<LoopEvent>
+    /// Vuelve cuando no queda NINGÚN turno produciendo (aunque su stream ya se
+    /// cortara): recién ahí la compuerta de turno se puede soltar.
+    func waitUntilIdle() async
+}
+
+extension TurnRunner {
+    public func waitUntilIdle() async {}
 }
 
 extension AgentLoop: TurnRunner {}
@@ -28,6 +35,11 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private let body: GlassesBody
     private let activation: GlassesActivation?
     private let runner: any TurnRunner
+    /// Un solo turno en vuelo sobre la sesión (chat, gafas, Siri). nil ⇒ sin compuerta.
+    private let gate: TurnGate?
+    /// Cuánto espera un turno nuevo a que suelte la compuerta el turno de gafas
+    /// recién cancelado.
+    private let gateRetry: Duration
     private let sessionId: SessionID
     private let voice: any VoiceCapturePort
     private let speech: any SpeechOutputPort
@@ -64,12 +76,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private var cameraRequestID = 0
 
     public init(body: GlassesBody, activation: GlassesActivation? = nil, runner: any TurnRunner,
-                sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
+                gate: TurnGate? = nil, gateRetry: Duration = .milliseconds(1500), sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
                 router: SurfaceRouter? = nil, cameraTimeout: TimeInterval = 60, errorDwell: TimeInterval = 4,
                 openPhone: @escaping @MainActor (UUID?) -> Void = { _ in }) {
         self.body = body
         self.activation = activation
         self.runner = runner
+        self.gate = gate
+        self.gateRetry = gateRetry
         self.sessionId = sessionId
         self.voice = voice
         self.speech = speech
@@ -344,20 +358,58 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         await handle(.speechWindow(window))
     }
 
+    static let interruptedText = "Se interrumpió la respuesta en las gafas."
+    static let busyText = "Sigo con lo anterior. Inténtalo en un momento."
+
     /// El turno por el AgentLoop normal, marcado como superficie gafas.
     private func runTurn(mirror: String, content: [ContentBlock]) async {
+        // La compuerta ANTES de espejar: si otra superficie responde, nada llega
+        // al chat y las gafas lo dicen.
+        var token: TurnGate.Token?
+        if let gate {
+            token = await Self.acquire(gate, wait: gateRetry)
+            guard token != nil else {
+                if !Task.isCancelled { await handle(.turnFailed(Self.busyText)) }
+                return
+            }
+        }
+        // Cancelado mientras esperaba la compuerta: no corre, y la suelta.
+        guard !Task.isCancelled else {
+            if let gate, let token { gate.end(token) }
+            return
+        }
         turnGeneration += 1
         let turn = turnGeneration
         turnScript = SpokenScript()
         turnSpeechDismissed = false
         await deliver(.userTurn(text: mirror, origin: .glassesHUD))
+        await consumeTurn(content: content, turn: turn)
+        if let gate, let token { await gate.end(token, after: runner) }
+    }
+
+    /// Toma la compuerta. Si la tiene un turno de gafas (el que se acaba de
+    /// cancelar y aún suelta su productor), reintenta brevemente antes de
+    /// decir que está ocupado; otra superficie ⇒ ocupado de inmediato.
+    static func acquire(_ gate: TurnGate, wait: Duration) async -> TurnGate.Token? {
+        if let token = gate.begin(.glassesHUD) { return token }
+        let deadline = ContinuousClock.now.advanced(by: wait)
+        while gate.current == .glassesHUD, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+            if let token = gate.begin(.glassesHUD) { return token }
+        }
+        return Task.isCancelled ? nil : gate.begin(.glassesHUD)
+    }
+
+    private func consumeTurn(content: [ContentBlock], turn: Int) async {
         var reply = ""
         var committed = ""
         var refused = false
         var failure: String?
+        var started = false
         let stream = await runner.run(sessionId: sessionId, content: content, surface: .glassesHUD)
         for await event in stream {
             switch event {
+            case .started: started = true
             case .textDelta(let delta):
                 reply += delta
                 if !refused { await streamed(delta, reply: reply, turn: turn) }
@@ -377,12 +429,19 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             default: break
             }
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            // El chat espejaba el turno en curso: se cierra el SUYO (o se quita
+            // si se canceló en la cola, sin llegar a correr ni persistirse).
+            await deliver(started ? .turnFailed(text: Self.interruptedText, origin: .glassesHUD)
+                                  : .turnDropped(origin: .glassesHUD))
+            return
+        }
         if refused {
             let text = reply.isEmpty ? "Prefiero no hacer eso. Dime qué buscas y encontramos otra vía." : reply
             await deliver(.declined(text: text, origin: .glassesHUD))
-        } else if let failure, reply.isEmpty {
-            await deliver(.status(failure))
+        } else if let failure {
+            // Un error a mitad gana a lo dicho antes (como en Siri): es un fallo.
+            await deliver(.turnFailed(text: failure, origin: .glassesHUD))
             await handle(.turnFailed(failure))
         } else {
             await deliver(.assistantTurn(text: reply, origin: .glassesHUD))
@@ -427,7 +486,9 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     /// El `ask` de `glasses_camera`: card "¿Tomo una foto?" + pinch EN las gafas.
     /// Fail-closed: sin gafas activas, otra confirmación pendiente o timeout → no.
     public func confirmCamera(_ request: ConfirmationRequest) async -> Bool {
-        guard await glassesActive(), cameraContinuation == nil else { return false }
+        guard !Task.isCancelled, await glassesActive(), cameraContinuation == nil else { return false }
+        // La cancelación pudo llegar durante el chequeo de las gafas.
+        guard !Task.isCancelled else { return false }
         cameraRequestID += 1
         let requestID = cameraRequestID
         let timeout = cameraTimeout
@@ -435,10 +496,32 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             await self?.cameraTimedOut(requestID)
         }
-        return await withCheckedContinuation { continuation in
-            cameraContinuation = continuation
-            Task { await self.handle(.cameraRequested(reason: request.summary)) }
+        // Turno cancelado con la card en las gafas: se niega y la card se cierra.
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // Cancelada justo antes: ni se registra ni se muestra la card.
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                cameraContinuation = continuation
+                Task {
+                    // Ya resuelta (cancelada) antes de mostrarse: la card no aparece.
+                    guard self.cameraContinuation != nil, self.cameraRequestID == requestID else { return }
+                    await self.handle(.cameraRequested(reason: request.summary))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in await self?.cameraCancelled(requestID) }
         }
+    }
+
+    /// El turno se canceló: se niega YA (aunque la card aún no se mostrara) y,
+    /// si está en pantalla, se cierra.
+    private func cameraCancelled(_ requestID: Int) async {
+        guard requestID == cameraRequestID, cameraContinuation != nil else { return }
+        resolveCamera(false)
+        if case .cameraConfirm = state.screen { await handle(.action(.cameraDeny)) }
     }
 
     private func cameraTimedOut(_ requestID: Int) async {

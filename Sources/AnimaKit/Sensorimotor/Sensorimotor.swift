@@ -67,12 +67,22 @@ public actor Sensorimotor {
 
     /// Ejecuta una tool aplicando la capa 1 (PermissionPolicy) y un timeout.
     /// Fail-closed: tool desconocida = deny; eferente sin confirmación = no ejecuta.
-    public func execute(name: String, input: JSONValue) async -> ToolResult {
+    public func execute(name: String, input: JSONValue, surface: SurfaceID = .phoneChat) async -> ToolResult {
         switch await executePreauthorized(name: name, input: input) {
         case .executed(let result), .denied(let result):
             return result
-        case .needsConfirmation(let request):
-            guard await confirmation.confirm(request) else {
+        case .needsConfirmation(var request):
+            request.surface = surface
+            if let refusal = SurfaceConfirmationRouter.refusal(for: request) {
+                return ToolResult(content: refusal, isError: true, isRejection: true)
+            }
+            // Turno ya cancelado: no se le pide confirmación a nadie (un sheet
+            // abierto retendría la sesión).
+            guard !Task.isCancelled else { return Self.notStartedResult(name) }
+            let approved = await confirmation.confirm(request)
+            // El confirmador se cerró por la cancelación del turno, no por el dueño.
+            guard !Task.isCancelled else { return Self.notStartedResult(name) }
+            guard approved else {
                 return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }
             guard let tool = tools[name] else { return Self.unknown(name) }
@@ -104,20 +114,103 @@ public actor Sensorimotor {
         ToolResult(content: "Tool desconocida o no permitida: \(name)", isError: true)
     }
 
+    /// Una llamada, un resultado (el tool_use queda pareado):
+    /// - la tool termina → su resultado;
+    /// - el turno se cancela → resultado de cancelación YA, y la cancelación
+    ///   llega a la tool (una cooperativa se corta: la cámara de las gafas, una
+    ///   escritura en curso);
+    /// - gana el timeout → error de timeout y la tool se abandona (se le pide
+    ///   cancelar, sin esperarla): una tool que ignora la cancelación no retiene
+    ///   el turno.
     private func runWithTimeout(tool: any SensorimotorTool, input: JSONValue) async -> ToolResult {
-        await withTaskGroup(of: ToolResult?.self) { group in
-            group.addTask { await tool.execute(input) }
-            let timeout = self.timeout
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                return nil
+        let name = tool.spec.name
+        let cancelled = Self.cancelledResult(name)
+        guard !Task.isCancelled else { return Self.notStartedResult(name) }
+        let timeout = self.timeout
+        let expired = Self.timeoutResult(name, timeout: timeout)
+        let call = ToolCall(cancelled: cancelled)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<ToolResult, Never>) in
+                let first = FirstWins(continuation)
+                let work = Task { first.resume(await tool.execute(input)) }
+                let timer = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    first.resume(expired)
+                }
+                first.onResume = {
+                    timer.cancel()
+                    work.cancel()
+                }
+                call.start(first, work: work)
             }
-            defer { group.cancelAll() }
-            for await result in group {
-                if let result { return result }
-                return ToolResult(content: "La tool '\(tool.spec.name)' excedió el timeout de \(Int(self.timeout))s.", isError: true)
-            }
-            return ToolResult(content: "Sin resultado.", isError: true)
+        } onCancel: {
+            call.cancel()
         }
+    }
+
+    /// Aviso honesto cuando una tool se cortó o se abandonó: pudo haber escrito
+    /// igual (ninguna tool eferente revisa la cancelación), no duplicar un create.
+    static let mayHaveCompleted = "La acción pudo haberse completado igual: verifica su estado antes de reintentarla."
+
+    /// La tool estaba corriendo cuando el turno se canceló.
+    static func cancelledResult(_ name: String) -> ToolResult {
+        ToolResult(content: "La tool '\(name)' se interrumpió porque el turno se canceló. " + mayHaveCompleted,
+                   isError: true, isCancellation: true)
+    }
+
+    /// El turno ya estaba cancelado: la tool ni arrancó.
+    static func notStartedResult(_ name: String) -> ToolResult {
+        ToolResult(content: "La tool '\(name)' no se ejecutó: el turno se canceló.", isError: true, isCancellation: true)
+    }
+
+    /// El modelo puede reintentar tras un timeout: la tool abandonada pudo
+    /// haber completado la acción igual (no duplicar un create).
+    static func timeoutResult(_ name: String, timeout: TimeInterval) -> ToolResult {
+        ToolResult(content: "La tool '\(name)' excedió el timeout de \(seconds(timeout)). " + mayHaveCompleted,
+                   isError: true)
+    }
+
+    /// "30s", "0.1s", "1.5s": sin "0s" para topes de menos de un segundo.
+    static func seconds(_ value: TimeInterval) -> String {
+        if value == value.rounded() { return "\(Int(value))s" }
+        return String(format: "%.1fs", locale: Locale(identifier: "en_US_POSIX"), value)
+            .replacingOccurrences(of: ".0s", with: "s")
+    }
+}
+
+/// Una llamada en vuelo: la cancelación del turno (que puede llegar antes de
+/// que arranque) resuelve con el resultado de cancelación y corta la tool.
+private final class ToolCall: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelled: ToolResult
+    private var first: FirstWins<ToolResult>?
+    private var work: Task<Void, Never>?
+    private var isCancelled = false
+
+    init(cancelled: ToolResult) {
+        self.cancelled = cancelled
+    }
+
+    func start(_ first: FirstWins<ToolResult>, work: Task<Void, Never>) {
+        let cancelNow = lock.withLock { () -> Bool in
+            self.first = first
+            self.work = work
+            return isCancelled
+        }
+        if cancelNow { finish(first, work) }
+    }
+
+    func cancel() {
+        let pending = lock.withLock { () -> (FirstWins<ToolResult>, Task<Void, Never>)? in
+            isCancelled = true
+            guard let first, let work else { return nil }
+            return (first, work)
+        }
+        if let pending { finish(pending.0, pending.1) }
+    }
+
+    private func finish(_ first: FirstWins<ToolResult>, _ work: Task<Void, Never>) {
+        work.cancel()
+        first.resume(cancelled)
     }
 }

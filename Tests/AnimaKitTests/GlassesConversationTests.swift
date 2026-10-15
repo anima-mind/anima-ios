@@ -52,6 +52,7 @@ final class MockRunner: TurnRunner, @unchecked Sendable {
         received.mutate { $0.append((content, surface)) }
         let events = replies.mutate { $0.isEmpty ? [] : $0.removeFirst() }
         return AsyncStream { c in
+            c.yield(.started)   // como el loop: el turno salió de la cola
             for e in events { c.yield(e) }
             c.finish()
         }
@@ -193,9 +194,12 @@ struct GlassesConversationTests {
         await rig.surface.handle(.action(.talk))
         await rig.surface.handle(.transcript("otra"))
         await rig.surface.handle(.action(.send))
-        // Hubo texto antes del stop: se entrega lo que hubo.
-        #expect(await eventually { if case .speaking = await rig.surface.state.screen { return true }
-            if case .answer = await rig.surface.state.screen { return true }; return false })
+        // Review #38: hubo texto antes del stop, pero es un fallo (como en Siri):
+        // se dice y se muestra como fallo, también en el chat.
+        let stop = "Turno detenido (loopDetected)."
+        #expect(await eventually { await rig.surface.state.screen == .attention(stop) })
+        #expect(rig.phone.rendered.last == .turnFailed(text: stop, origin: .glassesHUD))
+        #expect(!rig.phone.rendered.contains(.assistantTurn(text: "Ups", origin: .glassesHUD)))
     }
 
     @Test func backFisicoLimpiaYAvisaSalida() async throws {
@@ -204,7 +208,7 @@ struct GlassesConversationTests {
         await rig.surface.handle(.action(.talk))
         rig.runtime.lastSession?.endFromDevice()
         #expect(await eventually { if case .home = await rig.surface.state.screen { return true } else { return false } })
-        #expect(rig.voice.cancels.value >= 1)
+        #expect(await eventually { rig.voice.cancels.value >= 1 })
         #expect(rig.runtime.liveSessions == 0)
         // La Home queda como vista actual: al reconectar se re-envía sola.
         #expect(await rig.body.lastRendered()?.name == "home")

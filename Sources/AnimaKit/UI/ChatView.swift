@@ -36,10 +36,11 @@ public final class ChatViewModel: ObservableObject {
         /// Por dónde llegó el turno del dueño: gafas ⇒ chip "gafas" (batch 8 #2).
         public var surface: SurfaceID?
 
-        /// El chip del canal del turno del dueño: "gafas" gana a "voz".
+        /// El chip del canal del turno del dueño: "gafas" y "Siri" ganan a "voz".
         public var channelChip: (label: String, glyph: String, id: String)? {
             guard role == .user else { return nil }
             if surface == .glassesHUD { return ("gafas", "eyeglasses", "chat.userMessage.glasses") }
+            if surface == .siri { return ("Siri", "mic.circle", "chat.userMessage.siri") }
             if isVoice { return ("voz", "waveform", "chat.userMessage.voice") }
             return nil
         }
@@ -301,7 +302,10 @@ public final class ChatViewModel: ObservableObject {
 
     @Published public var messages: [DisplayMessage] = []
     @Published public var input: String = ""
-    @Published public var isStreaming: Bool = false
+    /// Ocupado: un turno propio, uno espejado de otra superficie o la compuerta
+    /// de turno tomada por otra (derivado, jamás se asigna a mano).
+    @Published public private(set) var isStreaming: Bool = false
+    private var ownTurn = false
     @Published public var errorText: String?
     @Published public private(set) var mind = MindState()
     /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
@@ -321,6 +325,54 @@ public final class ChatViewModel: ObservableObject {
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
     public private(set) var lastMirroredTurnID: UUID?
+    /// Turnos de otras superficies (gafas, Siri) en vuelo: la burbuja en curso
+    /// de CADA uno; solo su respuesta o su fallo la cierran.
+    private var mirroredTurns: [SurfaceID: UUID] = [:]
+    /// La pregunta espejada de cada turno en vuelo (se quita si el turno no corrió).
+    private var mirroredAsks: [SurfaceID: UUID] = [:]
+    /// El único turno en vuelo sobre la sesión (lo comparten chat, gafas y Siri).
+    public var turnGate: TurnGate? {
+        didSet {
+            if let observer = gateObserver { oldValue?.removeObserver(observer) }
+            gateObserver = turnGate?.observe { [weak self] _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.gateChanged() }
+                } else {
+                    Task { @MainActor in self?.gateChanged() }
+                }
+            }
+            refreshBusy()
+        }
+    }
+    private var gateObserver: UUID?
+
+    /// El shell lo reemplaza al re-cablear: suelta su observer de la compuerta.
+    public func detachFromGate() {
+        if let gateObserver { turnGate?.removeObserver(gateObserver) }
+        gateObserver = nil
+    }
+
+    /// ¿Puede salir lo encolado ahora? (el shell: solo con la app al frente;
+    /// en background la base puede estar por suspenderse).
+    public var canSendQueued: @MainActor () -> Bool = { true }
+
+    private func refreshBusy() {
+        let busy = ownTurn || !mirroredTurns.isEmpty || turnGate?.current != nil
+        if busy != isStreaming { isStreaming = busy }
+    }
+
+    /// La compuerta cambió de dueño: el chat se ve ocupado o libre, y al
+    /// liberarse sale lo encolado.
+    private func gateChanged() {
+        refreshBusy()
+        guard turnGate?.current == nil, hasQueuedTurn, canSendQueued() else { return }
+        Task { await sendQueuedIfOnline() }
+    }
+
+    /// La app volvió al frente: lo que quedó encolado sale.
+    public func resumeQueued() async {
+        await sendQueuedIfOnline()
+    }
     public let events: AsyncStream<SurfaceEvent>
     private let eventSink: AsyncStream<SurfaceEvent>.Continuation
 
@@ -460,7 +512,7 @@ public final class ChatViewModel: ObservableObject {
     public func send() async {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let image = pendingImage
-        guard !text.isEmpty || image != nil, !isStreaming else { return }
+        guard !text.isEmpty || image != nil, !isStreaming, turnGate?.current == nil else { return }
         input = ""
         pendingImage = nil
         if !text.isEmpty { eventSink.yield(.userText(text)) }
@@ -572,6 +624,7 @@ public final class ChatViewModel: ObservableObject {
     public var localModelAvailable = false
     private var queuedContent: [ContentBlock]?
     public static let offlineQueuedNote = "Sin conexión: te lo envío apenas vuelva la red."
+    public static let busyQueuedNote = "Te lo envío apenas termine lo anterior."
 
     /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
     /// (con aviso claro) en vez de fallar y pedir "Reintentar".
@@ -597,8 +650,9 @@ public final class ChatViewModel: ObservableObject {
     /// El turno encolado sin red sale apenas hay red y nada en curso (si la red
     /// volvió a mitad de un turno, sale al terminarlo).
     private func sendQueuedIfOnline() async {
-        guard !isOffline, let content = queuedContent, !isStreaming else { return }
+        guard !isOffline, let content = queuedContent, !isStreaming, canSendQueued() else { return }
         queuedContent = nil
+        // Si otra superficie toma la compuerta en el medio, run() lo re-encola.
         await run(nil, content: content)
     }
 
@@ -642,6 +696,22 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
+        let token = turnGate?.begin(.phoneChat)
+        if turnGate != nil, token == nil {
+            // Otra superficie tiene el turno: el mensaje no se pierde, queda
+            // pendiente y sale cuando la compuerta se libere.
+            if let bubble {
+                messages.append(bubble)
+                messages.append(DisplayMessage(role: .assistant, text: Self.busyQueuedNote, isSessionDivider: true))
+            }
+            lastUserContent = content
+            queuedContent = content
+            refreshBusy()
+            return
+        }
+        // Se suelta en UN solo lugar (al cerrar el turno, antes de la cola), y
+        // con su token: jamás libera el turno de un run() posterior.
+        ownTurn = true
         errorText = nil
         lastUserContent = content
         if let bubble {
@@ -652,7 +722,7 @@ public final class ChatViewModel: ObservableObject {
         var committedText = ""
         messages.append(assistant)
         var index = messages.count - 1
-        isStreaming = true
+        refreshBusy()
 
         for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
             switch event {
@@ -694,7 +764,7 @@ public final class ChatViewModel: ObservableObject {
                 assistant.text = committedText
             case .assistantMessage:
                 committedText = assistant.text
-            case .toolStarted, .toolFinished, .turnFinished:
+            case .started, .toolStarted, .toolFinished, .turnFinished:
                 break
             }
             assistant.isStreaming = true
@@ -703,7 +773,9 @@ public final class ChatViewModel: ObservableObject {
 
         assistant.isStreaming = false
         if messages.indices.contains(index) { messages[index] = assistant }
-        isStreaming = false
+        ownTurn = false
+        if let token { turnGate?.end(token) }
+        refreshBusy()
         await loadMind()
         await refreshContext()
         await sendQueuedIfOnline()
@@ -721,20 +793,51 @@ extension ChatViewModel: PhoneChatSurface {
     public func render(_ content: SurfaceContent) async {
         switch content {
         case .userTurn(let text, let origin) where origin != .phoneChat:
+            // Un turno nuevo del mismo origen: la burbuja vacía del anterior no
+            // queda girando para siempre.
+            if let stale = mirroredTurns.removeValue(forKey: origin) {
+                messages.removeAll { $0.id == stale && $0.text.isEmpty }
+            }
             var message = DisplayMessage(role: .user, text: text)
             message.surface = origin
             messages.append(message)
+            let pending = DisplayMessage(role: .assistant, isStreaming: true)
+            messages.append(pending)
+            mirroredTurns[origin] = pending.id
+            mirroredAsks[origin] = message.id
+            refreshBusy()
+        case .turnDropped(let origin) where origin != .phoneChat:
+            // Se canceló antes de correr (nada quedó persistido): ni la pregunta
+            // ni la burbuja quedan en el chat, que al relanzar no las tendría.
+            let ids = [mirroredTurns.removeValue(forKey: origin), mirroredAsks.removeValue(forKey: origin)]
+            messages.removeAll { ids.contains($0.id) }
+            refreshBusy()
+            await sendQueuedIfOnline()
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
-            let message = DisplayMessage(role: .assistant, text: text)
-            messages.append(message)
-            lastMirroredTurnID = message.id
+            lastMirroredTurnID = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text))
         case .declined(let text, let origin) where origin != .phoneChat:
-            let message = DisplayMessage(role: .assistant, text: text, isRefusal: true)
-            messages.append(message)
-            lastMirroredTurnID = message.id
+            lastMirroredTurnID = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text, isRefusal: true))
+        case .turnFailed(let text, let origin) where origin != .phoneChat:
+            // El turno de esa superficie falló: el error queda en el chat.
+            _ = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text, isError: true))
         default:
             break
         }
+    }
+
+    /// Reemplaza la burbuja en curso del turno espejado de `origin` (o agrega),
+    /// recalcula si el chat sigue ocupado y reintenta lo encolado.
+    private func closeMirrored(_ origin: SurfaceID, _ message: DisplayMessage) async -> UUID {
+        mirroredAsks[origin] = nil
+        if let id = mirroredTurns.removeValue(forKey: origin),
+           let index = messages.firstIndex(where: { $0.id == id }) {
+            messages[index] = message
+        } else {
+            messages.append(message)
+        }
+        refreshBusy()
+        await sendQueuedIfOnline()
+        return message.id
     }
 
     public func focus(turn: UUID?) {
@@ -809,8 +912,13 @@ public struct ChatView: View {
                         .padding(Theme.Space.screenInset)
                     }
                     // Solo el offset INICIAL al fondo: anclar siempre al fondo peleaba
-                    // con el scrollTo por delta y el chat "bailaba" (5b #7).
-                    .followingBottom($followsBottom, slack: Self.followSlack)
+                    // con el scrollTo por delta y el chat "bailaba" (5b #7). Cualquier
+                    // crecimiento (texto, thought line, hora, cards, fotos) baja al
+                    // último si el dueño no subió a leer.
+                    .followingBottom($followsBottom, slack: Self.followSlack) {
+                        guard let last = model.messages.last else { return }
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                     .scrollDismissesKeyboard(.interactively)
                     // Simultáneo: cierra el teclado SIN robarle el tap a la thought
                     // line, "Reintentar" ni las acciones de las propuestas.
@@ -1499,13 +1607,59 @@ public struct ChatView: View {
 }
 
 extension View {
-    /// Ancla inicial al fondo + si el usuario sigue al fondo.
-    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat) -> some View {
-        defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onScrollGeometryChange(for: Bool.self) { geo in
-                geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - slack
-            } action: { _, value in
-                atBottom.wrappedValue = value
+    /// Ancla inicial al fondo + si el usuario sigue al fondo. Solo un scroll
+    /// hacia arriba (arrastre, inercia, animación) lo saca del fondo; que crezca
+    /// el contenido no (batch 10 #1: una ráfaga de más de `slack` pt lo apagaba
+    /// antes del scrollTo). Mientras sigue al fondo, todo crecimiento llama
+    /// `onGrowth` (al soltar, si creció durante el gesto).
+    func followingBottom(_ atBottom: Binding<Bool>, slack: CGFloat,
+                         onGrowth: @escaping () -> Void) -> some View {
+        modifier(BottomFollower(atBottom: atBottom, slack: slack, onGrowth: onGrowth))
+    }
+}
+
+struct BottomFollower: ViewModifier {
+    @Binding var atBottom: Bool
+    let slack: CGFloat
+    let onGrowth: () -> Void
+    @State private var phase: ScrollPhase = .idle
+    @State private var grewDuringGesture = false
+
+    struct Metrics: Equatable {
+        var offset: CGFloat
+        var visibleBottom: CGFloat
+        var content: CGFloat
+
+        init(_ geo: ScrollGeometry) {
+            offset = geo.contentOffset.y
+            visibleBottom = geo.contentOffset.y + geo.containerSize.height
+            content = geo.contentSize.height
+        }
+
+        func atEnd(slack: CGFloat) -> Bool { visibleBottom >= content - slack }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollGeometryChange(for: Metrics.self) { Metrics($0) } action: { old, new in
+                if new.atEnd(slack: slack) {
+                    atBottom = true
+                } else if phase != .idle, new.offset < old.offset - 0.5 {
+                    atBottom = false
+                }
+                guard new.content > old.content else { return }
+                if phase != .idle {
+                    grewDuringGesture = true
+                } else if atBottom {
+                    onGrowth()
+                }
+            }
+            .onScrollPhaseChange { _, newPhase, _ in
+                phase = newPhase
+                guard newPhase == .idle, grewDuringGesture else { return }
+                grewDuringGesture = false
+                if atBottom { onGrowth() }
             }
     }
 }

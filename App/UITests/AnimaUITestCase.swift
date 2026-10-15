@@ -144,10 +144,42 @@ class AnimaUITestCase: XCTestCase {
 
     // MARK: Tabs
 
+    /// Identifier estable de cada tab (`.accessibilityIdentifier` del shell).
+    static let tabIdentifiers = ["Chat": "tab.chat", "Memoria": "tab.memory", "Metas": "tab.goals",
+                                 "Recordatorios": "tab.reminders", "Ajustes": "tab.settings"]
+
+    @MainActor
+    private func tabQuery(_ app: XCUIApplication, _ label: String) -> XCUIElementQuery {
+        app.tabBars.buttons.matching(identifier: Self.tabIdentifiers[label] ?? label)
+    }
+
+    /// El botón de una tab. En iOS 26 la tab bar puede exponer por un instante
+    /// una copia del botón (animación de selección, más larga en un runner
+    /// lento): se resuelve la primera para no fallar con "Multiple matching
+    /// elements", y `waitTabSelected` exige que, asentada, sea única.
+    @MainActor
+    func tabButton(_ app: XCUIApplication, _ label: String) -> XCUIElement {
+        tabQuery(app, label).firstMatch
+    }
+
+    /// La tab quedó seleccionada y hay UN solo botón para ella (una tab
+    /// duplicada de verdad, p. ej. un TabView repetido, falla aquí).
+    @MainActor
+    func waitTabSelected(_ app: XCUIApplication, _ label: String,
+                         file: StaticString = #filePath, line: UInt = #line) {
+        waitUntil(tabButton(app, label), "isSelected == true", file: file, line: line)
+        let query = tabQuery(app, label)
+        let deadline = Date().addingTimeInterval(scaled(5))
+        while query.count != 1, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(query.count, 1, "botones para la tab \(label)", file: file, line: line)
+        XCTAssertEqual(app.tabBars.count, 1, "tab bars", file: file, line: line)
+    }
+
     @MainActor
     func openTab(_ app: XCUIApplication, _ label: String) {
-        let button = app.tabBars.buttons[label]
-        tap(button)
+        tap(tabButton(app, label))
     }
 
     /// Ajustes es un hub (FIX F): abre la tab y empuja la sub-pantalla `section`

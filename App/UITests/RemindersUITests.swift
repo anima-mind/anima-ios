@@ -28,7 +28,7 @@ final class RemindersUITests: AnimaUITestCase {
         XCTAssertFalse(wake.isEnabled)
         // "N programados" → la tab Recordatorios.
         tap(element(app, "settings.notifications.list"))
-        waitUntil(app.tabBars.buttons["Recordatorios"], "isSelected == true")
+        waitTabSelected(app, "Recordatorios")
 
         let item = element(app, "reminders.item")
         waitFor(item)
@@ -53,7 +53,7 @@ final class RemindersUITests: AnimaUITestCase {
         let banner = element(app, "chat.approvalsBanner")
         waitUntil(banner, "label CONTAINS 'Tienes 1 cambio por aprobar'")
         tap(banner)
-        waitUntil(app.tabBars.buttons["Ajustes"], "isSelected == true")
+        waitTabSelected(app, "Ajustes")
         waitFor(element(app, "approvals.section"))
         waitFor(text(app, "Dormir 7 horas"))
         tap(app.buttons["Confirmar"])

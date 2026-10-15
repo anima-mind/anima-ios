@@ -5,6 +5,9 @@ options:
     iOS: "26.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
+  # Español: las frases de Siri (App Shortcuts) se registran en el idioma de
+  # desarrollo; y los textos del sistema dentro de la app salen en español.
+  developmentLanguage: es
 
 packages:
   AnimaKit:

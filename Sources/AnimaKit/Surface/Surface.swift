@@ -10,6 +10,9 @@ import Foundation
 public enum SurfaceID: String, Sendable, Codable, Equatable, CaseIterable {
     case phoneChat
     case glassesHUD
+    /// Siri / Atajos sin abrir el teléfono (batch 10 #2). Columna TEXT: un
+    /// build viejo que lea "siri" lo trata como sin superficie (nil).
+    case siri
 }
 
 public struct SurfaceCapabilities: Sendable, Equatable {
@@ -33,6 +36,9 @@ public struct SurfaceCapabilities: Sendable, Equatable {
     public static let glassesHUD = SurfaceCapabilities(freeText: false, images: true,
                                                        maxButtons: HUDValidator.maxButtons,
                                                        voiceIn: true, audioOut: true)
+    /// Siri: entra un transcript y sale voz; sin pantalla propia ni botones.
+    public static let siri = SurfaceCapabilities(freeText: false, images: false, maxButtons: 0,
+                                                 voiceIn: true, audioOut: true)
 }
 
 /// Contenido SEMÁNTICO (nunca visual) que la mente emite.
@@ -42,6 +48,11 @@ public enum SurfaceContent: Sendable, Equatable {
     /// La respuesta completa del asistente a un turno.
     case assistantTurn(text: String, origin: SurfaceID)
     case declined(text: String, origin: SurfaceID)
+    /// El turno de esa superficie falló (o se cortó): cierra SU turno espejado.
+    case turnFailed(text: String, origin: SurfaceID)
+    /// El turno de esa superficie se canceló antes de correr: no quedó nada
+    /// persistido, su pregunta espejada se quita del chat.
+    case turnDropped(origin: SurfaceID)
     /// "pensando…", errores amables.
     case status(String)
 }
@@ -101,7 +112,8 @@ public final class SurfaceRouter {
 
     static func origin(of content: SurfaceContent) -> SurfaceID? {
         switch content {
-        case .userTurn(_, let origin), .assistantTurn(_, let origin), .declined(_, let origin): return origin
+        case .userTurn(_, let origin), .assistantTurn(_, let origin), .declined(_, let origin),
+             .turnFailed(_, let origin), .turnDropped(let origin): return origin
         case .status: return nil
         }
     }

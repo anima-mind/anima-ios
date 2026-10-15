@@ -140,6 +140,12 @@ final class AppModel: ObservableObject {
     private var glassesSurface: GlassesHUDSurface?
     private var activeSessionId: SessionID?
     private var previousSessionId: SessionID?
+    /// El loop cableado (Siri corre sus turnos sobre el mismo que el chat).
+    private var loop: AgentLoop?
+    /// Un solo turno en vuelo sobre la sesión: chat, gafas y Siri.
+    private let turnGate = TurnGate()
+    /// Las confirmaciones de los turnos de Siri (las pregunta Siri, no el sheet).
+    private let siriApprovals = SiriApprovals()
     /// Tab visible (el deep link "ver en el teléfono" salta al Chat).
     @Published var selectedTab: AppTab = .chat
     /// "Hey Meta, start Anima" (DAT 1.0): el stream se abre en el init — ANTES de
@@ -475,13 +481,15 @@ final class AppModel: ObservableObject {
             // §8: la cámara de las gafas se confirma con pinch EN las gafas; el resto, sheet.
             confirmation: SurfaceConfirmationRouter(phone: confirmation, glasses: { [glassesHost] request in
                 await glassesHost.confirm(request)
-            }),
+            }, siri: siriApprovals),
             brain: brain,
             inbox: inbox,
             selfModel: selfModel,
             realRegister: realRegister,
             skillEngine: skillEngine,
             bodyStatus: bodyStatus)
+
+        self.loop = loop
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -574,7 +582,7 @@ final class AppModel: ObservableObject {
         chat.glasses = glassesModel
         chat.voice = Self.makePhoneVoice()
         chat.pendingApprovals = pendingApprovals
-        chat.usesRemoteConversation = mode != .onDeviceOnly
+        chat.usesRemoteConversation = mode.conversationNeedsNetwork
         chat.localModelAvailable = mode == .onDeviceOnly
         await chat.setOffline(offline)
         chat.onOpenApprovals = { [weak self] in self?.openApprovals() }
@@ -586,6 +594,11 @@ final class AppModel: ObservableObject {
         // no vuelve a correr — sin esto el header quedaba con el nombre semilla.
         await chat.loadMind()
         await chat.refreshContext()
+        chatModel?.detachFromGate()
+        chat.turnGate = turnGate
+        // Lo encolado solo sale con la app al frente (en background la base
+        // puede estar por suspenderse); al volver, didBecomeActive lo retoma.
+        chat.canSendQueued = { Self.isForeground }
         surfaceRouter.register(chat)
         chatModel = chat
         await wireGlassesSurface(loop: loop, sessionId: sessionId)
@@ -615,6 +628,7 @@ final class AppModel: ObservableObject {
             await reconcileProactive()
             await approvalsModel?.refresh()
             await applyWidgetActions()
+            await chatModel?.resumeQueued()
         }
     }
 
@@ -649,6 +663,74 @@ final class AppModel: ObservableObject {
         await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         await applyWidgetActions()
         DatabaseSuspension.shared.end()
+    }
+
+    // MARK: - Siri (batch 10 #2)
+
+    /// Un turno por Siri sin abrir la app: el MISMO loop y sesión que el chat
+    /// (superficie `.siri`, espejado en el chat). La base queda despierta y un
+    /// background task cubre el resto del turno si vence el deadline; la
+    /// respuesta tardía queda en el chat y se avisa con una notificación.
+    /// `confirm`: Siri le pregunta al dueño por una acción que pide su ok.
+    func askFromSiri(_ text: String, confirm: @MainActor (String) async -> Bool) async -> String {
+        let hold = SiriHold()
+        await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
+        if let blocked = siriBlocker() {
+            hold.end()
+            return SiriTurn.spoken(blocked)
+        }
+        guard let loop, let activeSessionId else {
+            hold.end()
+            return SiriTurn.spoken(.notReady(Self.siriNotReady))
+        }
+        // Un solo turno en vuelo: si el chat, las gafas u otro Siri lo tienen, ocupado.
+        guard let token = turnGate.begin(.siri) else {
+            hold.end()
+            return SiriTurn.spoken(.busy)
+        }
+        let gate = turnGate
+        hold.onEnd = { gate.end(token) }
+        // Tope de seguridad: aunque el productor jamás termine, la base y la
+        // compuerta se sueltan (tope duro + espera al productor + margen).
+        hold.endAfter(SiriTurn.hardLimit + TurnGate.idleLimit + .seconds(5))
+        let router = surfaceRouter
+        let runner = SiriTurnRunner(
+            runner: loop, sessionId: activeSessionId, approvals: siriApprovals,
+            deliver: { content in await router.route(content) },
+            settled: { late in
+                await MainActor.run {
+                    if let late, let body = SiriTurn.lateNotice(late) {
+                        HandoffNotifications.post(.chat(turn: nil), body: body)
+                    }
+                    hold.end()
+                }
+            })
+        hold.runner = runner
+        var outcome = await runner.ask(text)
+        var asked = 0
+        while case .needsApproval(let summary) = outcome, asked < 3 {
+            asked += 1
+            siriApprovals.resolve(await confirm(summary))
+            outcome = await runner.resume()
+        }
+        await runner.release()
+        return SiriTurn.spoken(outcome)
+    }
+
+    static let siriNotReady = "Anima todavía no está lista. Ábrela para terminar de configurarla."
+
+    /// Por qué Siri no puede correr un turno ahora (nil = puede).
+    private func siriBlocker() -> SiriTurn.Outcome? {
+        guard onboarded else { return .notReady(Self.siriNotReady) }
+        switch phase {
+        case .ready: break
+        case .needsToken: return .notReady("Anima necesita tu API key. Ábrela y agrégala en Ajustes.")
+        case .misconfigured, .loading: return .notReady(Self.siriNotReady)
+        }
+        if turnGate.current != nil || chatModel?.isStreaming == true { return .busy }
+        // La MISMA regla que el chat: sin red y con conversación remota, no hay turno.
+        if offline, Self.onboardingDefaults.modeStore.mode.conversationNeedsNetwork { return .offline }
+        return nil
     }
 
     /// "Nueva conversación" (medidor de contexto): cierra la sesión y abre otra;
@@ -920,7 +1002,7 @@ final class AppModel: ObservableObject {
         voice = SilentVoice(); speech = SilentVoice()
         #endif
         let surface = GlassesHUDSurface(
-            body: glassesBody, activation: glassesActivation, runner: loop, sessionId: sessionId,
+            body: glassesBody, activation: glassesActivation, runner: loop, gate: turnGate, sessionId: sessionId,
             voice: voice, speech: speech, router: surfaceRouter,
             openPhone: { [weak self] turn in self?.handoffToPhone(turn: turn) })
         glassesSurface = surface
@@ -1199,6 +1281,40 @@ struct ConfirmationOverlay: ViewModifier {
                     .presentationBackground(Theme.Colors.surface)
             }
         }
+    }
+}
+
+/// Lo que retiene un turno de Siri: la base despierta y un background task
+/// mientras dure el turno (también tras contestarle a Siri). Si iOS expira el
+/// tiempo, el turno se corta ANTES de suspender la base. Fin idempotente.
+@MainActor
+final class SiriHold {
+    /// weak: el runner retiene al hold (su `settled` lo cierra); sin ciclo.
+    weak var runner: SiriTurnRunner?
+    var onEnd: (() -> Void)?
+    private var flush: BackgroundFlush?
+
+    init() {
+        DatabaseSuspension.shared.begin()
+        flush = BackgroundFlush.begin(onExpire: { [weak self] in
+            if let runner = self?.runner { Task { await runner.cancel() } }
+            DatabaseSuspension.shared.expire()
+        })
+    }
+
+    func endAfter(_ limit: Duration) {
+        Task { [weak self] in
+            try? await Task.sleep(for: limit)
+            self?.end()
+        }
+    }
+
+    func end() {
+        guard let flush else { return }
+        self.flush = nil
+        onEnd?()
+        DatabaseSuspension.shared.end()
+        flush.end()
     }
 }
 

@@ -20,17 +20,42 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
 
     public init() {}
 
+    /// Si el turno se cancela con el sheet abierto, se niega y el sheet se cierra
+    /// (no queda la sesión retenida esperando al dueño).
     public nonisolated func confirm(_ request: ConfirmationRequest) async -> Bool {
-        await withCheckedContinuation { cont in
-            Task { @MainActor in
-                guard self.continuation == nil else {
-                    cont.resume(returning: false)   // ya hay una pendiente → fail-closed
-                    return
+        guard !Task.isCancelled else { return false }
+        let ticket = Ticket()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                Task { @MainActor in
+                    ticket.registered = true
+                    guard self.continuation == nil, !ticket.cancelled else {
+                        cont.resume(returning: false)   // pendiente ajena o ya cancelada → fail-closed
+                        return
+                    }
+                    self.continuation = cont
+                    self.pendingTicket = ticket
+                    self.pending = request
                 }
-                self.continuation = cont
-                self.pending = request
             }
+        } onCancel: {
+            Task { @MainActor in self.cancel(ticket) }
         }
+    }
+
+    /// Una solicitud: su cancelación se recuerda en ELLA (no en un registro
+    /// global que crecería con cancelaciones tardías).
+    @MainActor
+    final class Ticket {
+        var registered = false
+        var cancelled = false
+    }
+
+    private var pendingTicket: Ticket?
+
+    private func cancel(_ ticket: Ticket) {
+        ticket.cancelled = true
+        if pendingTicket === ticket { resolve(.cancel) }
     }
 
     public func resolve(_ approved: Bool) {
@@ -40,6 +65,7 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     public func resolve(_ decision: ConfirmationDecision) {
         if decision == .always, let request = pending { onAlwaysAllow?(request) }
         pending = nil
+        pendingTicket = nil
         let cont = continuation
         continuation = nil
         cont?.resume(returning: decision != .cancel)

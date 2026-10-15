@@ -19,18 +19,25 @@ public struct StreamingSentenceSegmenter: Sendable, Equatable {
     public init() {}
 
     /// Un delta del stream → las oraciones que quedaron completas (terminador
-    /// seguido de espacio: "9.30" no corta).
+    /// seguido de espacio, sin cortar abreviaturas: "9.30" y "Sr." no cortan).
     public mutating func feed(_ delta: String) -> [String] {
         raw += delta
         let plain = Array(HUDSummary.plain(raw))
         var out: [String] = []
         var start = emitted
         var i = emitted
-        while i + 1 < plain.count {
-            if ".?!…".contains(plain[i]), plain[i + 1].isWhitespace {
+        // Misma regla que HUDSummary.sentences; "no se sabe aún" (falta la
+        // palabra siguiente) espera al próximo delta.
+        scan: while i + 1 < plain.count {
+            switch HUDSummary.boundary(plain, at: i) {
+            case true?:
                 let sentence = String(plain[start...i]).trimmingCharacters(in: .whitespaces)
                 if !sentence.isEmpty { out.append(sentence) }
                 start = i + 1
+            case nil:
+                break scan
+            case false?:
+                break
             }
             i += 1
         }

@@ -44,18 +44,18 @@ final class WidgetsUITests: AnimaUITestCase {
         app.launchArguments.removeAll { $0 == "--uitest-reset" }
 
         app.open(try XCTUnwrap(URL(string: "anima://reminders")))
-        waitUntil(app.tabBars.buttons["Recordatorios"], "isSelected == true")
+        waitTabSelected(app, "Recordatorios")
 
         app.open(try XCTUnwrap(URL(string: "anima://goals")))
-        waitUntil(app.tabBars.buttons["Metas"], "isSelected == true")
+        waitTabSelected(app, "Metas")
 
         app.open(try XCTUnwrap(URL(string: "anima://chat")))
-        waitUntil(app.tabBars.buttons["Chat"], "isSelected == true")
+        waitTabSelected(app, "Chat")
 
         openTab(app, "Metas")
         // "Hablar con Anima" (control / botón de Acción): chat + mic escuchando.
         app.open(try XCTUnwrap(URL(string: "anima://chat?mic=1")))
-        waitUntil(app.tabBars.buttons["Chat"], "isSelected == true")
+        waitTabSelected(app, "Chat")
         waitFor(element(app, "chat.listeningBar"), timeout: 30)
     }
 }

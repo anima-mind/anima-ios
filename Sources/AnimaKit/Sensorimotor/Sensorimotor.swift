@@ -73,6 +73,9 @@ public actor Sensorimotor {
             return result
         case .needsConfirmation(var request):
             request.surface = surface
+            if let refusal = SurfaceConfirmationRouter.refusal(for: request) {
+                return ToolResult(content: refusal, isError: true, isRejection: true)
+            }
             guard await confirmation.confirm(request) else {
                 return ToolResult(content: "Acción cancelada: el dueño no la confirmó.", isError: true, isRejection: true)
             }

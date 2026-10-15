@@ -152,7 +152,7 @@ struct SiriTurnTests {
         let outcome = await spy.runner(SiriGatedRunner([.error("Sin conexión con el modelo.")])).ask("hola")
         #expect(outcome == .failed("Sin conexión con el modelo."))
         #expect(SiriTurn.spoken(outcome) == "No pude responderte: Sin conexión con el modelo.")
-        #expect(spy.delivered.value.last == .status("Sin conexión con el modelo."))
+        #expect(spy.delivered.value.last == .turnFailed(text: "Sin conexión con el modelo.", origin: .siri))
         let stopped = await SiriSpy().runner(SiriGatedRunner([.stopped(.maxIterations)])).ask("hola")
         guard case .failed(let reason) = stopped else {
             Issue.record("esperaba fallo: \(stopped)")
@@ -312,26 +312,18 @@ struct SiriReviewTests {
     // Me2: un turno a la vez sobre la sesión (Siri, chat y gafas).
     @Test func compuertaDeTurnoUnoALaVez() async {
         let gate = TurnGate()
+        let seen = Locked<[SurfaceID?]>([])
+        gate.observe { holder in seen.mutate { $0.append(holder) } }
         #expect(gate.begin(.siri))
         #expect(gate.begin(.siri) == false)
         #expect(gate.begin(.phoneChat) == false)
         gate.end(.phoneChat)   // solo quien la tiene la suelta
         #expect(gate.current == .siri)
-        let inner = SiriGatedRunner([.textDelta("hola")])
-        var events: [LoopEvent] = []
-        for await e in await GatedTurnRunner(inner, gate: gate).run(sessionId: "s", content: [], surface: .glassesHUD) {
-            events.append(e)
-        }
-        #expect(events == [.error(TurnGate.busyText(.siri))])
-        #expect(inner.received.value.isEmpty)
         gate.end(.siri)
-        events = []
-        for await e in await GatedTurnRunner(inner, gate: gate).run(sessionId: "s", content: [], surface: .glassesHUD) {
-            events.append(e)
-        }
-        #expect(events == [.textDelta("hola")])
         #expect(gate.current == nil)
+        #expect(seen.value == [.siri, nil])
         #expect(SiriTurn.spoken(.busy) == SiriTurn.busyText)
+        #expect(TurnGate.busyText(.siri).contains("Siri"))
         #expect(TurnGate.busyText(.glassesHUD).contains("gafas"))
         #expect(TurnGate.busyText(.phoneChat).contains("otra respuesta"))
     }
@@ -341,7 +333,7 @@ struct SiriReviewTests {
         #expect(HUDSummary.sentences("El vuelo cuesta 1.250.000 pesos y sale a las 3.30. Llega temprano.")
             == ["El vuelo cuesta 1.250.000 pesos y sale a las 3.30.", "Llega temprano."])
         #expect(HUDSummary.sentences("Habla con el Sr. Pérez a las 4 p. m. Luego descansa.")
-            == ["Habla con el Sr. Pérez a las 4 p. m. Luego descansa."])
+            == ["Habla con el Sr. Pérez a las 4 p. m.", "Luego descansa."])
         #expect(HUDSummary.sentences("Míralo en anima.app/ayuda. ¿Listo?!") == ["Míralo en anima.app/ayuda.", "¿Listo?!"])
         #expect(HUDSummary.sentences("Espera... ya.") == ["Espera...", "ya."])
         let long = "El vuelo cuesta 1.250.000 pesos y sale a las 3.30 desde el terminal 2. "
@@ -394,7 +386,7 @@ struct SiriReviewTests {
         await siri.release()
         await spy.waitSettled()
         #expect(spy.settled.value == [.failed(SiriTurn.timeoutText)])
-        #expect(spy.delivered.value.last == .status(SiriTurn.timeoutText))
+        #expect(spy.delivered.value.last == .turnFailed(text: SiriTurn.timeoutText, origin: .siri))
     }
 
     @Test func cancelarExplicitoTambienCierra() async {
@@ -433,12 +425,12 @@ struct MirroredTurnChatTests {
     @Test func elFalloDeSiriLlegaAlChat() async throws {
         let chat = try chat()
         await chat.render(.userTurn(text: "hola", origin: .siri))
-        await chat.render(.status("Sin conexión"))
+        await chat.render(.turnFailed(text: "Sin conexión", origin: .siri))
         #expect(!chat.isStreaming)
         #expect(chat.messages.count == 2)
         #expect(chat.messages.last?.isError == true)
         #expect(chat.messages.last?.text == "Sin conexión")
-        // Un status suelto (sin turno espejado) no pinta nada.
+        // Un status genérico no cierra ni pinta nada.
         await chat.render(.status("otro"))
         #expect(chat.messages.count == 2)
         await chat.render(.userTurn(text: "algo raro", origin: .glassesHUD))
@@ -447,15 +439,49 @@ struct MirroredTurnChatTests {
         #expect(!chat.isStreaming)
     }
 
-    @Test func conLaCompuertaTomadaElChatNoCorreOtroTurno() async throws {
+    // Menor 1: con la compuerta tomada el mensaje no se pierde: el composer no
+    // envía (y conserva el texto); si ya iba en camino, queda pendiente y sale
+    // al liberarse la compuerta.
+    @Test func conLaCompuertaTomadaElMensajeNoSePierde() async throws {
         let chat = try chat()
         let gate = TurnGate()
         chat.turnGate = gate
         #expect(gate.begin(.siri))
+        #expect(chat.isStreaming)   // derivado de la compuerta
         chat.input = "hola"
         await chat.send()
-        #expect(chat.errorText == TurnGate.busyText(.siri))
+        #expect(chat.input == "hola")
         #expect(chat.messages.isEmpty)
         gate.end(.siri)
+        for _ in 0..<200 where chat.isStreaming { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!chat.isStreaming)
+    }
+
+    @Test func loEncoladoEsperaLaCompuertaYSaleAlLiberarse() async throws {
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let provider = CapturingProvider([[.messageStart(id: "m", model: "x"), .textDelta("Hola."), .messageStop]])
+        let loop = AgentLoop(provider: provider, store: store, telemetry: Telemetry(queue: queue),
+                             router: ModelRouter(config: try TestConfig.providerConfig()), authMode: .apiKey,
+                             token: "sk-ant-api03-xyz", clientTools: [], serverTools: [], sleep: { _ in })
+        let chat = ChatViewModel(loop: loop, sessionId: try store.startSession())
+        let gate = TurnGate()
+        chat.turnGate = gate
+        chat.usesRemoteConversation = true
+        await chat.setOffline(true)
+        chat.input = "hola"
+        await chat.send()
+        #expect(chat.hasQueuedTurn)
+        // Vuelve la red con otra superficie respondiendo: sigue encolado (no se pierde).
+        #expect(gate.begin(.siri))
+        await chat.setOffline(false)
+        #expect(chat.hasQueuedTurn)
+        #expect(provider.captures.value.isEmpty)
+        // Se libera la compuerta: sale solo.
+        gate.end(.siri)
+        for _ in 0..<400 where chat.hasQueuedTurn || chat.isStreaming { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!chat.hasQueuedTurn)
+        #expect(provider.captures.value.count == 1)
+        #expect(gate.current == nil)
     }
 }

@@ -994,7 +994,7 @@ final class AppModel: ObservableObject {
         voice = SilentVoice(); speech = SilentVoice()
         #endif
         let surface = GlassesHUDSurface(
-            body: glassesBody, activation: glassesActivation, runner: GatedTurnRunner(loop, gate: turnGate), sessionId: sessionId,
+            body: glassesBody, activation: glassesActivation, runner: loop, gate: turnGate, sessionId: sessionId,
             voice: voice, speech: speech, router: surfaceRouter,
             openPhone: { [weak self] turn in self?.handoffToPhone(turn: turn) })
         glassesSurface = surface

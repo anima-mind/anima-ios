@@ -172,13 +172,31 @@ public actor AgentLoop {
     /// texto de un transcript de audio) forman el mensaje user del turno.
     public func run(sessionId: SessionID, content: [ContentBlock],
                     surface: SurfaceID = .phoneChat) -> AsyncStream<LoopEvent> {
-        AsyncStream { continuation in
+        let id = UUID()
+        let stream = AsyncStream<LoopEvent> { continuation in
             let task = Task {
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
+                self.untrack(id)
             }
+            inFlight[id] = task
             continuation.onTermination = { _ in task.cancel() }
+        }
+        return stream
+    }
+
+    /// Turnos cuyo productor sigue vivo (aunque su consumidor ya cortó).
+    private var inFlight: [UUID: Task<Void, Never>] = [:]
+
+    private func untrack(_ id: UUID) { inFlight[id] = nil }
+
+    public var turnsInFlight: Int { inFlight.count }
+
+    /// Vuelve cuando ningún turno sigue produciendo (escrituras incluidas).
+    public func waitUntilIdle() async {
+        while let task = inFlight.values.first {
+            await task.value
         }
     }
 

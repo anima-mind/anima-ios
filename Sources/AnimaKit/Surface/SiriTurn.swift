@@ -95,43 +95,74 @@ public enum SiriTurn {
     }
 
     static func plainSpeech(_ text: String) -> String {
-        String(String.UnicodeScalarView(HUDSummary.plain(text).unicodeScalars.filter { !isPictograph($0) }))
-            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let scalars = Array(HUDSummary.plain(text).unicodeScalars)
+        var kept = String.UnicodeScalarView()
+        for (i, scalar) in scalars.enumerated() {
+            let next = i + 1 < scalars.count ? scalars[i + 1] : nil
+            if !isPictograph(scalar, next: next) { kept.append(scalar) }
+        }
+        let words = String(kept).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // Lo que quedó suelto al quitar un emoji: " ." → ".".
+        return words.replacingOccurrences(of: #" +([.,;:!?…])"#, with: "$1", options: .regularExpression)
     }
 
-    /// Emoji y pictogramas (con sus selectores y uniones), no dígitos ni "#"/"*".
-    static func isPictograph(_ scalar: Unicode.Scalar) -> Bool {
-        let p = scalar.properties
-        if p.isEmojiPresentation { return true }
-        if p.isEmoji, scalar.value > 0x7F { return true }
+    /// Emoji y pictogramas (con sus selectores, tonos y uniones). No toca
+    /// letras, dígitos, "#", "*", ni símbolos de texto como ™ o ©.
+    static func isPictograph(_ scalar: Unicode.Scalar, next: Unicode.Scalar? = nil) -> Bool {
         switch scalar.value {
         case 0x200D, 0xFE0E, 0xFE0F, 0x20E3: return true
         case 0x1F3FB...0x1F3FF, 0xE0020...0xE007F: return true
-        default: return false
+        case 0x1F000...0x1FAFF, 0x2600...0x27BF, 0x2B00...0x2BFF: return true
+        default: break
         }
+        let p = scalar.properties
+        if p.isEmojiPresentation { return true }
+        // Un símbolo de texto pedido como emoji ("⚠️" = ⚠ + FE0F).
+        return p.isEmoji && scalar.value > 0x7F && next?.value == 0xFE0F
     }
 }
 
 /// El ÚNICO turno en vuelo sobre la sesión: chat, gafas y Siri lo piden antes
-/// de correr; si otro lo tiene, el nuevo dice que está ocupado.
+/// de correr (y antes de espejar nada); si otro lo tiene, el nuevo dice que
+/// está ocupado. Se suelta cuando el turno de verdad terminó (`end(_:after:)`
+/// espera al productor del loop), y avisa cada cambio (el chat se ve ocupado).
 public final class TurnGate: @unchecked Sendable {
     private let lock = NSLock()
     private var holder: SurfaceID?
+    private var observers: [@Sendable (SurfaceID?) -> Void] = []
 
     public init() {}
 
     public var current: SurfaceID? { lock.withLock { holder } }
 
+    public func observe(_ handler: @escaping @Sendable (SurfaceID?) -> Void) {
+        lock.withLock { observers.append(handler) }
+    }
+
     public func begin(_ surface: SurfaceID) -> Bool {
-        lock.withLock {
-            guard holder == nil else { return false }
+        let notify = lock.withLock { () -> [@Sendable (SurfaceID?) -> Void]? in
+            guard holder == nil else { return nil }
             holder = surface
-            return true
+            return observers
         }
+        notify?.forEach { $0(surface) }
+        return notify != nil
     }
 
     public func end(_ surface: SurfaceID) {
-        lock.withLock { if holder == surface { holder = nil } }
+        let notify = lock.withLock { () -> [@Sendable (SurfaceID?) -> Void]? in
+            guard holder == surface else { return nil }
+            holder = nil
+            return observers
+        }
+        notify?.forEach { $0(nil) }
+    }
+
+    /// Suelta la compuerta cuando el loop ya no produce (aunque el stream se
+    /// cortara antes): un `begin` justo después nunca la encuentra tomada.
+    public func end(_ surface: SurfaceID, after runner: any TurnRunner) async {
+        await runner.waitUntilIdle()
+        end(surface)
     }
 
     public static func busyText(_ holder: SurfaceID?) -> String {
@@ -139,38 +170,6 @@ public final class TurnGate: @unchecked Sendable {
         case .siri: "Estoy respondiendo algo que me pediste por Siri. Inténtalo en un momento."
         case .glassesHUD: "Estoy respondiendo en tus gafas. Inténtalo en un momento."
         default: "Estoy terminando otra respuesta. Inténtalo en un momento."
-        }
-    }
-}
-
-/// El runner de una superficie tras la compuerta: si otra superficie tiene el
-/// turno, el stream es UN error amable (sin persistir nada).
-public struct GatedTurnRunner: TurnRunner {
-    private let runner: any TurnRunner
-    private let gate: TurnGate
-
-    public init(_ runner: any TurnRunner, gate: TurnGate) {
-        self.runner = runner
-        self.gate = gate
-    }
-
-    public func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID) async -> AsyncStream<LoopEvent> {
-        guard gate.begin(surface) else {
-            let text = TurnGate.busyText(gate.current)
-            return AsyncStream { c in
-                c.yield(.error(text))
-                c.finish()
-            }
-        }
-        let inner = await runner.run(sessionId: sessionId, content: content, surface: surface)
-        let gate = self.gate
-        return AsyncStream { c in
-            let task = Task {
-                for await event in inner { c.yield(event) }
-                gate.end(surface)
-                c.finish()
-            }
-            c.onTermination = { _ in task.cancel() }
         }
     }
 }
@@ -279,9 +278,12 @@ public actor SiriTurnRunner {
                                       surface: .siri)
         let deliver = self.deliver
         let cut = self.cut
+        let runner = self.runner
         let task = Task { () -> SiriTurn.Outcome in
             var collector = SiriTurnCollector()
             for await event in stream { collector.apply(event) }
+            // Cortado o no, el turno termina cuando el loop deja de producir.
+            await runner.waitUntilIdle()
             let outcome = cut.value ? .failed(SiriTurn.timeoutText) : collector.outcome
             if let mirror = SiriTurnCollector.mirror(outcome) { await deliver(mirror) }
             return outcome
@@ -456,7 +458,7 @@ struct SiriTurnCollector {
         switch outcome {
         case .replied(let text): .assistantTurn(text: text, origin: .siri)
         case .declined(let text): .declined(text: text, origin: .siri)
-        case .failed(let message): .status(message)
+        case .failed(let message): .turnFailed(text: message, origin: .siri)
         default: nil
         }
     }

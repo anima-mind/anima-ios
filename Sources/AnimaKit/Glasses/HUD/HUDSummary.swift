@@ -39,20 +39,15 @@ public enum HUDSummary {
         return lines.joined(separator: " ")
     }
 
-    /// Divide en frases (., ?, !, …) conservando el signo. Solo corta si al
-    /// signo le sigue un espacio (o el final): "1.250.000", "3.30" y
-    /// "anima.app/x" quedan enteros; "..." y "?!" van juntos; y un punto tras
-    /// una abreviatura común ("Sr.", "p. m.", "etc.") no corta.
+    /// Divide en frases (., ?, !, …) conservando el signo, con la regla de
+    /// `boundary` (la MISMA que usa la voz en vivo de las gafas).
     public static func sentences(_ text: String) -> [String] {
         let chars = Array(text)
         var out: [String] = []
         var current = ""
         for (i, ch) in chars.enumerated() {
             current.append(ch)
-            guard ".?!…".contains(ch) else { continue }
-            let next = i + 1 < chars.count ? chars[i + 1] : nil
-            if let next, !next.isWhitespace { continue }
-            if ch == ".", isAbbreviation(current) { continue }
+            guard boundary(chars, at: i) ?? true else { continue }
             let s = current.trimmingCharacters(in: .whitespaces)
             if !s.isEmpty { out.append(s) }
             current = ""
@@ -62,16 +57,75 @@ public enum HUDSummary {
         return out
     }
 
-    static let abbreviations: Set<String> = [
-        "sr", "sra", "srta", "dr", "dra", "lic", "ing", "prof", "etc", "ej", "p.ej", "aprox", "núm",
-        "pág", "av", "cra", "cl", "tel", "a", "p", "m", "a.m", "p.m", "vs", "dto", "cía",
-    ]
+    /// ¿Termina una frase en `chars[i]`? nil = aún no se sabe (falta la palabra
+    /// siguiente: en un stream, esperar; en un texto completo, es el final).
+    /// Solo corta un signo seguido de espacio ("1.250.000", "3.30" y las URLs
+    /// quedan enteros). Tras un punto de abreviatura: las de título o dirección
+    /// ("Sr.", "Dr.", "Av.", "apto.", "núm.") nunca cortan; "etc.", "aprox.",
+    /// "p. ej." y la hora ("p. m.", "a. m.") cortan solo si sigue mayúscula.
+    public static func boundary(_ chars: [Character], at i: Int) -> Bool? {
+        let ch = chars[i]
+        guard ".?!…".contains(ch) else { return false }
+        if i + 1 < chars.count, !chars[i + 1].isWhitespace { return false }
+        guard ch == "." else { return true }
+        let word = wordBefore(chars, at: i)
+        let previous = wordBefore(chars, at: i - word.count - 1, skippingSpaces: true)
+        var rule = abbreviation(word)
+        if rule == nil, ["a", "p"].contains(word), nextWord(chars, after: i) == "m." { return false }
+        if rule == nil, word == "p", nextWord(chars, after: i) == "ej." { return false }
+        if rule == nil, word == "m", ["a.", "p."].contains(previous + ".") { rule = .beforeLowercase }
+        if rule == nil, word == "ej", previous == "p" { rule = .beforeLowercase }
+        switch rule {
+        case nil: return true
+        case .never: return false
+        case .beforeLowercase:
+            guard let next = nextCharacter(chars, after: i) else { return nil }
+            return next.isUppercase
+        }
+    }
 
-    /// ¿La palabra que termina en este punto es una abreviatura?
-    private static func isAbbreviation(_ current: String) -> Bool {
-        let word = current.dropLast().split(whereSeparator: \.isWhitespace).last.map(String.init) ?? ""
-        let bare = word.trimmingCharacters(in: CharacterSet(charactersIn: "(¿¡\"'")).lowercased()
-        return abbreviations.contains(bare)
+    enum AbbreviationRule { case never, beforeLowercase }
+
+    static let neverCut: Set<String> = [
+        "sr", "sra", "srta", "dr", "dra", "lic", "ing", "prof", "av", "cra", "cl", "tel", "apto",
+        "núm", "pág", "dto", "cía", "vs", "mz", "ofi", "of",
+    ]
+    static let cutBeforeUppercase: Set<String> = ["etc", "aprox", "p.ej", "a.m", "p.m", "ej"]
+
+    static func abbreviation(_ word: String) -> AbbreviationRule? {
+        if neverCut.contains(word) { return .never }
+        if cutBeforeUppercase.contains(word) { return .beforeLowercase }
+        return nil
+    }
+
+    /// La palabra (en minúsculas, sin signos de apertura) que termina justo antes de `i`.
+    private static func wordBefore(_ chars: [Character], at i: Int, skippingSpaces: Bool = false) -> String {
+        var j = i - 1
+        if skippingSpaces { while j >= 0, chars[j].isWhitespace { j -= 1 } }
+        if skippingSpaces, j >= 0, chars[j] == "." { j -= 1 }
+        var word: [Character] = []
+        while j >= 0, !chars[j].isWhitespace {
+            word.insert(chars[j], at: 0)
+            j -= 1
+        }
+        return String(word).trimmingCharacters(in: CharacterSet(charactersIn: "(¿¡\"'")).lowercased()
+    }
+
+    private static func nextCharacter(_ chars: [Character], after i: Int) -> Character? {
+        var j = i + 1
+        while j < chars.count, chars[j].isWhitespace { j += 1 }
+        return j < chars.count ? chars[j] : nil
+    }
+
+    private static func nextWord(_ chars: [Character], after i: Int) -> String {
+        var j = i + 1
+        while j < chars.count, chars[j].isWhitespace { j += 1 }
+        var word = ""
+        while j < chars.count, !chars[j].isWhitespace {
+            word.append(chars[j])
+            j += 1
+        }
+        return word.lowercased()
     }
 
     /// Recorta a `limit` en frontera de palabra, con "…".

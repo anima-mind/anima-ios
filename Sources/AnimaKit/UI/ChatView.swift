@@ -302,7 +302,10 @@ public final class ChatViewModel: ObservableObject {
 
     @Published public var messages: [DisplayMessage] = []
     @Published public var input: String = ""
-    @Published public var isStreaming: Bool = false
+    /// Ocupado: un turno propio, uno espejado de otra superficie o la compuerta
+    /// de turno tomada por otra (derivado, jamás se asigna a mano).
+    @Published public private(set) var isStreaming: Bool = false
+    private var ownTurn = false
     @Published public var errorText: String?
     @Published public private(set) var mind = MindState()
     /// Nombre del self para el header (FIX D): la identidad de ELLA, no la marca.
@@ -322,11 +325,35 @@ public final class ChatViewModel: ObservableObject {
     @Published public var focusedMessageId: UUID?
     /// PhoneChatSurface: ancla del último turno espejado desde otra superficie.
     public private(set) var lastMirroredTurnID: UUID?
-    /// Un turno de otra superficie (gafas, Siri) en vuelo: su burbuja en curso y
-    /// el chat ocupado hasta que llegue la respuesta o el error.
-    private var mirroredTurnId: UUID?
+    /// Turnos de otras superficies (gafas, Siri) en vuelo: la burbuja en curso
+    /// de CADA uno; solo su respuesta o su fallo la cierran.
+    private var mirroredTurns: [SurfaceID: UUID] = [:]
     /// El único turno en vuelo sobre la sesión (lo comparten chat, gafas y Siri).
-    public var turnGate: TurnGate?
+    public var turnGate: TurnGate? {
+        didSet {
+            turnGate?.observe { [weak self] _ in
+                if Thread.isMainThread {
+                    MainActor.assumeIsolated { self?.gateChanged() }
+                } else {
+                    Task { @MainActor in self?.gateChanged() }
+                }
+            }
+            refreshBusy()
+        }
+    }
+
+    private func refreshBusy() {
+        let busy = ownTurn || !mirroredTurns.isEmpty || turnGate?.current != nil
+        if busy != isStreaming { isStreaming = busy }
+    }
+
+    /// La compuerta cambió de dueño: el chat se ve ocupado o libre, y al
+    /// liberarse sale lo encolado.
+    private func gateChanged() {
+        refreshBusy()
+        guard turnGate?.current == nil, hasQueuedTurn else { return }
+        Task { await sendQueuedIfOnline() }
+    }
     public let events: AsyncStream<SurfaceEvent>
     private let eventSink: AsyncStream<SurfaceEvent>.Continuation
 
@@ -466,7 +493,7 @@ public final class ChatViewModel: ObservableObject {
     public func send() async {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let image = pendingImage
-        guard !text.isEmpty || image != nil, !isStreaming else { return }
+        guard !text.isEmpty || image != nil, !isStreaming, turnGate?.current == nil else { return }
         input = ""
         pendingImage = nil
         if !text.isEmpty { eventSink.yield(.userText(text)) }
@@ -578,6 +605,7 @@ public final class ChatViewModel: ObservableObject {
     public var localModelAvailable = false
     private var queuedContent: [ContentBlock]?
     public static let offlineQueuedNote = "Sin conexión: te lo envío apenas vuelva la red."
+    public static let busyQueuedNote = "Te lo envío apenas termine lo anterior."
 
     /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
     /// (con aviso claro) en vez de fallar y pedir "Reintentar".
@@ -605,6 +633,7 @@ public final class ChatViewModel: ObservableObject {
     private func sendQueuedIfOnline() async {
         guard !isOffline, let content = queuedContent, !isStreaming else { return }
         queuedContent = nil
+        // Si otra superficie toma la compuerta en el medio, run() lo re-encola.
         await run(nil, content: content)
     }
 
@@ -649,10 +678,23 @@ public final class ChatViewModel: ObservableObject {
 
     private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
         if let turnGate, !turnGate.begin(.phoneChat) {
-            errorText = TurnGate.busyText(turnGate.current)
+            // Otra superficie tiene el turno: el mensaje no se pierde, queda
+            // pendiente y sale cuando la compuerta se libere.
+            if let bubble {
+                messages.append(bubble)
+                messages.append(DisplayMessage(role: .assistant, text: Self.busyQueuedNote, isSessionDivider: true))
+            }
+            lastUserContent = content
+            queuedContent = content
+            refreshBusy()
             return
         }
-        defer { turnGate?.end(.phoneChat) }
+        ownTurn = true
+        defer {
+            ownTurn = false
+            turnGate?.end(.phoneChat)
+            refreshBusy()
+        }
         errorText = nil
         lastUserContent = content
         if let bubble {
@@ -663,7 +705,7 @@ public final class ChatViewModel: ObservableObject {
         var committedText = ""
         messages.append(assistant)
         var index = messages.count - 1
-        isStreaming = true
+        refreshBusy()
 
         for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
             switch event {
@@ -714,7 +756,9 @@ public final class ChatViewModel: ObservableObject {
 
         assistant.isStreaming = false
         if messages.indices.contains(index) { messages[index] = assistant }
-        isStreaming = false
+        ownTurn = false
+        turnGate?.end(.phoneChat)
+        refreshBusy()
         await loadMind()
         await refreshContext()
         await sendQueuedIfOnline()
@@ -737,31 +781,31 @@ extension ChatViewModel: PhoneChatSurface {
             messages.append(message)
             let pending = DisplayMessage(role: .assistant, isStreaming: true)
             messages.append(pending)
-            mirroredTurnId = pending.id
-            isStreaming = true
+            mirroredTurns[origin] = pending.id
+            refreshBusy()
         case .assistantTurn(let text, let origin) where origin != .phoneChat:
-            lastMirroredTurnID = closeMirrored(DisplayMessage(role: .assistant, text: text))
+            lastMirroredTurnID = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text))
         case .declined(let text, let origin) where origin != .phoneChat:
-            lastMirroredTurnID = closeMirrored(DisplayMessage(role: .assistant, text: text, isRefusal: true))
-        case .status(let text) where mirroredTurnId != nil:
-            // El turno de la otra superficie falló: el error queda en el chat.
-            _ = closeMirrored(DisplayMessage(role: .assistant, text: text, isError: true))
+            lastMirroredTurnID = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text, isRefusal: true))
+        case .turnFailed(let text, let origin) where origin != .phoneChat:
+            // El turno de esa superficie falló: el error queda en el chat.
+            _ = await closeMirrored(origin, DisplayMessage(role: .assistant, text: text, isError: true))
         default:
             break
         }
     }
 
-    /// Reemplaza la burbuja en curso del turno espejado (o agrega) y libera el chat.
-    private func closeMirrored(_ message: DisplayMessage) -> UUID {
-        defer {
-            mirroredTurnId = nil
-            isStreaming = false
-        }
-        if let id = mirroredTurnId, let index = messages.firstIndex(where: { $0.id == id }) {
+    /// Reemplaza la burbuja en curso del turno espejado de `origin` (o agrega),
+    /// recalcula si el chat sigue ocupado y reintenta lo encolado.
+    private func closeMirrored(_ origin: SurfaceID, _ message: DisplayMessage) async -> UUID {
+        if let id = mirroredTurns.removeValue(forKey: origin),
+           let index = messages.firstIndex(where: { $0.id == id }) {
             messages[index] = message
-            return message.id
+        } else {
+            messages.append(message)
         }
-        messages.append(message)
+        refreshBusy()
+        await sendQueuedIfOnline()
         return message.id
     }
 

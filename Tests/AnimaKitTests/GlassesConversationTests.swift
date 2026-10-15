@@ -193,9 +193,12 @@ struct GlassesConversationTests {
         await rig.surface.handle(.action(.talk))
         await rig.surface.handle(.transcript("otra"))
         await rig.surface.handle(.action(.send))
-        // Hubo texto antes del stop: se entrega lo que hubo.
-        #expect(await eventually { if case .speaking = await rig.surface.state.screen { return true }
-            if case .answer = await rig.surface.state.screen { return true }; return false })
+        // Review #38: hubo texto antes del stop, pero es un fallo (como en Siri):
+        // se dice y se muestra como fallo, también en el chat.
+        let stop = "Turno detenido (loopDetected)."
+        #expect(await eventually { await rig.surface.state.screen == .attention(stop) })
+        #expect(rig.phone.rendered.last == .turnFailed(text: stop, origin: .glassesHUD))
+        #expect(!rig.phone.rendered.contains(.assistantTurn(text: "Ups", origin: .glassesHUD)))
     }
 
     @Test func backFisicoLimpiaYAvisaSalida() async throws {

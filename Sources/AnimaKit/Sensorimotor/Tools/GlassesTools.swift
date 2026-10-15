@@ -204,7 +204,17 @@ public struct SurfaceConfirmationRouter: ConfirmationProvider {
         self.siri = siri
     }
 
+    /// Consentimiento en el MISMO dispositivo (§8): la cámara de las gafas no se
+    /// confirma por voz desde Siri. nil = la confirmación sigue su camino.
+    public static func refusal(for request: ConfirmationRequest) -> String? {
+        guard request.surface == .siri, request.tool == GlassesCameraTool.name else { return nil }
+        return siriCameraRefusal
+    }
+
+    public static let siriCameraRefusal = "Para usar la cámara de las gafas, pídemelo desde las gafas."
+
     public func confirm(_ request: ConfirmationRequest) async -> Bool {
+        if Self.refusal(for: request) != nil { return false }
         if request.surface == .siri {
             return await siri?.confirm(request) ?? false
         }

@@ -48,6 +48,8 @@ public enum SurfaceContent: Sendable, Equatable {
     /// La respuesta completa del asistente a un turno.
     case assistantTurn(text: String, origin: SurfaceID)
     case declined(text: String, origin: SurfaceID)
+    /// El turno de esa superficie falló (o se cortó): cierra SU turno espejado.
+    case turnFailed(text: String, origin: SurfaceID)
     /// "pensando…", errores amables.
     case status(String)
 }
@@ -107,7 +109,8 @@ public final class SurfaceRouter {
 
     static func origin(of content: SurfaceContent) -> SurfaceID? {
         switch content {
-        case .userTurn(_, let origin), .assistantTurn(_, let origin), .declined(_, let origin): return origin
+        case .userTurn(_, let origin), .assistantTurn(_, let origin), .declined(_, let origin),
+             .turnFailed(_, let origin): return origin
         case .status: return nil
         }
     }

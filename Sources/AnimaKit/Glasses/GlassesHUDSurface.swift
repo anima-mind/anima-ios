@@ -12,6 +12,13 @@ import Foundation
 /// Lo que la superficie necesita del loop (AgentLoop lo cumple).
 public protocol TurnRunner: Sendable {
     func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID) async -> AsyncStream<LoopEvent>
+    /// Vuelve cuando no queda NINGÚN turno produciendo (aunque su stream ya se
+    /// cortara): recién ahí la compuerta de turno se puede soltar.
+    func waitUntilIdle() async
+}
+
+extension TurnRunner {
+    public func waitUntilIdle() async {}
 }
 
 extension AgentLoop: TurnRunner {}
@@ -28,6 +35,8 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private let body: GlassesBody
     private let activation: GlassesActivation?
     private let runner: any TurnRunner
+    /// Un solo turno en vuelo sobre la sesión (chat, gafas, Siri). nil ⇒ sin compuerta.
+    private let gate: TurnGate?
     private let sessionId: SessionID
     private let voice: any VoiceCapturePort
     private let speech: any SpeechOutputPort
@@ -64,12 +73,13 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private var cameraRequestID = 0
 
     public init(body: GlassesBody, activation: GlassesActivation? = nil, runner: any TurnRunner,
-                sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
+                gate: TurnGate? = nil, sessionId: SessionID, voice: any VoiceCapturePort, speech: any SpeechOutputPort,
                 router: SurfaceRouter? = nil, cameraTimeout: TimeInterval = 60, errorDwell: TimeInterval = 4,
                 openPhone: @escaping @MainActor (UUID?) -> Void = { _ in }) {
         self.body = body
         self.activation = activation
         self.runner = runner
+        self.gate = gate
         self.sessionId = sessionId
         self.voice = voice
         self.speech = speech
@@ -345,14 +355,26 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     }
 
     static let interruptedText = "Se interrumpió la respuesta en las gafas."
+    static let busyText = "Sigo con lo anterior. Inténtalo en un momento."
 
     /// El turno por el AgentLoop normal, marcado como superficie gafas.
     private func runTurn(mirror: String, content: [ContentBlock]) async {
+        // La compuerta ANTES de espejar: si otra superficie responde, nada llega
+        // al chat y las gafas lo dicen.
+        if let gate, !gate.begin(.glassesHUD) {
+            await handle(.turnFailed(Self.busyText))
+            return
+        }
         turnGeneration += 1
         let turn = turnGeneration
         turnScript = SpokenScript()
         turnSpeechDismissed = false
         await deliver(.userTurn(text: mirror, origin: .glassesHUD))
+        await consumeTurn(content: content, turn: turn)
+        await gate?.end(.glassesHUD, after: runner)
+    }
+
+    private func consumeTurn(content: [ContentBlock], turn: Int) async {
         var reply = ""
         var committed = ""
         var refused = false
@@ -380,15 +402,16 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
             }
         }
         guard !Task.isCancelled else {
-            // El chat espejaba el turno en curso: que no quede ocupado.
-            await deliver(.status(Self.interruptedText))
+            // El chat espejaba el turno en curso: se cierra el SUYO.
+            await deliver(.turnFailed(text: Self.interruptedText, origin: .glassesHUD))
             return
         }
         if refused {
             let text = reply.isEmpty ? "Prefiero no hacer eso. Dime qué buscas y encontramos otra vía." : reply
             await deliver(.declined(text: text, origin: .glassesHUD))
-        } else if let failure, reply.isEmpty {
-            await deliver(.status(failure))
+        } else if let failure {
+            // Un error a mitad gana a lo dicho antes (como en Siri): es un fallo.
+            await deliver(.turnFailed(text: failure, origin: .glassesHUD))
             await handle(.turnFailed(failure))
         } else {
             await deliver(.assistantTurn(text: reply, origin: .glassesHUD))

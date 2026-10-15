@@ -108,20 +108,24 @@ public actor Sensorimotor {
         ToolResult(content: "Tool desconocida o no permitida: \(name)", isError: true)
     }
 
+    /// Si gana el timeout, el resultado ES el error de timeout y la tool se
+    /// abandona (se le pide cancelar, sin esperarla): una tool que ignora la
+    /// cancelación no retiene el turno. Un solo resultado por llamada.
     private func runWithTimeout(tool: any SensorimotorTool, input: JSONValue) async -> ToolResult {
-        await withTaskGroup(of: ToolResult?.self) { group in
-            group.addTask { await tool.execute(input) }
-            let timeout = self.timeout
-            group.addTask {
+        let timeout = self.timeout
+        let expired = ToolResult(content: "La tool '\(tool.spec.name)' excedió el timeout de \(Int(timeout))s.",
+                                 isError: true)
+        return await withCheckedContinuation { (continuation: CheckedContinuation<ToolResult, Never>) in
+            let first = FirstWins(continuation)
+            let work = Task { first.resume(await tool.execute(input)) }
+            let timer = Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                return nil
+                first.resume(expired)
             }
-            defer { group.cancelAll() }
-            for await result in group {
-                if let result { return result }
-                return ToolResult(content: "La tool '\(tool.spec.name)' excedió el timeout de \(Int(self.timeout))s.", isError: true)
+            first.onResume = {
+                timer.cancel()
+                work.cancel()
             }
-            return ToolResult(content: "Sin resultado.", isError: true)
         }
     }
 }

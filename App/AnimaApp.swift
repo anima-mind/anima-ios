@@ -1289,7 +1289,8 @@ struct ConfirmationOverlay: ViewModifier {
 /// tiempo, el turno se corta ANTES de suspender la base. Fin idempotente.
 @MainActor
 final class SiriHold {
-    var runner: SiriTurnRunner?
+    /// weak: el runner retiene al hold (su `settled` lo cierra); sin ciclo.
+    weak var runner: SiriTurnRunner?
     var onEnd: (() -> Void)?
     private var flush: BackgroundFlush?
 

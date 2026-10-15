@@ -431,7 +431,7 @@ private final class CutFlag: @unchecked Sendable {
 }
 
 /// Resuelve la continuación con el PRIMER resultado; los demás se ignoran.
-private final class FirstWins<Value: Sendable>: @unchecked Sendable {
+final class FirstWins<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Never>?
     private var cleanup: (@Sendable () -> Void)?

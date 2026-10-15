@@ -173,14 +173,21 @@ public actor AgentLoop {
     public func run(sessionId: SessionID, content: [ContentBlock],
                     surface: SurfaceID = .phoneChat) -> AsyncStream<LoopEvent> {
         let id = UUID()
+        // Serializado POR SESIÓN: el turno espera a que termine el anterior de
+        // la misma sesión (aunque su consumidor ya cortó), así jamás se
+        // intercalan dos turnos en el transcript y cada tool_use queda pareado
+        // con su tool_result. La compuerta de superficies queda solo como UX.
+        let previous = sessionTail[sessionId]
         let stream = AsyncStream<LoopEvent> { continuation in
             let task = Task {
+                await previous?.value
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
-                self.untrack(id)
+                self.untrack(id, sessionId: sessionId)
             }
             inFlight[id] = task
+            sessionTail[sessionId] = task
             continuation.onTermination = { _ in task.cancel() }
         }
         return stream
@@ -188,8 +195,14 @@ public actor AgentLoop {
 
     /// Turnos cuyo productor sigue vivo (aunque su consumidor ya cortó).
     private var inFlight: [UUID: Task<Void, Never>] = [:]
+    /// El último turno encolado de cada sesión (el siguiente lo espera).
+    private var sessionTail: [SessionID: Task<Void, Never>] = [:]
 
-    private func untrack(_ id: UUID) { inFlight[id] = nil }
+    private func untrack(_ id: UUID, sessionId: SessionID) {
+        if let task = inFlight.removeValue(forKey: id), sessionTail[sessionId] == task {
+            sessionTail[sessionId] = nil
+        }
+    }
 
     public var turnsInFlight: Int { inFlight.count }
 

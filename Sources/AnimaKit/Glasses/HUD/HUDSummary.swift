@@ -123,7 +123,8 @@ public enum HUDSummary {
         return j < chars.count ? chars[j] : nil
     }
 
-    /// La palabra que sigue a `i` y si está completa (le sigue un espacio).
+    /// La palabra que sigue a `i` (sin la puntuación que la cierra: "m.," y
+    /// "m.)" cuentan como "m.") y si está completa (le sigue un espacio).
     private static func nextWord(_ chars: [Character], after i: Int) -> (word: String, complete: Bool) {
         var j = i + 1
         while j < chars.count, chars[j].isWhitespace { j += 1 }
@@ -132,7 +133,10 @@ public enum HUDSummary {
             word.append(chars[j])
             j += 1
         }
-        return (word.lowercased(), j < chars.count)
+        let trailing = CharacterSet(charactersIn: ",;:)]}»\"'”’!?")
+        let bare = String(String.UnicodeScalarView(word.unicodeScalars.reversed().drop { trailing.contains($0) }
+            .reversed()))
+        return (bare.lowercased(), j < chars.count)
     }
 
     /// Recorta a `limit` en frontera de palabra, con "…".

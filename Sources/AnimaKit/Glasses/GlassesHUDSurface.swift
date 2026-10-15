@@ -369,9 +369,14 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         if let gate {
             token = await Self.acquire(gate, wait: gateRetry)
             guard token != nil else {
-                await handle(.turnFailed(Self.busyText))
+                if !Task.isCancelled { await handle(.turnFailed(Self.busyText)) }
                 return
             }
+        }
+        // Cancelado mientras esperaba la compuerta: no corre, y la suelta.
+        guard !Task.isCancelled else {
+            if let gate, let token { gate.end(token) }
+            return
         }
         turnGeneration += 1
         let turn = turnGeneration
@@ -388,11 +393,11 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     static func acquire(_ gate: TurnGate, wait: Duration) async -> TurnGate.Token? {
         if let token = gate.begin(.glassesHUD) { return token }
         let deadline = ContinuousClock.now.advanced(by: wait)
-        while gate.current == .glassesHUD, ContinuousClock.now < deadline {
+        while gate.current == .glassesHUD, ContinuousClock.now < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(50))
             if let token = gate.begin(.glassesHUD) { return token }
         }
-        return gate.begin(.glassesHUD)
+        return Task.isCancelled ? nil : gate.begin(.glassesHUD)
     }
 
     private func consumeTurn(content: [ContentBlock], turn: Int) async {

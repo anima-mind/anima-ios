@@ -145,9 +145,9 @@ struct CarPlayAudioReleaseTests {
     @Test func elDuenoSoloReactivaMientrasLaTiene() throws {
         let control = FakeAudioControl()
         let owner = CarPlayAudioSessionOwner(control: control)
-        try owner.activatePlaybackA2DP()          // sin dueño: no toca la sesión
-        try owner.activatePhoneMic()
-        try owner.activateHFP()
+        #expect(throws: AudioSessionNotOwned.self) { try owner.activatePlaybackA2DP() }  // sin dueño: no toca la sesión
+        #expect(throws: AudioSessionNotOwned.self) { try owner.activatePhoneMic() }
+        #expect(throws: AudioSessionNotOwned.self) { try owner.activateHFP() }
         #expect(control.ops.value.isEmpty)
         try owner.activateConversation()
         try owner.activatePlaybackA2DP()          // con dueño: re-afirma
@@ -233,6 +233,59 @@ struct CarPlayLifecycleTests {
         #expect(holds.count == 0)
         #expect(holds.workEnded == holds.work)
         #expect(rig.log.entries.value.last == "audio:off")
+    }
+
+    // CI #44: una oración YA despachada al speaker (runner lento) sonaba
+    // después de soltar la sesión. Con la línea de voz, no puede.
+    @Test func unaOracionEnVueloNoSuenaTrasDesconectar() async {
+        let runner = SiriGatedRunner([.textDelta("Primera. Segunda.")], gated: false)
+        let rig = CarRig(runner: runner)
+        rig.speaker.startLag.mutate { $0 = .milliseconds(80) }
+        rig.conversation.talk()
+        await rig.waitFor { rig.conversation.phase == .speaking }
+        rig.conversation.disconnect()
+        await rig.settle()
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(rig.log.spoken.isEmpty)
+        #expect(rig.log.entries.value.last == "audio:off")
+    }
+
+    // CONTROL NEGATIVO: el speaker que ignora la línea (comportamiento de #41/#44)
+    // dice la oración DESPUÉS de "audio:off" — la falla del CI, determinista.
+    @Test func controlNegativoSinLineaSuenaTrasDesconectar() async {
+        let runner = SiriGatedRunner([.textDelta("Primera. Segunda.")], gated: false)
+        let rig = CarRig(runner: runner)
+        rig.speaker.startLag.mutate { $0 = .milliseconds(80) }
+        rig.speaker.ignoresLine.mutate { $0 = true }
+        rig.conversation.talk()
+        await rig.waitFor { rig.conversation.phase == .speaking }
+        rig.conversation.disconnect()
+        await rig.settle()
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(rig.log.entries.value.last == "say:Primera.")
+    }
+
+    @Test func laLineaInvalidaLoDespachado() {
+        let line = SpeechLine()
+        let old = line.ticket
+        #expect(line.isCurrent(old))
+        var ran = 0
+        #expect(line.perform(old) { ran += 1 })
+        line.invalidate()
+        #expect(!line.isCurrent(old))
+        #expect(!line.perform(old) { ran += 1 })
+        #expect(line.perform(line.ticket) { ran += 1 })
+        #expect(ran == 2)
+    }
+
+    // El dueño de la sesión rechaza el TTS si la conversación ya no la tiene.
+    @Test func elDuenoRechazaHablarSinSesion() throws {
+        let owner = CarPlayAudioSessionOwner(control: FakeAudioControl())
+        #expect(throws: AudioSessionNotOwned.self) { try owner.activatePlaybackA2DP() }
+        try owner.activateConversation()
+        try owner.activatePlaybackA2DP()
+        owner.releaseConversation()
+        #expect(throws: AudioSessionNotOwned.self) { try owner.activatePlaybackA2DP() }
     }
 
     // Menor: CarPlay restaura Anima al arrancar el carro ⇒ NO abre el micrófono.

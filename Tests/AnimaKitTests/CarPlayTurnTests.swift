@@ -69,10 +69,35 @@ final class CarSpeaker: SpeechOutputPort, @unchecked Sendable {
 
     init(log: CarLog) { self.log = log }
 
+    /// Demora entre el despacho y el arranque del audio (un runner lento).
+    let startLag = Locked<Duration?>(nil)
+    /// Control negativo: ignora la línea (como antes del fix).
+    let ignoresLine = Locked(false)
+
     func speak(_ text: String) async {
+        start(text)
+        await hold()
+    }
+
+    /// Como el sintetizador real: el arranque ("say:") ocurre DENTRO de
+    /// `line.perform`, así un corte (invalidate) no puede colarse en medio.
+    func speak(_ text: String, line: SpeechLine, ticket: SpeechLine.Ticket) async {
+        if let lag = startLag.value { try? await Task.sleep(for: lag) }
+        if ignoresLine.value {
+            await speak(text)
+            return
+        }
+        guard line.perform(ticket, { start(text) }) else { return }
+        await hold()
+    }
+
+    private func start(_ text: String) {
         log.add("say:" + text)
+        if gated.value { open.mutate { $0 = false } }
+    }
+
+    private func hold() async {
         guard gated.value else { return }
-        open.mutate { $0 = false }
         while !open.value { try? await Task.sleep(for: .milliseconds(2)) }
     }
 
@@ -466,7 +491,12 @@ struct CarPlayConversationTests {
         let rig = CarRig(runner: runner)
         rig.conversation.talk()
         await rig.settle()
-        #expect(rig.log.spoken == ["Ya lo agendé.", "No pude agendarlo todavía."])
+        // Lo retraído suena a lo sumo si ya había arrancado antes de la retracción
+        // (una oración despachada pero aún no arrancada ya no suena: línea de voz);
+        // la corrección se dice al final y nada de lo retraído después.
+        let said = rig.log.spoken
+        #expect(said.last == "No pude agendarlo todavía.")
+        #expect(said == ["No pude agendarlo todavía."] || said == ["Ya lo agendé.", "No pude agendarlo todavía."])
         #expect(rig.phone.rendered.last == .assistantTurn(text: "No pude agendarlo todavía.", origin: .carplay))
     }
 

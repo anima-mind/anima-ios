@@ -15,6 +15,12 @@ public protocol AudioSessionControl: Sendable {
     func setActive(_ active: Bool, notifyOthers: Bool) throws
 }
 
+/// La sesión ya no es de quien quiere usarla (la conversación la soltó): una
+/// captura o un TTS rezagados no la re-activan y no suenan.
+public struct AudioSessionNotOwned: Error, Equatable {
+    public init() {}
+}
+
 public final class CarPlayAudioSessionOwner: CarPlayAudioPort, AudioSessionPort, @unchecked Sendable {
     public let spec: CarPlayAudioSpec
     private let control: any AudioSessionControl
@@ -48,10 +54,11 @@ public final class CarPlayAudioSessionOwner: CarPlayAudioPort, AudioSessionPort,
     // MARK: AudioSessionPort (captura y TTS de las gafas reutilizados)
 
     /// Sin dueño, nada se re-activa: una captura o un TTS rezagados (cancelados
-    /// por la desconexión) jamás vuelven a tomar la sesión.
+    /// por la desconexión) jamás vuelven a tomar la sesión, y se enteran
+    /// (`AudioSessionNotOwned`): el TTS no habla.
     private func reassert() throws {
         try lock.withLock {
-            guard owned else { return }
+            guard owned else { throw AudioSessionNotOwned() }
             try control.setActive(true, notifyOthers: false)
         }
     }

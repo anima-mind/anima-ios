@@ -68,6 +68,9 @@ public final class CarPlayConversation: Surface {
 
     // TTS por oración: cola en orden, una utterance a la vez.
     private var utterances: [String] = []
+    /// La línea de voz: se invalida en cada corte (stopSpeech, soltar el audio);
+    /// lo despachado con un ticket viejo no llega a sonar.
+    private let line = SpeechLine()
     private var speakTask: Task<Void, Never>?
     private var speechGeneration = 0
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -439,10 +442,12 @@ public final class CarPlayConversation: Surface {
         let next = utterances.removeFirst()
         let generation = speechGeneration
         let speech = self.speech
+        let line = self.line
+        let ticket = line.ticket
         speakTask = Task { [weak self] in
-            // Cortada antes de arrancar (stopSpeech): no se dice.
-            guard !Task.isCancelled else { return }
-            await speech.speak(next)
+            // El ticket se verifica en el instante de arrancar el audio (bajo el
+            // lock de la línea): si entretanto se cortó, no suena.
+            await speech.speak(next, line: line, ticket: ticket)
             self?.spoke(generation)
         }
     }
@@ -460,6 +465,7 @@ public final class CarPlayConversation: Surface {
     }
 
     private func stopSpeech() {
+        line.invalidate()
         speechGeneration += 1
         utterances = []
         speakTask?.cancel()
@@ -485,6 +491,7 @@ public final class CarPlayConversation: Surface {
     }
 
     private func releaseAudio() {
+        line.invalidate()   // sin sesión no suena nada de lo ya despachado
         guard audioActive else { return }
         audioActive = false
         audio.releaseConversation()

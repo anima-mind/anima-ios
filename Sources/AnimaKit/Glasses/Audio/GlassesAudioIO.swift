@@ -238,6 +238,27 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
         }
     }
 
+    /// La voz del carro: el ticket se verifica y el sintetizador arranca bajo el
+    /// lock de la línea; además, si la sesión de audio ya no es de quien habla
+    /// (`AudioSessionNotOwned`), no se dice nada.
+    public func speak(_ text: String, line: SpeechLine, ticket: SpeechLine.Ticket) async {
+        guard !text.isEmpty else { return }
+        do {
+            try audio.activatePlaybackA2DP()
+        } catch is AudioSessionNotOwned {
+            return
+        } catch {}
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "es-CO") ?? AVSpeechSynthesisVoice(language: "es-MX")
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let started = line.perform(ticket) {
+                store(cont, { _ in })
+                synthesizer.speak(utterance)
+            }
+            if !started { cont.resume() }
+        }
+    }
+
     /// Una sola continuation viva: si llega otra (speak solapado), la anterior
     /// se resuelve YA en vez de quedar colgada para siempre.
     private func store(_ cont: CheckedContinuation<Void, Never>, _ progress: @escaping @Sendable (NSRange) -> Void) {

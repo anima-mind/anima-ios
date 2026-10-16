@@ -396,6 +396,12 @@ public protocol SpeechOutputPort: Sendable {
     /// Igual, informando el rango (UTF-16 de `text`) que se está pronunciando:
     /// alimenta el karaoke del HUD (HUDSpokenPager).
     func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async
+    /// Habla SOLO si `ticket` sigue vigente en `line` en el instante de arrancar:
+    /// el chequeo y el arranque del audio ocurren bajo el lock de la línea, así
+    /// que una vez invalidada (cancelar, desconectar, soltar la sesión) ninguna
+    /// oración ya despachada llega a sonar. Las salidas reales lo implementan
+    /// arrancando DENTRO de `line.perform`.
+    func speak(_ text: String, line: SpeechLine, ticket: SpeechLine.Ticket) async
     func stop()
 }
 
@@ -403,6 +409,45 @@ public extension SpeechOutputPort {
     /// Salidas sin progreso (silenciosas, dobles): hablan sin reportar rangos.
     func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
         await speak(text)
+    }
+
+    /// Salidas sin arranque síncrono (silenciosas): chequeo y luego hablar.
+    func speak(_ text: String, line: SpeechLine, ticket: SpeechLine.Ticket) async {
+        guard line.perform(ticket, {}) else { return }
+        await speak(text)
+    }
+}
+
+/// La línea de voz de una superficie: cada interacción (o cada corte) la
+/// invalida, y lo que se despachó con un ticket viejo ya no suena. Por
+/// construcción: `perform` corre el arranque bajo el MISMO lock que `invalidate`.
+public final class SpeechLine: @unchecked Sendable {
+    public struct Ticket: Sendable, Equatable {
+        let generation: Int
+    }
+
+    private let lock = NSLock()
+    private var generation = 0
+
+    public init() {}
+
+    /// El ticket vigente (para despachar una oración ahora).
+    public var ticket: Ticket { lock.withLock { Ticket(generation: generation) } }
+
+    /// Nada de lo despachado hasta aquí vuelve a arrancar.
+    public func invalidate() { lock.withLock { generation += 1 } }
+
+    public func isCurrent(_ ticket: Ticket) -> Bool { lock.withLock { ticket.generation == generation } }
+
+    /// Corre `start` (síncrono: arrancar el audio) solo si el ticket sigue
+    /// vigente, sin que un `invalidate` pueda colarse entre chequeo y arranque.
+    @discardableResult
+    public func perform(_ ticket: Ticket, _ start: () -> Void) -> Bool {
+        lock.withLock {
+            guard ticket.generation == generation else { return false }
+            start()
+            return true
+        }
     }
 }
 

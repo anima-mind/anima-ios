@@ -68,6 +68,17 @@ public actor Sensorimotor {
     /// Ejecuta una tool aplicando la capa 1 (PermissionPolicy) y un timeout.
     /// Fail-closed: tool desconocida = deny; eferente sin confirmación = no ejecuta.
     public func execute(name: String, input: JSONValue, surface: SurfaceID = .phoneChat) async -> ToolResult {
+        // Lo que la superficie niega se niega ANTES de la política: "Autorizar
+        // siempre" no deja borrar desde Siri ni actuar con riesgo desde el carro.
+        if surface != .phoneChat, let tool = tools[name], tool.kind(for: input) == .efferent {
+            let request = ConfirmationRequest(tool: name, operation: tool.operation(for: input),
+                                              summary: tool.confirmationSummary(for: input), input: input,
+                                              surface: surface)
+            if let refusal = SurfaceConfirmationRouter.refusal(for: request) {
+                await confirmation.refused(request)
+                return ToolResult(content: refusal, isError: true, isRejection: true)
+            }
+        }
         switch await executePreauthorized(name: name, input: input) {
         case .executed(let result), .denied(let result):
             return result

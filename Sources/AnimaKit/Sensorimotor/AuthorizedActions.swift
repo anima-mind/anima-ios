@@ -23,7 +23,15 @@ public final class AuthorizedActionsStore: @unchecked Sendable {
         })
     }
 
-    public func allow(_ entry: AllowlistEntry) { write(entries.union([entry])) }
+    /// Lo destructivo no se guarda: se pregunta cada vez (y desde Siri/CarPlay se niega).
+    public func allow(_ entry: AllowlistEntry) {
+        guard Self.canAlwaysAllow(entry) else { return }
+        write(entries.union([entry]))
+    }
+
+    public static func canAlwaysAllow(_ entry: AllowlistEntry) -> Bool {
+        !PermissionPolicy.isDestructive(tool: entry.tool, operation: entry.operation)
+    }
     public func revoke(_ entry: AllowlistEntry) { write(entries.subtracting([entry])) }
 
     private func write(_ set: Set<AllowlistEntry>) {

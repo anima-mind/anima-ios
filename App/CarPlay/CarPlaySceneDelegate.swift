@@ -2,11 +2,12 @@
 // conversation", entitlement com.apple.developer.carplay-voice-based-conversation,
 // iOS 26.4+). Capa humilde: proyecta CarPlayConversation (AnimaKit, testeada) a
 // UN CPVoiceControlTemplate de 5 estados (reposo, escuchando, pensando,
-// respondiendo, ¿lo hago?) con sus botones fijos, y le entrega los taps.
-// Reglas de Apple: voz primero al abrir (se escucha apenas el dueño abre Anima
-// en el carro), nada de texto ni imágenes como respuesta, la sesión de audio
-// solo mientras hay voz, ≤3 templates de profundidad (aquí: 1, o 1 + el de voz
-// presentado si el sistema no lo acepta como raíz).
+// respondiendo, ¿lo hago?) con sus botones fijos, y le entrega los taps. El
+// ciclo de vida (base, background, cuándo escuchar) y el ritmo de los cambios
+// de estado viven en CarPlaySceneLifecycle / CarPlayStatePresenter (AnimaKit).
+// Reglas de Apple: voz primero, nada de texto ni imágenes como respuesta, la
+// sesión de audio solo mientras hay voz y con el template de voz a la vista,
+// ≤3 templates de profundidad (aquí: 1).
 // Los callbacks de CarPlay (botones, completions) NO llegan garantizados en el
 // main thread: van `@Sendable` y saltan al main actor (un closure aislado al
 // main actor que CarPlay llama desde otra cola revienta con el chequeo de Swift 6).
@@ -20,13 +21,27 @@ import AnimaKit
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
     private var voiceTemplate: CPVoiceControlTemplate?
-    /// El template de voz no entró como raíz: va presentado sobre una grilla.
-    private var presentsVoice = false
-    private var presented = false
+    private var presenter: CarPlayStatePresenter?
     private var name = ""
-    /// Voz primero: al abrir Anima en el carro se escucha una vez.
-    private var listensOnOpen = false
-    private var holdsDatabase = false
+    private lazy var lifecycle = CarPlaySceneLifecycle(
+        conversation: conversation,
+        hold: { hold in
+            if hold { DatabaseSuspension.shared.begin() } else { DatabaseSuspension.shared.end() }
+        },
+        backgroundWork: {
+            // El turno cortado cierra en el chat (escribe en la base): base
+            // despierta + background task hasta que termine; si iOS expira el
+            // tiempo, la base se suspende ya (0xdead10cc).
+            DatabaseSuspension.shared.begin()
+            let flush = BackgroundFlush.begin(onExpire: { DatabaseSuspension.shared.expire() })
+            var ended = false
+            return {
+                guard !ended else { return }
+                ended = true
+                DatabaseSuspension.shared.end()
+                flush.end()
+            }
+        })
 
     private var conversation: CarPlayConversation { AppModel.live.carPlayConversation() }
 
@@ -36,8 +51,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                                   didConnect interfaceController: CPInterfaceController) {
         self.interfaceController = interfaceController
         interfaceController.prefersDarkUserInterfaceStyle = true
-        holdDatabase(true)
-        listensOnOpen = true
+        lifecycle.didConnect()
         install(name: AppModel.live.carPlaySelfName)
         // El nombre del self llega al terminar el cableado (puede ser un arranque solo en el carro).
         Task {
@@ -49,105 +63,63 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didDisconnectInterfaceController interfaceController: CPInterfaceController) {
-        conversation.disconnect()
+        lifecycle.didDisconnect()
         conversation.observe { _ in }
+        presenter?.stop()
+        presenter = nil
         self.interfaceController = nil
         voiceTemplate = nil
-        presented = false
-        listensOnOpen = false
-        holdDatabase(false)
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        holdDatabase(true)
-        guard listensOnOpen else { return }
-        listensOnOpen = false
-        conversation.talk()
+        lifecycle.didBecomeActive()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
-        // Otra app al frente en el carro: la voz no sigue sola.
-        if conversation.isBusy, conversation.phase == .listening || conversation.phase == .confirming {
-            conversation.cancel()
-        }
+        lifecycle.didEnterBackground()
     }
 
     // MARK: - Template
 
+    /// La raíz se elige por disponibilidad, no por el completion: un template no
+    /// soportado por la categoría lanza una excepción (guía, "Templates").
     private func install(name: String) {
         guard let interfaceController else { return }
         self.name = name
+        guard #available(iOS 26.4, *) else {
+            // La categoría y su entitlement existen desde iOS 26.4: antes, solo
+            // se informa (sin micrófono ni voz).
+            let item = CPInformationItem(title: CarPlayTemplateModel.displayName(name), detail: CarPlayTurn.needsNewerIOSText)
+            let info = CPInformationTemplate(title: CarPlayTemplateModel.displayName(name), layout: .leading,
+                                             items: [item], actions: [])
+            interfaceController.setRootTemplate(info, animated: false, completion: nil)
+            return
+        }
         let template = CPVoiceControlTemplate(voiceControlStates: CarPlayTemplateModel.states(name: name).map(makeState))
         voiceTemplate = template
-        interfaceController.setRootTemplate(template, animated: false) { @Sendable [weak self] ok, _ in
+        presenter?.stop()
+        let presenter = CarPlayStatePresenter(
+            apply: { [weak template] identifier in template?.activateVoiceControlState(withIdentifier: identifier) },
+            current: { [weak template] in template?.activeStateIdentifier })
+        self.presenter = presenter
+        interfaceController.setRootTemplate(template, animated: false) { @Sendable [weak self] _, _ in
             Task { @MainActor in
-                guard let self else { return }
-                if ok {
-                    self.presentsVoice = false
-                    self.observe(template)
-                } else {
-                    self.installFallback(template)
-                }
+                guard let self, self.voiceTemplate === template else { return }
+                self.conversation.observe { [weak presenter] phase in presenter?.show(phase) }
             }
         }
     }
 
-    /// Si el sistema no acepta el template de voz como raíz: una grilla de un
-    /// botón ("Hablar con …") y el de voz presentado mientras hay conversación.
-    private func installFallback(_ template: CPVoiceControlTemplate) {
-        guard let interfaceController else { return }
-        presentsVoice = true
-        let title = CarPlayTemplateModel.state(.idle, name: name).titleVariants
-        let talk = CPGridButton(titleVariants: title, image: Self.image(CarPlayButton.talk.symbol)) { @Sendable [weak self] _ in
-            Task { @MainActor in self?.conversation.talk() }
-        }
-        let grid = CPGridTemplate(title: CarPlayTemplateModel.displayName(name), gridButtons: [talk])
-        interfaceController.setRootTemplate(grid, animated: false) { @Sendable [weak self] _, _ in
-            Task { @MainActor in self?.observe(template) }
-        }
-    }
-
-    private func observe(_ template: CPVoiceControlTemplate) {
-        conversation.observe { [weak self] phase in
-            self?.show(phase, on: template)
-        }
-    }
-
-    private func show(_ phase: CarPlayPhase, on template: CPVoiceControlTemplate) {
-        guard template === voiceTemplate, let interfaceController else { return }
-        if presentsVoice {
-            if phase == .idle {
-                if presented {
-                    presented = false
-                    interfaceController.dismissTemplate(animated: true, completion: nil)
-                }
-                return
-            }
-            if !presented {
-                presented = true
-                interfaceController.presentTemplate(template, animated: true) { @Sendable [weak self] _, _ in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        template.activateVoiceControlState(withIdentifier: CarPlayTemplateModel.identifier(self.conversation.phase))
-                    }
-                }
-                return
-            }
-        }
-        template.activateVoiceControlState(withIdentifier: CarPlayTemplateModel.identifier(phase))
-    }
-
+    @available(iOS 26.4, *)
     private func makeState(_ state: CarPlayVoiceState) -> CPVoiceControlState {
         let voiceState = CPVoiceControlState(identifier: state.identifier, titleVariants: state.titleVariants,
                                              image: Self.image(state.symbol, size: 96), repeats: state.repeats)
-        if #available(iOS 26.4, *) {
-            voiceState.actionButtons = state.buttons.prefix(CPVoiceControlState.maximumActionButtonCount).map { button in
-                let action = CPButton(image: Self.image(button.symbol)) { @Sendable [weak self] _ in
-                    Task { @MainActor in self?.conversation.tapped(button) }
-                }
-                action.title = button.title
-                return action
+        voiceState.actionButtons = state.buttons.prefix(CPVoiceControlState.maximumActionButtonCount).map { button in
+            let action = CPButton(image: Self.image(button.symbol)) { @Sendable [weak self] _ in
+                Task { @MainActor in self?.conversation.tapped(button) }
             }
+            action.title = button.title
+            return action
         }
         return voiceState
     }
@@ -155,16 +127,6 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private static func image(_ symbol: String, size: CGFloat = 40) -> UIImage {
         let config = UIImage.SymbolConfiguration(pointSize: size, weight: .regular)
         return UIImage(systemName: symbol, withConfiguration: config) ?? UIImage()
-    }
-
-    // MARK: - Base despierta
-
-    /// Con el teléfono bloqueado y Anima al frente en el carro, la escena del
-    /// teléfono está en background: la base no se suspende mientras CarPlay esté.
-    private func holdDatabase(_ hold: Bool) {
-        guard hold != holdsDatabase else { return }
-        holdsDatabase = hold
-        if hold { DatabaseSuspension.shared.begin() } else { DatabaseSuspension.shared.end() }
     }
 }
 #endif

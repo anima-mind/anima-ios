@@ -792,7 +792,9 @@ final class AppModel: ObservableObject {
     private func carPlayReadiness() async -> CarPlayConversation.Readiness {
         await ensureBootstrapped(configFetchTimeout: RemoteConfigFetch.notificationActionTimeout)
         switch siriBlocker() {
-        case .busy?: return .blocked(CarPlayTurn.busyText(turnGate.current))
+        // Ocupado: lo decide la compuerta en la conversación (que no toca el
+        // audio si quien responde son las gafas).
+        case .busy?: break
         case .offline?: return .blocked(CarPlayTurn.offlineText)
         case .some: return .blocked(CarPlayTurn.notReadyText)
         case nil: break
@@ -809,7 +811,7 @@ final class AppModel: ObservableObject {
             return (UITestScriptedVoice(), UITestScriptedVoice(), SilentVoice(), SilentCarPlayAudio())
         }
         #if os(iOS)
-        let audio = CarPlayVoiceAudioSession()
+        let audio = CarPlayAudioSessionOwner.system()
         return (GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.requestDetector, diagnostics: .shared),
                 GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.answerDetector, diagnostics: .shared),
                 GlassesSpeaker(audio: audio), audio)

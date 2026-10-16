@@ -63,7 +63,10 @@ public final class ConfirmationCenter: ObservableObject, ConfirmationProvider {
     }
 
     public func resolve(_ decision: ConfirmationDecision) {
-        if decision == .always, let request = pending { onAlwaysAllow?(request) }
+        if decision == .always, let request = pending,
+           AuthorizedActionsStore.canAlwaysAllow(AllowlistEntry(tool: request.tool, operation: request.operation)) {
+            onAlwaysAllow?(request)
+        }
         pending = nil
         pendingTicket = nil
         let cont = continuation
@@ -113,17 +116,21 @@ public struct ConfirmationSheet: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("confirm.allow")
-                Button { onDecision(.always) } label: {
-                    Text("Autorizar siempre")
-                        .font(Theme.Type_.secondary)
-                        .foregroundStyle(Theme.Colors.text)
-                        .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
-                        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
-                            .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                        .contentShape(Rectangle())
+                // Un borrado no se autoriza "siempre": se pregunta cada vez.
+                if AuthorizedActionsStore.canAlwaysAllow(AllowlistEntry(tool: request.tool,
+                                                                        operation: request.operation)) {
+                    Button { onDecision(.always) } label: {
+                        Text("Autorizar siempre")
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.text)
+                            .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                                .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("confirm.always")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("confirm.always")
                 Button { onDecision(.cancel) } label: {
                     Text("Cancelar")
                         .font(Theme.Type_.secondary)

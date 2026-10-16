@@ -168,6 +168,12 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
         case .startListening:
             endSpeech()
             listenTask?.cancel()
+            // CarPlay escucha o habla por la MISMA sesión de audio del proceso: con
+            // su turno en curso las gafas no la tocan (fallan ocupadas).
+            if let gate, gate.current == .carplay {
+                await handle(.voiceFailed(TurnGate.busyText(.carplay)))
+                return
+            }
             let voice = self.voice
             listenTask = Task { [weak self] in
                 let failure = GlassesBox<VoiceCaptureFailure?>(nil)

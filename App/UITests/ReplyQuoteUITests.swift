@@ -104,6 +104,20 @@ final class ReplyQuoteUITests: AnimaUITestCase {
 /// card de respuesta rápida SIN cita ni teclado; citarlo es explícito
 /// (anima://chat?quote=checkin:<id>, "Hablar en el chat").
 final class CheckInPushUITests: AnimaUITestCase {
+    /// El deep link por el sistema (como el tap al push con la app viva):
+    /// `XCUIApplication.open` relanzaba la app sin `--uitest`. iOS puede pedir
+    /// confirmación ("¿Abrir en Anima?").
+    @MainActor
+    private func openFromSystem(_ url: URL, app: XCUIApplication) {
+        XCUIDevice.shared.system.open(url)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        for label in ["Open", "Abrir"] {
+            let button = springboard.buttons[label]
+            if button.waitForExistence(timeout: scaled(2)) { button.tap(); break }
+        }
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: scaled(10)))
+    }
+
     @MainActor
     func testCheckInPushOpensTheCardWithoutQuoteNorKeyboard() throws {
         let app = makeApp(reset: true)
@@ -116,7 +130,7 @@ final class CheckInPushUITests: AnimaUITestCase {
         let goalId = String(talk.identifier.dropFirst("goal.talk.".count))
         XCTAssertFalse(goalId.isEmpty)
 
-        app.open(try XCTUnwrap(URL(string: "anima://goal?id=\(goalId)")))
+        openFromSystem(try XCTUnwrap(URL(string: "anima://goal?id=\(goalId)")), app: app)
         waitTabSelected(app, "Chat")
         waitFor(element(app, "chat.proactive.checkin"), timeout: 20)
         let input = app.textFields["chat.input"]
@@ -128,7 +142,7 @@ final class CheckInPushUITests: AnimaUITestCase {
         screenshot(app, "push-seguimiento-sin-cita")
 
         // Control: citar el seguimiento a propósito sí abre con la cita y el foco.
-        app.open(try XCTUnwrap(URL(string: "anima://chat?quote=checkin:\(goalId)")))
+        openFromSystem(try XCTUnwrap(URL(string: "anima://chat?quote=checkin:\(goalId)")), app: app)
         waitUntil(element(app, "chat.quote.text"), "label BEGINSWITH 'Respondiendo a seguimiento Ahorrar 10 millones'")
         waitUntil(input, "hasKeyboardFocus == true")
     }

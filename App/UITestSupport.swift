@@ -43,9 +43,19 @@ enum UITestMode {
     static let seedsMemory = isActive && arguments.contains("--uitest-seed-memory")
     static let seededMemory = "Le gusta correr temprano"
 
+    /// Además, una cadena reconsolidada: la versión vieja invalidada y la nueva vigente.
+    static let seedsMemoryChain = seedsMemory && arguments.contains("--uitest-seed-memory-chain")
+    static let seededChainOld = "Corre los martes"
+    static let seededChainNew = "Corre los martes y los jueves"
+
     static func seedMemory(_ brain: Brain) async {
         guard ((try? await brain.browse()) ?? []).isEmpty else { return }
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
+        guard seedsMemoryChain,
+              let old = try? await brain.add(MemoryCandidate(content: seededChainOld, source: "cycle:2"), cycle: 2)
+        else { return }
+        _ = try? await brain.reconsolidate(id: old, revision: Revision(content: seededChainNew, importance: 6,
+                                                                       reason: "ahora también los jueves"), cycle: 3)
     }
 
     /// Galería de widgets (screenshots de cada widget con datos de ejemplo).

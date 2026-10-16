@@ -120,6 +120,8 @@ public enum AnimaDatabase {
         }
         // Metas que se dejan o se reemplazan (superseded_by, abandoned_at, declared_at).
         GoalLifecycleV21.register(&m)
+        // Memorias que el dueño restaura (owner_restored_at + memory_event).
+        MemoryRestoreV22.register(&m)
 
         return m
     }

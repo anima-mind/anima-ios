@@ -240,8 +240,8 @@ public actor Consolidator {
                 continue
             }
             let similar = try await brain.similar(to: item.candidate.content, limit: 5)
-            let directive: WriteDirective
-            let label: String
+            var directive: WriteDirective
+            var label: String
             if similar.isEmpty {
                 directive = .add(item.candidate)
                 label = "ADD"
@@ -250,8 +250,25 @@ public actor Consolidator {
                 directive = decision.directive
                 label = decision.label
             }
+            if let target = directive.target,
+               let restoredAt = similar.first(where: { $0.id == target })?.ownerRestoredAt,
+               try !ownerSpoke(after: restoredAt, cycle: cycle) {
+                directive = .noop
+                label = "NOOP"
+            }
             _ = try await brain.write(directive, cycle: cycle)
             try markDecided(cycle: cycle, idx: item.idx, decision: label)
+        }
+    }
+
+    /// Evidencia nueva del dueño: un turno suyo de este ciclo posterior a la
+    /// restauración. Sin ella, la memoria que el dueño restauró no se toca.
+    private func ownerSpoke(after date: Date, cycle: Int) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(db, sql: """
+                SELECT EXISTS (SELECT 1 FROM consolidation_inbox
+                WHERE cycle=? AND source='turn' AND created_at > ?)
+                """, arguments: [cycle, date.timeIntervalSince1970]) ?? false
         }
     }
 
@@ -312,7 +329,7 @@ public actor Consolidator {
         guard !targets.isEmpty else { return }
 
         for id in targets {
-            guard let record = try await brain.record(id), record.isValid else { continue }
+            guard let record = try await brain.record(id), record.isValid, record.ownerRestoredAt == nil else { continue }
             let user = """
             Memoria a reconsiderar (id=\(record.id)): "\(record.content)"
             ¿Sigue vigente? Si necesita ajuste, devuelve el contenido corregido.

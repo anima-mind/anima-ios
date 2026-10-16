@@ -162,7 +162,8 @@ public enum DistillMigration {
         let rows: [(id: String, content: String)] = try await queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT id, content FROM memory
-                WHERE invalidated_at IS NULL AND kind IN ('semantic','episodic','procedural','reflection')
+                WHERE invalidated_at IS NULL AND owner_restored_at IS NULL
+                AND kind IN ('semantic','episodic','procedural','reflection')
                 """).map { (id: $0["id"], content: $0["content"]) }
         }
         var invalidated = 0

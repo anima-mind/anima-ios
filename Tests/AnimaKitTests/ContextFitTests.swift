@@ -332,11 +332,16 @@ enum RealToolSet {
         return tools.map(\.spec)
     }
 
+    /// El tokenizer real solo con el modelo disponible. Medido en el CI (#43/#45):
+    /// en el runner sin modelo, `tokenCount` retiene un hilo del pool cooperativo
+    /// ~12–13 s y devuelve nil. Sin modelo, los tests usan las cotas estimadas.
+    static var modelIsAvailable: Bool { OnDeviceAvailability.current().isAvailable }
+
     /// `SystemLanguageModel.tokenCount(for: [Tool])` cuando el SDK/OS lo tienen
     /// (macOS 26.4+); nil si no se puede medir aquí.
     static func frameworkTokenCount(_ specs: [ToolSpec]) async -> Int? {
         #if canImport(FoundationModels)
-        if #available(macOS 26.4, iOS 26.4, *) {
+        if #available(macOS 26.4, iOS 26.4, *), modelIsAvailable {
             let tools: [InterceptingTool] = specs.compactMap { spec in
                 guard case .client(let name, let description, let schema) = spec,
                       let generation = try? OnDeviceSchemaBridge.generationSchema(
@@ -352,7 +357,7 @@ enum RealToolSet {
     /// Tokens reales de un texto como `Instructions`; nil si no se puede medir aquí.
     static func frameworkInstructionTokens(_ text: String) async -> Int? {
         #if canImport(FoundationModels)
-        if #available(macOS 26.4, iOS 26.4, *) {
+        if #available(macOS 26.4, iOS 26.4, *), modelIsAvailable {
             return try? await SystemLanguageModel.default.tokenCount(for: Instructions(text))
         }
         #endif

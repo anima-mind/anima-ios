@@ -34,11 +34,12 @@ jobs:
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
-      # Firma con UN certificado Apple Distribution guardado en secrets (p12): el
-      # runner efímero no crea certificados nuevos. Los perfiles los sigue
-      # manejando Xcode con la API key (-allowProvisioningUpdates), así una
-      # capability nueva en el App ID regenera el perfil sin tocar nada a mano.
-      - name: Certificado de distribución (secrets) → keychain temporal
+      # Firma con los certificados del dueño guardados en secrets (un p12 con DOS
+      # identidades): con firma automática Xcode archiva con "Apple Development" y
+      # re-firma con "Apple Distribution" al exportar. Si el runner ya trae ambas,
+      # no crea certificados nuevos. Los perfiles los sigue manejando Xcode con la
+      # API key (-allowProvisioningUpdates): una capability nueva regenera el perfil.
+      - name: Certificados de firma (secrets) → keychain temporal
         env:
           DIST_CERT_P12_B64: ${{ secrets.DIST_CERT_P12_B64 }}
           DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
@@ -58,8 +59,11 @@ jobs:
           rm -f "$P12"
           security set-key-partition-list -S apple-tool:,apple: -k "$KC_PW" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-          security find-identity -v -p codesigning "$KC" | grep -q "Apple Distribution" \
-            || { echo "::error::El p12 no trae una identidad Apple Distribution" >&2; exit 1; }
+          IDS="$(security find-identity -v -p codesigning "$KC")"
+          echo "$IDS" | grep -q '"Apple Development:' \
+            || { echo "::error::El p12 no trae la identidad Apple Development (se usa para el archive)" >&2; exit 1; }
+          echo "$IDS" | grep -q '"Apple Distribution:' \
+            || { echo "::error::El p12 no trae la identidad Apple Distribution (se usa para el export)" >&2; exit 1; }
           echo "SIGNING_KEYCHAIN=$KC" >> "$GITHUB_ENV"
       - name: Cache SPM (Xcode)
         uses: actions/cache@v4
@@ -93,8 +97,6 @@ jobs:
           test -d "$APPEX" || { echo "Falta AnimaWidgets.appex en el archive" >&2; exit 1; }
           for bundle in "$APP" "$APPEX"; do
             codesign --verify --strict "$bundle"
-            codesign -dvv "$bundle" 2>&1 | grep -q "Authority=Apple Distribution" \
-              || { echo "No está firmado con Apple Distribution: $bundle" >&2; exit 1; }
             codesign -d --entitlements :- "$bundle" 2>/dev/null | grep -q "group.com.joshuamoreno1.anima.widgets" \
               || { echo "Sin App Group en $bundle" >&2; exit 1; }
           done
@@ -114,9 +116,9 @@ jobs:
           -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           -authenticationKeyID "$ASC_KEY_ID"
           -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-      # Red de seguridad: con el certificado de distribución de secrets el runner
-      # ya no debería crear "Apple Development: Created via API"; si Xcode igual
-      # creara uno, se revoca el de ESTE runner (por número de serie).
+      # Red de seguridad: con los certificados de secrets el runner ya no debería
+      # crear "Apple Development: Created via API"; si Xcode igual creara uno, se
+      # revoca el de ESTE runner (por número de serie).
       - name: Revocar un certificado de desarrollo creado por este runner (si lo hubo)
         if: always()
         env:

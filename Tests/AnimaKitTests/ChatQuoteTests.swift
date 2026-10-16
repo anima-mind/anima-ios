@@ -474,6 +474,32 @@ enum QuoteFixtures {
         #expect(LocalToolAdapter.verb(local: "move_reminder") == "mover el recordatorio")
     }
 
+    /// Medido con el modelo real: "pásalo para el viernes 23" quedaba en el
+    /// viernes más cercano (el adapter repara la fecha con lo que dijo el dueño).
+    @Test func weekdayWithDayOfMonthIsThatDate() {
+        let when = LocalWhen(now: F.date(2026, 10, 15, 19), calendar: F.calendar, ownerText: "")
+        #expect(when.day("pasalo para el viernes 23 a la misma hora") == F.date(2026, 10, 23, 0))
+        #expect(when.day("el viernes 6") == F.date(2026, 11, 6, 0))      // el próximo 6 que cae viernes
+        #expect(when.day("el lunes 30") == F.date(2026, 11, 30, 0))
+        #expect(when.day("el viernes 13") == F.date(2026, 11, 13, 0))
+        // Controles negativos: horas, no días; sin número, el día de la semana de siempre.
+        #expect(when.day("el viernes 3 pm") == F.date(2026, 10, 16, 0))
+        #expect(when.day("el lunes 8:30") == F.date(2026, 10, 19, 0))
+        #expect(when.day("el lunes 8 de la manana") == F.date(2026, 10, 19, 0))
+        #expect(when.day("el jueves 45") == F.date(2026, 10, 22, 0))
+        #expect(when.day("el viernes") == F.date(2026, 10, 16, 0))
+        #expect(when.day("el 23 de octubre") == F.date(2026, 10, 23, 0))
+        // Un día que nunca cae en ese día de la semana: el próximo con ese número.
+        #expect(when.day("el viernes 31") == F.date(2026, 10, 31, 0))
+        // De punta a punta: move_reminder con el día bien contado por el modelo se respeta.
+        let quote = QuoteFixtures.reminderQuote(id: "R")
+        let moved = LocalToolAdapter.resolve(name: "move_reminder", input: .object(["when": .string("2026-10-23 18:33")]),
+                                             now: F.date(2026, 10, 15, 19), ownerText: "pásalo para el viernes 23 a la misma hora",
+                                             calendar: F.calendar, quote: quote)
+        guard case .real(_, let input) = moved else { Issue.record("\(moved)"); return }
+        #expect(input["fire_at"]?.stringValue?.hasPrefix("2026-10-23T18:33") == true)
+    }
+
     @Test func changeHintFollowsTheQuote() {
         #expect(LocalWhen.changeHint("bórralo", quoted: .reminder) == "Eso lo cambias en la tab Recordatorios.")
         #expect(LocalWhen.changeHint("cámbiala", quoted: .goal)?.contains("Metas") == true)

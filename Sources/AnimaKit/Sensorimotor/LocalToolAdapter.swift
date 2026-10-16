@@ -1189,12 +1189,36 @@ struct LocalWhen {
             day = Int(m.1); month = Int(m.2)
             year = m.3.flatMap { Int($0) }.map { $0 < 100 ? 2000 + $0 : $0 }
         }
+        if day == nil, let dated = weekdayWithDay(folded) { return dated }
         guard let day, let month else { return nil }
         let today = calendar.startOfDay(for: now)
         let thisYear = calendar.component(.year, from: today)
         guard let date = make(year: year ?? thisYear, month: month, day: day, hour: 0, minute: 0) else { return nil }
         if year == nil, date < today { return make(year: thisYear + 1, month: month, day: day, hour: 0, minute: 0) }
         return date
+    }
+
+    /// "el viernes 23" (sin mes): el próximo día 23 que cae viernes (hasta 3
+    /// meses); si ninguno cae en ese día de la semana, el próximo 23. Sin esto
+    /// "viernes" ganaba y quedaba el viernes más cercano (medido con el modelo
+    /// real: "pásalo para el viernes 23" → el viernes 16). "viernes 3 pm",
+    /// "lunes 8:30" o "lunes 8 de la mañana" son horas, no días.
+    func weekdayWithDay(_ folded: String) -> Date? {
+        guard let m = folded.firstMatch(
+            of: /\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado) (\d{1,2})\b(?!\s*(?::|h\b|hrs?\b|am\b|pm\b|a\.?\s?m|p\.?\s?m|de la|y media|y cuarto))/),
+              let weekday = Self.weekday(String(m.1)), let number = Int(m.2), (1...31).contains(number) else { return nil }
+        let today = calendar.startOfDay(for: now)
+        var fallback: Date?
+        for offset in 0..<4 {
+            guard let month = calendar.date(byAdding: .month, value: offset, to: today) else { continue }
+            let parts = calendar.dateComponents([.year, .month], from: month)
+            guard let year = parts.year, let mo = parts.month,
+                  let candidate = make(year: year, month: mo, day: number, hour: 0, minute: 0),
+                  calendar.component(.day, from: candidate) == number, candidate >= today else { continue }
+            if calendar.component(.weekday, from: candidate) == weekday { return candidate }
+            if fallback == nil { fallback = candidate }
+        }
+        return fallback
     }
 
     /// El día que nombra el texto (ya plegado), o nil. La fecha explícita gana

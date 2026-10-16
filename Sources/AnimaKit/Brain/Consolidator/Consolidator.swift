@@ -502,12 +502,12 @@ public actor Consolidator {
     /// enunciado de una meta nueva.
     static func looksLikeAnId(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "[]")))
-        if trimmed.range(of: #"^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$"#, options: .regularExpression) != nil {
-            return true
-        }
-        return !trimmed.contains(" ") && trimmed.contains(where: \.isNumber)
-            && trimmed.range(of: #"^[A-Za-z0-9_\-:]{6,}$"#, options: .regularExpression) != nil
+        if uuidShape.contains(trimmed) { return true }
+        return !trimmed.contains(" ") && trimmed.contains(where: \.isNumber) && idShape.contains(trimmed)
     }
+
+    static let uuidShape = ICURegex(#"^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$"#)
+    static let idShape = ICURegex(#"^[A-Za-z0-9_\-:]{6,}$"#)
 
     /// La meta abierta que el modelo dice que el dueño dejó: por id, o por
     /// enunciado (equivalente o la única que comparte palabras). Nunca adivina.

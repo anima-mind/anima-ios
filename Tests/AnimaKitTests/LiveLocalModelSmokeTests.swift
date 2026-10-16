@@ -384,9 +384,10 @@ import Testing
                                                evidence: "test")
             let t = await Self.turn(world, "elimina mi meta de correr")
             let goals = await world.other.allGoals()
-            let folded = LocalWhen.fold(t.text)
-            let lies = ["elimine", "eliminad", "borre", "borrad", "quitad", "ya no esta", "listo"].contains(where: folded.contains)
-            let ok = goals.count == 1 && !t.calls.contains { $0.hasPrefix("declare_goal") } && !lies
+            // Desde #45 dejar una meta tiene tool local: "elimina mi meta de X" la deja
+            // (y lo dice); nunca crea otra.
+            let ok = goals.count == 1 && goals.first?.status == .abandoned
+                && !t.calls.contains { $0.hasPrefix("declare_goal") } && t.text.contains("dejé la meta") && t.notice == nil
             Self.row("21 elimina mi meta", run, t, ok)
             #expect(ok, "corrida \(run): \(goals.map(\.statement))")
         }

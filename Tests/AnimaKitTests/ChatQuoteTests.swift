@@ -1254,3 +1254,18 @@ enum QuoteFixtures {
         #expect(saved == ChatQuoteContext.echoFallback, "\(saved)")
     }
 }
+
+/// CI de 844b728: NudgeUITests no recibió el aviso. Los ids que viajan en
+/// anima://nudge?id= (refs de preguntas: UUID o "fallback-N") pasan la
+/// validación de ids del deep link: no es el filtro.
+@Suite struct NudgeDeepLinkIdTests {
+    @Test func nudgeRefsSurviveTheIdFilter() {
+        let refs = (0..<ReengagementFallback.questions.count).map(ReengagementFallback.ref) + [UUID().uuidString]
+        for ref in refs {
+            #expect(ChatQuoteRef.isValidId(ref), "\(ref)")
+            #expect(AnimaDeepLink.parse(AnimaDeepLink.nudge(id: ref).url) == .nudge(id: ref))
+        }
+        // Control: un id con texto sí se rechaza.
+        #expect(AnimaDeepLink.parse(AnimaDeepLink.nudge(id: "x y").url) == nil)
+    }
+}

@@ -216,13 +216,10 @@ public enum LocalToolAdapter {
         let blocked: Set<String> = ["no", "pero", "voy", "vamos", "hago", "hare", "ahorita", "ahora", "luego", "despues",
                                     "manana", "casi", "pronto", "mismo", "rato", "veo", "se", "falta", "faltan",
                                     "todavia", "aun", "gracias", "para", "menos", "lio"]
-        guard words.isDisjoint(with: blocked) else { return false }
-        let alone = /^(?:ok |okay |bueno |si )?(?:listo|hecho|cumplido|completado|ya quedo|ya esta hecho|esta hecho)$/
-        if owner.wholeMatch(of: alone) != nil { return true }
-        if owner.wholeMatch(of: /^(?:listo |ok )?(?:dale|dalo|dala|marcalo|marcala) (?:por|como) hech[oa]$/) != nil { return true }
+        guard words.isDisjoint(with: blocked), words.count <= 8 else { return false }
+        if Rx.doneAlone.contains(owner) || Rx.giveAsDone.contains(owner) { return true }
         // "(listo,) (ya) lo hice" / "ya pagué la luz": sin nada más que un objeto directo corto.
-        guard let pattern = try? Regex("^(?:listo |ok |bueno |si )?(?:ya )?(?:lo |la |le |los |las )?(?:\(completedVerbs))(?: (?:el|la|los|las|mi|mis|su|sus|un|una)(?: \\w+){1,3})?$") else { return false }
-        guard owner.wholeMatch(of: pattern) != nil else { return false }
+        guard Rx.completedPast.contains(owner) else { return false }
         // "lo hice" sin "ya" solo con "lo" ("hice" a secas es ambiguo).
         return owner.contains("ya ") || owner.hasPrefix("lo ") || owner.hasPrefix("listo lo ")
             || owner.contains(" lo ") || owner.contains(" la ")
@@ -275,7 +272,7 @@ public enum LocalToolAdapter {
 
     /// "no lo he hecho", "todavía no lo hago", "deshaz", "desmárcalo", "me equivoqué".
     static func asksToUndo(_ owner: String) -> Bool {
-        owner.firstMatch(of: /\b(?:deshaz(?:lo|la)?|deshacer(?:lo|la)?|desmarca(?:lo|la)?|reactiva(?:lo|la)?|no lo he hecho|no la he hecho|no lo hice|no la hice|(?:todavia|aun) no lo (?:hice|he hecho|hago)|me equivoque|no estaba hecho|no esta hecho)\b/) != nil
+        Rx.undoCues.contains(where: owner.contains) && Rx.undoDone.contains(owner)
     }
 
     // MARK: - Traducción
@@ -1274,7 +1271,7 @@ struct LocalWhen {
     /// respeta la hora que eligió el modelo (vio la misma frase) en vez de las 9.
     var ownerMentionsTime: Bool {
         times(scheduleText).contains { $0.explicit || $0.afterLas }
-            || scheduleText.firstMatch(of: /\b(?:en|por|de|a) la (?:tarde|noche|madrugada)\b|\b(?:en|por) la manana\b|\bal mediodia\b/) != nil
+            || ((scheduleText.contains(" la ") || scheduleText.contains("mediodia")) && Rx.dayBand.contains(scheduleText))
     }
     var ownerExplicitTime: (hour: Int, minute: Int)? { explicitTimes(scheduleText).first }
     var ownerDay: Date? { day(scheduleText) }
@@ -1379,19 +1376,18 @@ struct LocalWhen {
     /// frase y la semana del contexto) en vez de inventar un mes lejano o
     /// elegir por el dueño entre "el viernes" y "el 22".
     func weekdayWithDay(_ folded: String) -> WeekdayWithDay? {
-        guard let m = folded.firstMatch(of: /\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado) (\d{1,2})\b(.*)$/),
-              let weekday = Self.weekday(String(m.1)), let number = Int(m.2), (1...31).contains(number) else { return nil }
-        let tail = String(m.3)
+        guard Rx.mayNameWeekdayAndNumber(folded), let m = Rx.weekdayWithNumber.firstMatch(in: folded),
+              let name = m[1], let digits = m[2],
+              let weekday = Self.weekday(String(name)), let number = Int(digits), (1...31).contains(number) else { return nil }
+        let tail = m[3].map(String.init) ?? ""
         // Siempre hora: "8:30", "3 pm", "8 y 30", "7 horas", "8 y media"…
-        if tail.firstMatch(of: /^\s*(?::|\.\d|h\b|hrs?\b|horas?\b|minutos?\b|mins?\b|dias?\b|semanas?\b|am\b|pm\b|a\.?\s?m\b|p\.?\s?m\b|de la$|y media\b|y cuarto\b|y \d{1,2}\b|menos\b)/) != nil {
-            return nil
-        }
+        if Rx.alwaysHourTail.contains(tail) { return nil }
         let match = matchingDate(weekday: weekday, day: number)
         // Con franja detrás ("en la tarde"): N > 12 no puede ser hora ⇒ día
         // ("el viernes 23 en la tarde"). N ≤ 12 es hora, salvo que ese N caiga
         // en ese día de la semana dentro de la ventana: ahí hay duda ⇒ no se
         // repara (queda la fecha del modelo).
-        if tail.firstMatch(of: /^\s*(?:de|en|por|a) la (?:manana|tarde|noche|madrugada)\b/) != nil, number <= 12 {
+        if number <= 12, Rx.bandTail.contains(tail) {
             return match == nil ? nil : .mismatch
         }
         return match.map(WeekdayWithDay.date) ?? .mismatch
@@ -1421,8 +1417,8 @@ struct LocalWhen {
     var ambiguousDayQuestion: String? {
         let owner = scheduleText
         guard dayIsAmbiguous,
-              let m = owner.firstMatch(of: /\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado),? (\d{1,2})\b/),
-              let weekday = Self.weekday(String(m.1)), let number = Int(m.2) else { return nil }
+              let m = Rx.weekdayCommaNumber.firstMatch(in: owner), let name = m[1], let digits = m[2],
+              let weekday = Self.weekday(String(name)), let number = Int(digits) else { return nil }
         let dates = AnimaDateText(calendar: calendar)
         let today = calendar.startOfDay(for: now)
         var ahead = (weekday - calendar.component(.weekday, from: today) + 7) % 7
@@ -1438,8 +1434,9 @@ struct LocalWhen {
 
     /// "el viernes 3 de noviembre" cuando el 3 de noviembre no es viernes.
     func explicitWeekdayMismatch(_ folded: String) -> Bool {
-        guard let m = folded.firstMatch(of: /\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado),? (?:\d{1,2}) de [a-z]+/),
-              let weekday = Self.weekday(String(m.1)), let date = explicitDate(folded) else { return false }
+        guard folded.contains(" de "), Rx.mayNameWeekdayAndNumber(folded),
+              let m = Rx.weekdayExplicitDate.firstMatch(in: folded), let name = m[1],
+              let weekday = Self.weekday(String(name)), let date = explicitDate(folded) else { return false }
         return calendar.component(.weekday, from: date) != weekday
     }
 

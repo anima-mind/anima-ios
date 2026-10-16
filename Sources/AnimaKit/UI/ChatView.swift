@@ -1089,15 +1089,13 @@ public struct ChatView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contextSheetHeight = $0 }
                 .presentationDetents([.height(contextSheetHeight)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.Colors.surface)
+                .animaSheet()
         }
         .sheet(isPresented: $model.showMindSheet) {
             MindSheet(mind: model.mind, glasses: model.glasses, lastWake: model.lastWake) { mindSheetHeight = $0 }
                 // A la medida del contenido (antes .medium cortaba "Vincular gafas").
                 .presentationDetents([.height(mindSheetHeight), .large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Theme.Colors.bg)
+                .animaSheet(background: Theme.Colors.bg)
         }
         .confirmationDialog("Foto para Anima", isPresented: $showPhotoMenu, titleVisibility: .visible) {
             if model.photosAvailable {

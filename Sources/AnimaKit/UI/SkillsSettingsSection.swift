@@ -137,7 +137,7 @@ struct SkillsSettingsScreen: View {
         .sheet(isPresented: $showExample) {
             SkillExampleSheet(markdown: model.exampleMarkdown ?? "")
                 .presentationDetents([.large])
-                .presentationBackground(Theme.Colors.bg)
+                .animaSheet(background: Theme.Colors.bg)
         }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: [UTType(filenameExtension: "md") ?? .plainText, .plainText, .text]) { result in

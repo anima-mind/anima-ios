@@ -11,6 +11,8 @@ public struct WidgetCopy: Sendable {
     public static let done = "Hecho"
     public static let progressed = "Sí, avancé"
     public static let talk = "Hablar con Anima"
+    public static let talkDescription = "Toca para hablar con Anima: abre el chat con el micrófono listo."
+    public static let talkHint = "El micrófono te escucha"
     public static let followUp = "Seguimiento"
     public static let nextLabel = "Próximo"
 
@@ -70,6 +72,12 @@ public struct WidgetCopy: Sendable {
     /// "Noche 12" (o "Recién nacida" sin noches).
     public func nights(_ count: Int) -> String {
         count < 1 ? "Recién nacida" : "Noche \(count)"
+    }
+
+    /// Widget "Hablar con Anima": "Hablar con Budosky" (sin nombre, "Anima").
+    public static func talk(to selfName: String) -> String {
+        let name = selfName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Hablar con \(name.isEmpty ? "Anima" : name)"
     }
 
     /// Live Activity del sueño.

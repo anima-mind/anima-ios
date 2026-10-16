@@ -56,6 +56,12 @@ struct WidgetGalleryView: View {
                     }
                     lock("widget.lock.circular", width: 76, height: 76) { LockCircularView(day: sample) }
                 }
+                section("Hablar con Anima") {
+                    home("widget.talk.small", width: 170) { TalkSmallView(day: sample) }
+                    home("widget.talk.small.empty", width: 170) { TalkSmallView(day: empty) }
+                    lock("widget.talk.circular", width: 76, height: 76) { TalkCircularView(day: sample) }
+                    lock("widget.talk.inline", width: 300, height: 26) { TalkInlineView(day: sample) }
+                }
                 section("Centro de control") { controlMock }
                 section("Live Activity del sueño") {
                     live("widget.live.consolidating", .init(phase: .consolidating, night: 0))

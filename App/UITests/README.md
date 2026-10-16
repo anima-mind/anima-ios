@@ -38,6 +38,10 @@ el argumento nada de esto se activa:
 - `--uitest-fresh-session`: el lanzamiento abre sesión nueva (simula >8 h sin
   actividad) — el historial completo debe seguir visible.
 - `--uitest-seed-reminder=N`: siembra un recordatorio de Anima a +N s.
+- `--uitest-seed-nudge-question`: guarda una pregunta del sueño para los avisos
+  por inactividad ("¿Cómo te fue en la reunión con Pedro?").
+- `--uitest-nudge-probe=N`: programa el aviso por inactividad a +N s (el mismo
+  "Probar en 1 minuto" de Ajustes → Notificaciones).
 - `--uitest-sticky` (solo DEBUG + simulador): notificaciones REALES y el modo
   UI-test persiste en `Library/uitest-sticky.plist`, para que el lanzamiento
   que hace iOS al tocar el push (sin argumentos) siga aislado. Cualquier
@@ -55,6 +59,11 @@ el argumento nada de esto se activa:
 `NotificationUITests` siembra un recordatorio a +20 s, acepta el permiso en
 SpringBoard y toca el push con la app terminada (cold launch), en background y
 al frente: la app debe abrir el Chat con la card `chat.proactive.reminder`.
+
+`NudgeUITests` adelanta el aviso por inactividad a +20 s con la pregunta
+sembrada y lo toca con la app terminada y en background: el Chat abre con la
+card `chat.proactive.nudge` y la pregunta, lista para responder. También cubre
+la fila "Avisos si no hablamos" (toggle y 2/3/5 días).
 
 ## TCC
 

@@ -125,6 +125,8 @@ final class AppModel: ObservableObject {
     private let sleepActivity = SleepActivityController()
     private var proactiveScheduler: ProactiveScheduler?
     private var reconciler: ProactiveReconciler?
+    /// Avisos por inactividad: las preguntas que deja el sueño (el Consolidator las escribe).
+    private var nudgeQuestions: ReengagementQuestionStore?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
     /// desde una notificación): se abre al terminar el cableado.
     private var pendingLink: AnimaDeepLink?
@@ -270,11 +272,18 @@ final class AppModel: ObservableObject {
                 ? FakeNotificationScheduler(status: .denied) : UserNotificationsScheduler()
             self.reminderStore = reminderStore
             let preference = ProactivePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
+            // "Avisos si no hablamos": cadena local desde el último uso, preguntas del sueño.
+            let nudgePreference = ReengagementPreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
+            let nudgeQuestions = ReengagementQuestionStore(queue: queue)
+            self.nudgeQuestions = nudgeQuestions
+            let reengagement = ReengagementEngine(preference: nudgePreference, questions: nudgeQuestions,
+                                                  pulsesToday: ReengagementEngine.pulseCounter(queue: queue))
             self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
                                                          otherModel: otherModel,
                                                          selfName: { await selfModel.name() },
-                                                         preference: preference)
-            self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store)
+                                                         preference: preference, reengagement: reengagement)
+            self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store,
+                                                  reengagement: reengagement)
             // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño.
             let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             let wake = WakeNotifier(scheduler: notifications, general: preference, preference: wakePreference,
@@ -292,11 +301,16 @@ final class AppModel: ObservableObject {
                 await proactiveScheduler?.setAfterSync { await publisher.publish() }
             }
             let notificationsModel = NotificationsSettingsModel(scheduler: notifications, reminders: reminderStore,
-                                                                preference: preference, wake: wakePreference)
+                                                                preference: preference, wake: wakePreference,
+                                                                nudges: nudgePreference)
             notificationsModel.openSystemSettings = Self.openNotificationSettings
             let proactive = self.proactiveScheduler
             notificationsModel.onEnabledChanged = { await proactive?.sync() }
             notificationsModel.onWakeChanged = { on in if !on { await wake.cancelPending() } }
+            notificationsModel.onNudgeChanged = { await proactive?.syncReengagement() }
+            notificationsModel.onNudgeProbe = {
+                await proactive?.scheduleProbeNudge(after: ReengagementProbe.lead) != nil
+            }
             goalsModel?.onCheckInChanged = { await proactive?.sync() }
             let remindersList = RemindersViewModel(store: reminderStore, otherModel: otherModel)
             remindersList.onChange = { [weak notificationsModel] in
@@ -314,6 +328,7 @@ final class AppModel: ObservableObject {
             if let seconds = UITestMode.seedReminderSeconds {
                 await UITestMode.seedReminder(reminderStore, seconds: seconds)
             }
+            if UITestMode.seedsNudgeQuestion { UITestMode.seedNudgeQuestion(nudgeQuestions) }
             _ = await selfModel.expireStale()   // fail-closed al abrir la app (§5.5)
             // Destilado v2 (campo batch 3): invalida UNA vez las memorias legacy que
             // eran preguntas del dueño o meta del asistente (bi-temporal, con razón).
@@ -490,6 +505,10 @@ final class AppModel: ObservableObject {
             bodyStatus: bodyStatus)
 
         self.loop = loop
+        // Cada turno del dueño (chat, voz, gafas, Siri; también en background)
+        // reprograma el aviso por inactividad desde ahora.
+        let proactive = proactiveScheduler
+        await loop.setOnOwnerTurn { _ in await proactive?.ownerUsedAnima() }
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -497,7 +516,8 @@ final class AppModel: ObservableObject {
         if let brain {
             let consolidator = Consolidator(brain: brain, queue: store.database, selector: selector,
                                             telemetry: telemetry, selfModel: selfModel,
-                                            realRegister: realRegister, otherModel: otherModel)
+                                            realRegister: realRegister, otherModel: otherModel,
+                                            nudgeQuestions: nudgeQuestions)
             self.consolidator = consolidator
             let wake = wakeNotifier
             Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night in
@@ -607,6 +627,9 @@ final class AppModel: ObservableObject {
         await reconcileProactive()
         await applyWidgetActions()
         await publishWidgets()
+        if let seconds = UITestMode.nudgeProbeSeconds {
+            await proactiveScheduler?.scheduleProbeNudge(after: TimeInterval(seconds))
+        }
         if let link = pendingLink {
             pendingLink = nil
             open(link)
@@ -619,6 +642,11 @@ final class AppModel: ObservableObject {
         guard let reconciler, let activeSessionId else { return }
         let delivered = await reconciler.reconcileDueReminders(sessionId: activeSessionId)
         chatModel?.appendProactive(delivered)
+        // Un aviso por inactividad entregado hace poco y sin responder: al abrir
+        // (no en un despertar de background) también queda en el chat.
+        if !Self.launchedInBackground {
+            chatModel?.appendProactive(await reconciler.reconcileNudges(sessionId: activeSessionId))
+        }
         await proactiveScheduler?.sync()
     }
 
@@ -1064,6 +1092,18 @@ final class AppModel: ObservableObject {
             guard deferUntilReady(link) else { return }
             selectedTab = .goals
             if let id { goalsModel?.focus(goalId: id) }
+        case .nudge(let id):
+            // Aviso por inactividad: la pregunta de Anima en el chat, lista para
+            // responder. El tap cuenta como uso (la cadena arranca de nuevo).
+            guard deferUntilReady(link) else { return }
+            selectedTab = .chat
+            Task {
+                if let prompt = await reconciler?.nudgePrompt(ref: id, sessionId: activeSessionId) {
+                    chatModel?.appendProactive([prompt])
+                }
+                chatModel?.focus(.nudge(id: id))
+                await proactiveScheduler?.syncReengagement()
+            }
         case .mind:
             // Aviso de despertar (batch 8 #7): el chat con el Mind sheet abierto.
             guard deferUntilReady(link) else { return }

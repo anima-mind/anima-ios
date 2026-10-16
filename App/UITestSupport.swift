@@ -29,6 +29,12 @@ enum UITestMode {
     /// del sistema —tap a la notificación con la app terminada— siga aislado.
     static let stickyFlag = "--uitest-sticky"
 
+    /// Aviso por inactividad adelantado: el "Probar" de Ajustes a +N s (XCUITest del tap).
+    static let nudgeProbePrefix = "--uitest-nudge-probe="
+    /// Una pregunta del sueño ya guardada (la que el aviso debe llevar).
+    static let seedNudgeQuestionFlag = "--uitest-seed-nudge-question"
+    static let seededNudgeQuestion = "¿Cómo te fue en la reunión con Pedro?"
+
     static let arguments: [String] = resolveArguments()
     static let isActive = arguments.contains(flag)
     static let seedsGoal = isActive && arguments.contains(seedGoalFlag)
@@ -100,6 +106,20 @@ enum UITestMode {
             return Int(arg.dropFirst(seedReminderPrefix.count))
         }.first
         : nil
+    static let nudgeProbeSeconds: Int? = isActive
+        ? arguments.lazy.compactMap { arg -> Int? in
+            guard arg.hasPrefix(nudgeProbePrefix) else { return nil }
+            return Int(arg.dropFirst(nudgeProbePrefix.count))
+        }.first
+        : nil
+    static let seedsNudgeQuestion = isActive && arguments.contains(seedNudgeQuestionFlag)
+
+    /// Idempotente: solo si la base aún no tiene preguntas.
+    static func seedNudgeQuestion(_ store: ReengagementQuestionStore) {
+        guard store.upcoming(limit: 1).isEmpty else { return }
+        _ = try? store.replace(with: [seededNudgeQuestion], cycle: 1)
+    }
+
     /// UNUserNotificationCenter real (y no el doble denegado) en modo UI-test.
     static let usesRealNotifications = isActive && arguments.contains(stickyFlag)
 
@@ -114,7 +134,9 @@ enum UITestMode {
         #if DEBUG && targetEnvironment(simulator)
         if launched.contains(flag) {
             if launched.contains(stickyFlag) {
-                let kept = launched.filter { $0 != resetFlag && !$0.hasPrefix(seedReminderPrefix) }
+                let kept = launched.filter {
+                    $0 != resetFlag && !$0.hasPrefix(seedReminderPrefix) && !$0.hasPrefix(nudgeProbePrefix)
+                }
                 (kept as NSArray).write(to: stickyURL, atomically: true)
             } else {
                 try? FileManager.default.removeItem(at: stickyURL)

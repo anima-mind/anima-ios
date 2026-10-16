@@ -138,6 +138,10 @@ import Testing
                     guard let loop = model == "apple" ? try Self.localLoop(c) : Self.claudeLoop(c) else { continue }
                     let r = try await Self.run(c, loop: loop, compact: model == "apple", prompt: phrase)
                     let now = await c.store.reminder(id: c.quoted.id)
+                    // Tampoco se crea otro (medido: el 3B duplicaba el citado).
+                    let created = await c.store.list(.all).count - 2
+                    #expect(created == 0, "\(model) \(phrase) #\(run + 1): creó \(created)")
+                    if created > 0 { touched.append("\(model): \(phrase) (creó otro)") }
                     // "ya no me lo recuerdes" pide cancelarlo: con Claude eso es correcto.
                     let cancelAsked = model == "claude" && phrase == "ya no me lo recuerdes" && now?.status == .cancelled
                     let changed = !cancelAsked && (now?.status != .scheduled || now?.fireAt != c.quoted.fireAt)

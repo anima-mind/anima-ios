@@ -122,6 +122,10 @@ public enum LocalToolAdapter {
     /// Las specs locales para las tools reales disponibles (orden estable).
     /// Idempotente: acepta specs reales o ya locales.
     public static func specs(for available: [ToolSpec]) -> [ToolSpec] {
+        // Ya es un set local (el provider re-aplica el perfil): se respeta tal
+        // cual — re-expandirlo devolvía tools que el turno quitó a propósito
+        // (medido: remind_me volvía en un turno con cita y el 3B duplicaba).
+        if !available.isEmpty, available.allSatisfy({ byName[$0.name] != nil }) { return available }
         var real = Set<String>()
         for spec in available {
             guard case .client(let name, _, _) = spec else { continue }
@@ -301,6 +305,10 @@ public enum LocalToolAdapter {
 
         switch name {
         case "remind_me":
+            // Respondiendo a un recordatorio, crear otro exige "recuérdame…".
+            if let quote, quote.kind == .reminder, !LocalWhen.opensWithCreation(ownerText) {
+                return invalid("El dueño responde al recordatorio citado; no crees otro. Respóndele sin tools.")
+            }
             guard let modelText = args.text("text") else { return invalid(missing("text", "qué recordar")) }
             let text = reminderText(model: modelText, ownerText: ownerText)
             guard let parsedWhen = args.raw("when").flatMap({ when.parse($0) }) else {

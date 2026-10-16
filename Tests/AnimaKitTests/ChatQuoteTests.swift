@@ -1150,6 +1150,21 @@ enum QuoteFixtures {
             #expect(!ToolProfile.onDevice.apply(tools, quote: quote, ownerText: owner).contains { $0.name == "remind_me" },
                     "\(owner)")
         }
+        // El provider re-aplica el perfil: el set local se respeta (no vuelve remind_me).
+        let local = ToolProfile.onDevice.apply(tools, quote: quote, ownerText: "ya no me lo recuerdes")
+        #expect(ToolProfile.onDevice.apply(local) == local)
+        let request = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("x")]), tools: local,
+                                                    opts: try OnDeviceTestConfig.opts())
+        #expect(!request.tools.contains { $0.name == "remind_me" })
+        // Y si el 3B la llama igual, el adapter no crea otro.
+        guard case .invalid = LocalToolAdapter.resolve(
+            name: "remind_me", input: .object(["text": .string("abonar"), "when": .string("2026-10-20 18:33"),
+                                               "repeat": .string("none")]),
+            now: Date(), ownerText: "ya no me lo recuerdes", quote: quote) else { Issue.record("debió rechazar"); return }
+        guard case .real = LocalToolAdapter.resolve(
+            name: "remind_me", input: .object(["text": .string("llamar"), "when": .string("2030-10-20 18:33"),
+                                               "repeat": .string("none")]),
+            now: Date(), ownerText: "recuérdame llamar al banco", quote: quote) else { Issue.record("debió crear"); return }
         // Controles: pedido explícito con cita, y sin cita.
         #expect(ToolProfile.onDevice.apply(tools, quote: quote, ownerText: "recuérdame también llamar al banco")
             .contains { $0.name == "remind_me" })

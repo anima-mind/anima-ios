@@ -341,7 +341,12 @@ enum RealToolSet {
     /// 11 s en main con 1). Se consulta UNA vez por proceso y FUERA del pool
     /// cooperativo: en una cola serial de GCD; el hilo del test solo se suspende.
     static func modelIsAvailable() async -> Bool {
-        await withCheckedContinuation { continuation in
+        // En CI (GitHub pone CI=true) el runner nunca tiene el modelo y la sola
+        // consulta tarda ~13 s (run 38940151116: el test pasó a 13,9 s con UNA
+        // consulta fuera del pool) y toma recursos de FoundationModels que otros
+        // tests usan: ni se pregunta. Los smokes opt-in siguen su propia guarda.
+        if ProcessInfo.processInfo.environment["CI"] == "true" { return false }
+        return await withCheckedContinuation { continuation in
             availabilityQueue.async {
                 let available = cachedAvailability ?? OnDeviceAvailability.current().isAvailable
                 cachedAvailability = available

@@ -29,6 +29,10 @@ struct AnimaApp: App {
         // Botones de los widgets ejecutados en ESTE proceso (LiveActivityIntent):
         // se aplican ya con el mismo handler de las notificaciones.
         WidgetIntentBridge.shared.apply = { await AppModel.live.applyWidgetActionsFromIntent() }
+        // "Hablar con Anima" (control / Atajos / Siri) corre su perform en ESTE
+        // proceso y pide el mic directo, sin URL (campo build 27).
+        Task { await TalkRequestBridge.shared.install { await MainActor.run { AppModel.live.requestTalk() } } }
+        if UITestMode.runsTalkIntent { Task { _ = try? await TalkToAnimaIntent().perform() } }
     }
 
     var body: some Scene {
@@ -44,6 +48,9 @@ struct AnimaApp: App {
                     .onOpenURL { app.handleOpenURL($0) }
                     .preferredColorScheme(.dark)
             }
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            app.sceneActiveChanged(phase == .active)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
@@ -70,12 +77,16 @@ final class AppModel: ObservableObject {
         case misconfigured(String)
     }
 
-    @Published var phase: Phase = .loading
+    @Published var phase: Phase = .loading {
+        didSet { syncTalkReady() }
+    }
     /// Primer arranque (handoff): landing → onboarding hasta que el Birth corra.
     @Published var onboarded: Bool = AppModel.onboardingDefaults.hasOnboarded
     /// "Repetir onboarding" desde Ajustes (re-corre el flujo sin borrar memoria).
     @Published var replayingOnboarding = false
-    @Published private(set) var chatModel: ChatViewModel?
+    @Published private(set) var chatModel: ChatViewModel? {
+        didSet { syncTalkReady() }
+    }
     @Published private(set) var settingsModel: SettingsViewModel?
     @Published private(set) var memoryModel: MemoryBrowserViewModel?
     @Published private(set) var approvalsModel: ApprovalsInboxViewModel?
@@ -132,6 +143,13 @@ final class AppModel: ObservableObject {
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
     /// desde una notificación): se abre al terminar el cableado.
     private var pendingLink: AnimaDeepLink?
+    /// "Abrir con el mic" (control, widget, Siri, `anima://chat?mic=1`): espera
+    /// escena `.active` + chat cableado; en frío y en caliente (campo build 27).
+    private lazy var talkGate = TalkLaunchGate { [weak self] in
+        guard let self else { return }
+        self.selectedTab = .chat
+        self.chatModel?.startVoice()
+    }
     // §5.7: skills = conocimiento procedural en Documents/skills (visible en Files).
     private var skillEngine: SkillEngine?
     // Track G (doc 05): el segundo cuerpo opcional. Sin gafas todo sigue igual.
@@ -1191,9 +1209,7 @@ final class AppModel: ObservableObject {
                 chatModel?.focus(.intention(id: id))
             }
         case .talk:
-            guard deferUntilReady(link) else { return }
-            selectedTab = .chat
-            chatModel?.startVoice()
+            requestTalk()
         case .reminders:
             guard deferUntilReady(link) else { return }
             selectedTab = .reminders
@@ -1223,6 +1239,28 @@ final class AppModel: ObservableObject {
                 chatModel?.showMindSheet = true
             }
         }
+    }
+
+    /// "Hablar con Anima": queda pendiente hasta escena activa + chat cableado.
+    /// Arranca el cableado si nadie lo hizo (el control puede llegar en frío).
+    func requestTalk() {
+        if phase == .ready, chatModel != nil {
+            selectedTab = .chat
+        } else {
+            Task { await ensureBootstrapped() }
+        }
+        talkGate.request()
+    }
+
+    /// scenePhase (con el valor inicial): solo `.active` deja abrir el mic.
+    func sceneActiveChanged(_ active: Bool) {
+        talkGate.setActive(active)
+    }
+
+    private func syncTalkReady() {
+        let ready = phase == .ready && chatModel != nil
+        guard talkGate.isReady != ready else { return }
+        talkGate.setReady(ready)
     }
 
     /// false (y lo guarda) si el chat aún no está cableado: el cableado lo abre

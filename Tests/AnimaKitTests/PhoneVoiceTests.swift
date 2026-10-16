@@ -29,6 +29,27 @@ final class ScriptedPhoneVoice: VoiceCapturePort, @unchecked Sendable {
     func finish() { finishes.mutate { $0 += 1 }; signalled.mutate { $0 = true } }
 }
 
+/// Falla las primeras `failures` capturas (escena aún sin activar), luego oye.
+final class FlakyPhoneVoice: VoiceCapturePort, @unchecked Sendable {
+    let failures: Int
+    let heard: String?
+    let attempts = Locked(0)
+    init(failures: Int, heard: String? = nil) { self.failures = failures; self.heard = heard }
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void) async -> String? { nil }
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void,
+                 onFailure: @escaping @Sendable (VoiceCaptureFailure) -> Void) async -> String? {
+        let attempt = attempts.mutate { $0 += 1; return $0 }
+        if attempt <= failures {
+            onFailure(.microphoneUnavailable(route: .phoneMic, detail: "0 Hz"))
+            return nil
+        }
+        return heard
+    }
+    func cancel() {}
+}
+
 final class HelloRecognizer: SpeechRecognitionPort, @unchecked Sendable {
     func start(onPartial: @escaping @Sendable (String) -> Void) throws { onPartial(" hola anima ") }
     func stop() {}
@@ -110,6 +131,38 @@ struct PhoneVoiceTests {
         chat.finishVoice()
         chat.cancelVoice()
         #expect(!chat.isListening)
+    }
+
+    @Test func siLaCapturaFallaReintentaUnaVezYOye() async throws {
+        let provider = CapturingProvider([.text("Te escuché.")])
+        let (chat, _, _) = try Self.chat(provider)
+        let voice = FlakyPhoneVoice(failures: 1, heard: "qué tengo hoy")
+        chat.voice = voice
+        chat.voiceRetryDelay = .zero
+        chat.startVoice()
+        #expect(await eventually { await MainActor.run { chat.messages.first?.text == "qué tengo hoy" } })
+        #expect(voice.attempts.value == 2)
+        #expect(chat.voiceError == nil)
+    }
+
+    @Test func siFallaDosVecesLoDiceEnVozAlta() async throws {
+        let provider = CapturingProvider([.text("no debería")])
+        let (chat, _, _) = try Self.chat(provider)
+        let voice = FlakyPhoneVoice(failures: 2)
+        chat.voice = voice
+        chat.voiceRetryDelay = .zero
+        chat.startVoice()
+        #expect(await eventually { await MainActor.run { chat.voiceError != nil } })
+        #expect(!chat.isListening)
+        #expect(voice.attempts.value == 2)   // un solo reintento
+        #expect(chat.voiceError == "No pude abrir el micrófono. Mic del teléfono no disponible. Reintenta.")
+        #expect(chat.messages.isEmpty)
+        chat.dismissVoiceError()
+        #expect(chat.voiceError == nil)
+        // Un nuevo intento limpia el aviso aunque vuelva a fallar después.
+        chat.startVoice()
+        #expect(chat.voiceError == nil)
+        #expect(chat.isListening)
     }
 
     @Test func micDelTelefonoNuncaTocaHFP() async {

@@ -76,16 +76,24 @@ struct ProgressCheckInIntent: LiveActivityIntent {
     }
 }
 
-/// Centro de control / botón de Acción: abre el chat con el mic escuchando.
+/// Centro de control / botón de Acción / App Shortcut / Siri ("Abre Anima con
+/// el micrófono"): abre la app y le pide el mic DIRECTO, sin URL. Campo build
+/// 27: devolver OpenURLIntent(anima://chat?mic=1) desde aquí lo rechazaba iOS
+/// ("The provided URL scheme `anima` is unsupported; launch is prohibited").
+/// Patrón de Apple para controles que abren la app: el intent con target
+/// membership en la app Y en la extensión (App/WidgetsShared) y modo foreground
+/// (`supportedModes`, iOS 26): el perform corre en el proceso de la APP.
 struct TalkToAnimaIntent: AppIntent {
     static let title: LocalizedStringResource = "Hablar con Anima"
     static let description = IntentDescription("Abre el chat de Anima con el micrófono activo.")
-    static let openAppWhenRun = true
+    static let supportedModes: IntentModes = .foreground(.immediate)
 
     init() {}
 
-    func perform() async throws -> some IntentResult & OpensIntent {
-        .result(opensIntent: OpenURLIntent(AnimaDeepLink.talk.url))
+    func perform() async throws -> some IntentResult {
+        // TalkLaunchGate lo deja pendiente hasta escena .active + chat cableado.
+        await TalkRequestBridge.shared.request()
+        return .result()
     }
 }
 

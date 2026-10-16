@@ -48,6 +48,12 @@ enum UITestMode {
         _ = try? await brain.add(MemoryCandidate(content: seededMemory, source: "cycle:1"), cycle: 1)
     }
 
+    /// Corre `TalkToAnimaIntent().perform()` al lanzar (como el control /
+    /// Atajos / Siri en frío): el mic debe abrir sin ninguna URL.
+    static let runsTalkIntent = isActive && arguments.contains("--uitest-run-talk-intent")
+    /// La voz guionada falla siempre (el mic no abre): el aviso debe verse.
+    static let voiceFails = isActive && arguments.contains("--uitest-voice-fail")
+
     /// Galería de widgets (screenshots de cada widget con datos de ejemplo).
     static let showsWidgetGallery = isActive && (arguments.contains("--uitest-widget-gallery") || widgetOnly != nil)
     /// `--uitest-widget=<id>`: la galería pinta SOLO ese widget, centrado (screenshot entero).
@@ -454,6 +460,15 @@ final class UITestScriptedVoice: VoiceCapturePort, @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(100))
         }
         return state().cancelled ? nil : Self.transcript
+    }
+
+    func capture(onRoute: @escaping @Sendable (VoiceRoute) -> Void,
+                 onPartial: @escaping @Sendable (String) -> Void,
+                 onFailure: @escaping @Sendable (VoiceCaptureFailure) -> Void) async -> String? {
+        guard UITestMode.voiceFails else { return await capture(onRoute: onRoute, onPartial: onPartial) }
+        try? await Task.sleep(for: .milliseconds(150))
+        onFailure(.microphoneUnavailable(route: .phoneMic, detail: "uitest"))
+        return nil
     }
 
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }

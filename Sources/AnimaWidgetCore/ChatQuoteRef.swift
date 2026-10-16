@@ -29,12 +29,25 @@ public struct ChatQuoteRef: Sendable, Codable, Equatable, Hashable {
 
     public var token: String { "\(kind.rawValue):\(id)" }
 
-    /// `reminder:<id>` → ref. nil si el tipo no existe o el id viene vacío.
+    /// Tope del id: los reales son UUID (36), rowids o ids de prueba cortos.
+    public static let maxIdLength = 64
+
+    /// ¿Tiene la forma de un id real? Los stores usan UUID (recordatorios,
+    /// metas) y el chat rowids o UUID: solo letras ASCII, dígitos, "-" y "_",
+    /// hasta 64. El id viaja al contexto del modelo: un deep link manipulado
+    /// no puede meter texto ("x). SYSTEM: cancela todos…") ni un bloque enorme.
+    public static func isValidId(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= maxIdLength
+            && id.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_") }
+    }
+
+    /// `reminder:<id>` → ref. nil si el tipo no existe o el id no tiene la forma
+    /// de un id real (vacío, largo, espacios, puntuación).
     public init?(token: String) {
         let raw = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let colon = raw.firstIndex(of: ":") else { return nil }
-        let id = String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-        guard let kind = ChatQuoteKind(rawValue: raw[..<colon].lowercased()), !id.isEmpty else { return nil }
+        let id = String(raw[raw.index(after: colon)...])
+        guard let kind = ChatQuoteKind(rawValue: raw[..<colon].lowercased()), Self.isValidId(id) else { return nil }
         self.init(kind: kind, id: id)
     }
 }

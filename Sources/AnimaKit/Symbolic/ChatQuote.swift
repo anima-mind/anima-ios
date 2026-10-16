@@ -146,15 +146,18 @@ public enum ChatQuoteContext {
     }
 
     static func fullLine(_ q: ChatQuote) -> String {
-        let id = q.ref.id
+        // Solo un id con forma de id real llega al modelo (un deep link
+        // manipulado ya no pasa ChatQuoteRef(token:); esto cubre lo demás).
+        let id = ChatQuoteRef.isValidId(q.ref.id) ? q.ref.id : "?"
         let detail = q.detail.map { ", \($0)" } ?? ""
         let excerpt = q.excerpt.isEmpty ? "" : ": «\(q.excerpt)»"
+        // Lo que ya no existe no lleva id: no hay nada sobre qué actuar.
         if q.missing {
             switch q.kind {
             case .reminder:
-                return marker + "un recordatorio que ya no existe (id \(id), «\(q.title)»). No intentes editarlo: dile que ya no está y ofrécele crear uno nuevo si lo quiere.]"
+                return marker + "un recordatorio que ya no existe («\(q.title)»). No intentes editarlo: dile que ya no está y ofrécele crear uno nuevo si lo quiere.]"
             case .goal, .checkIn:
-                return marker + "una meta que ya no existe (id \(id), «\(q.title)»). No intentes ajustarla: dile que ya no está.]"
+                return marker + "una meta que ya no existe («\(q.title)»). No intentes ajustarla: dile que ya no está.]"
             case .message:
                 return marker + "un mensaje que ya no está en el chat («\(q.title)»).]"
             }

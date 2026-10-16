@@ -56,6 +56,11 @@ public enum LocalToolAdapter {
             spec: spec("list_goals", "Lista las metas del dueño.", []),
             example: "{}"),
         LocalTool(
+            name: "drop_goal", realTool: "goals", realAction: "abandon",
+            spec: spec("drop_goal", "Deja una meta que el dueño ya no quiere. Ej: {goal:'correr'}",
+                       [("goal", .text)]),
+            example: "{goal:'correr'}"),
+        LocalTool(
             name: "add_calendar_event", realTool: "calendar", realAction: "create",
             spec: spec("add_calendar_event",
                        "Agéndame: pone una cita o reunión en el calendario. Ej: {title:'almuerzo con Ana', start:'2026-10-08 13:00', end:'2026-10-08 14:00'}",
@@ -297,7 +302,8 @@ public enum LocalToolAdapter {
         // error guiado hacia la tool correcta (un reintento).
         let intended = intended(name: name, ownerText: ownerText)
         if intended != name, let target = byName[intended] {
-            return .invalid(tool: target.realTool, message: "El dueño pidió crear algo, no consultar: usa \(intended).")
+            let asked = intended == "drop_goal" ? "dejar una meta" : "crear algo"
+            return .invalid(tool: target.realTool, message: "El dueño pidió \(asked), no consultar: usa \(intended).")
         }
 
         switch name {
@@ -331,6 +337,15 @@ public enum LocalToolAdapter {
 
         case "list_reminders", "list_goals":
             return .real(name: tool.realTool, input: .object(["action": .string("list")]))
+
+        case "drop_goal":
+            return dropGoal(modelOld: args.text("goal"), modelNew: nil, ownerText: ownerText, when: when, tool: tool)
+
+        case "declare_goal" where GoalDrop.parse(ownerText) != nil:
+            // "ya no quiero ahorrar, mejor quiero abonar a la deuda": no es una meta
+            // más (campo: quedaban las dos), es un reemplazo.
+            return dropGoal(modelOld: nil, modelNew: args.text("statement"), ownerText: ownerText,
+                            when: when, tool: tool)
 
         case "declare_goal":
             guard let statement = args.text("statement") else {
@@ -479,6 +494,41 @@ public enum LocalToolAdapter {
         default:
             return invalid("No existe la herramienta '\(name)'.")
         }
+    }
+
+    /// goals.replace / goals.abandon desde lo que dijo el dueño: su texto gana
+    /// ("ya no quiero X, mejor Y"); lo del modelo solo si nombra algo que dijo
+    /// (medido en otras tools: el 3B copia el ejemplo).
+    static func dropGoal(modelOld: String?, modelNew: String?, ownerText: String, when: LocalWhen,
+                         tool: LocalTool) -> Resolution {
+        let parsed = GoalDrop.parse(ownerText)
+        let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
+        func said(_ text: String?) -> String? {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+                  !["none", "ninguna", "ninguno", "null", "nil", "no"].contains(LocalWhen.fold(text)) else { return nil }
+            guard !ownerText.isEmpty else { return text }
+            return OnDevicePromptBuilder.salientStems(text).contains { owner.contains($0) } ? text : nil
+        }
+        guard let old = parsed?.old ?? said(modelOld) else {
+            return .invalid(tool: tool.realTool, message: missing("goal", "la meta que el dueño deja"))
+        }
+        var newGoal = parsed?.new ?? (parsed == nil ? said(modelNew) : nil)
+        if let candidate = newGoal, GoalDedupe.overlap(candidate, old) > 0, GoalDedupe.related(candidate, old),
+           GoalDedupe.key(candidate).numbers == GoalDedupe.key(old).numbers { newGoal = nil }
+        guard let newGoal else {
+            return .real(name: "goals", input: .object(["action": .string("abandon"), "goal": .string(old)]))
+        }
+        let statement = newGoal.prefix(1).uppercased() + newGoal.dropFirst()
+        var object: [String: JSONValue] = ["action": .string("replace"), "goal": .string(old),
+                                           "statement": .string(statement)]
+        if when.unsupportedCadence == nil, let cadence = when.ownerCadence, cadence != .none {
+            var hour = CheckInCadence.defaultHour
+            if let owner = when.ownerExplicitTime { hour = owner.hour }
+            var checkin: [String: JSONValue] = ["cadence": .string(cadence.rawValue), "hour": .int(hour)]
+            if cadence == .weekly, let weekday = when.ownerWeekday { checkin["weekday"] = .int(weekday) }
+            object["checkin"] = .object(checkin)
+        }
+        return .real(name: "goals", input: .object(object))
     }
 
     /// anima_reminders.create; una hora ya pasada se corre a la siguiente
@@ -692,6 +742,8 @@ public enum LocalToolAdapter {
     /// una de consulta para un pedido de creación; si no, `name`.
     public static func intended(name: String, ownerText: String) -> String {
         guard readOnlyTools.contains(name) else { return name }
+        // "ya no quiero ahorrar…", "olvida la meta de correr": dejar una meta tiene tool.
+        if GoalDrop.parse(ownerText) != nil { return "drop_goal" }
         let raw = ownerText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let owner = LocalWhen.fold(raw)
         // Una consulta nunca se redirige, lleve o no "?" ("quiero ver mis metas",
@@ -1248,6 +1300,7 @@ struct LocalWhen {
         if owner.contains("recordatorio") || owner.contains("recuerd") || owner.contains("recordarme") {
             return "Eso lo borras en la tab Recordatorios."
         }
+        if GoalDrop.parse(ownerText) != nil { return "No la dejé todavía: dímelo de nuevo o elimínala en la tab Metas." }
         if ["evento", "cita", "agenda", "calendario"].contains(where: owner.contains) {
             return "Eso lo borras en tu app Calendario."
         }

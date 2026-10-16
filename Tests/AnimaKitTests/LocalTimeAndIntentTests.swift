@@ -29,11 +29,17 @@ import Testing
         #expect(event["end"] == .string("2026-10-15T15:00:00"))
     }
 
-    @Test(arguments: ["elimina mi meta de correr", "borra mi meta", "ya cumplí mi meta de leer 12 libros",
-                      "quiero cambiar mi meta", "cancela mi meta de ahorrar"])
+    @Test(arguments: ["ya cumplí mi meta de leer 12 libros", "quiero cambiar mi meta"])
     func changingAGoalIsNeverDeclaringOne(owner: String) {
         #expect(LocalToolAdapter.intended(name: "list_goals", ownerText: owner) == "list_goals")
         #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) == "list_reminders")
+    }
+
+    /// Dejar una meta sí tiene tool local (campo: "ya no quiero ahorrar…" dejaba las dos).
+    @Test(arguments: ["elimina mi meta de correr", "borra mi meta", "cancela mi meta de ahorrar"])
+    func droppingAGoalGoesToDropGoal(owner: String) {
+        #expect(LocalToolAdapter.intended(name: "list_goals", ownerText: owner) == "drop_goal")
+        #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) == "drop_goal")
     }
 
     @Test func onlyCreationPhrasingRedirectsToAGoal() {

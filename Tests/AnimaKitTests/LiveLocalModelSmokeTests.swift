@@ -692,4 +692,46 @@ import Testing
             }
         }
     }
+
+    // MARK: - Campo 2026-10-15: dejar o cambiar una meta
+
+    static func seedSaving(_ world: World) async -> String {
+        let id = await world.other.ingestStated(statement: "Ahorrar 30 millones de pesos para diciembre de 2026",
+                                                desiredState: .progressCheckIn(everyDays: 8), evidence: "smoke")
+        await world.other.setCheckIn(id: id, CheckInCadence(cadence: .weekly, hour: 18, minute: 33, weekday: 4))
+        return id
+    }
+
+    @Test func replaceSavingWithDebt() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let old = await Self.seedSaving(world)
+            let t = await Self.turn(world, "ya no quiero ahorrar, mejor quiero abonar a la deuda 5M cada quincena")
+            let open = await world.other.allGoals().filter(\.isOpen)
+            let left = await world.other.goal(id: old)
+            let newGoal = open.count == 1 ? open[0] : nil
+            let replaced = newGoal?.statement.lowercased().contains("deuda") == true
+            let superseded = left?.status == .abandoned && left?.supersededBy == newGoal?.id
+            let followUpGone = left?.checkIn.isActive == false
+            let said = t.notice == nil && LocalWhen.fold(t.text).contains("deuda")
+            let ok = replaced && superseded && followUpGone && said
+            Self.row("52 cambiar meta", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    @Test func dropAGoal() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let old = await Self.seedSaving(world)
+            let t = await Self.turn(world, "olvida mi meta de ahorrar")
+            let none = await world.other.allGoals().filter(\.isOpen).isEmpty
+            let left = await world.other.goal(id: old)?.status == .abandoned
+            let ok = none && left && t.notice == nil
+            Self.row("53 dejar meta", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
 }

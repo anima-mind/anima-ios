@@ -8,7 +8,10 @@ import Testing
 
 @Suite struct ToolProfileTests {
     static let measuredFullRegistryTokens = 3797
-    static let onDeviceToolCeiling = 900
+    /// 900 → 960 con `drop_goal` (dejar/cambiar una meta, campo): medido con el
+    /// tokenizer real, set local 949 (antes 872); system + tools 1326 ≤ 1500 y
+    /// quedan 2770 ≥ 2000 libres para la conversación.
+    static let onDeviceToolCeiling = 960
     static let onDeviceSystemCeiling = 1500
     static let onDeviceRoomFloor = 2000
 
@@ -30,7 +33,7 @@ import Testing
         #expect(ToolProfile.full.apply(tools + [server]) == tools + [server])
 
         let local = ToolProfile.onDevice.apply(tools + [server])
-        #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals",
+        #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals", "drop_goal",
                                       "add_calendar_event", "list_events", "write_note", "read_note"])
         #expect(ToolProfile.onDevice.apply(local) == local)
         for name in ToolProfile.excludedOnDevice { #expect(!local.contains { $0.name == name }) }

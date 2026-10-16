@@ -100,12 +100,12 @@ public enum ReengagementDraft {
         return out
     }
 
+    static let bullet = ICURegex(#"^(\d+[\.\)]|[-*•])\s*"#)
+
     /// Quita viñetas, numeración, comillas envolventes y espacios de más.
     static func clean(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = s.range(of: #"^(\d+[\.\)]|[-*•])\s*"#, options: .regularExpression) {
-            s.removeSubrange(range)
-        }
+        if let match = bullet.firstMatch(in: s) { s.removeSubrange(match.range) }
         let wrappers: Set<Character> = ["\"", "'", "“", "”", "«", "»", "`"]
         while let first = s.first, wrappers.contains(first) { s.removeFirst() }
         while let last = s.last, wrappers.contains(last) || last == "," { s.removeLast() }

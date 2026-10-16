@@ -523,7 +523,7 @@ public enum OnDevicePromptBuilder {
 
     /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
     static func withoutListIds(_ text: String) -> String {
-        text.replacing(/\[[^\]\n]{6,}\]\s*/, with: "")
+        Self.listIds.replacing(in: text, with: "")
     }
 
     /// La confirmación tras tools es una frase: tope corto (y más rápido).
@@ -559,12 +559,12 @@ public enum OnDevicePromptBuilder {
     public static func agreesWithTheResult(_ text: String, fallback: String, now: Date,
                                            calendar: Calendar = .current) -> Bool {
         let result = fold(fallback)
-        guard let m = result.firstMatch(of: /(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
-              let day = Int(m.2), let month = LocalWhen.months.firstIndex(of: String(m.3)).map({ $0 + 1 }),
-              let hour = Int(m.4) else { return true }
+        guard let m = Self.savedMoment.firstMatch(in: result), let weekdaySaved = m[1],
+              let day = m[2].flatMap({ Int($0) }), let month = m[3].flatMap({ LocalWhen.months.firstIndex(of: String($0)) }).map({ $0 + 1 }),
+              let hour = m[4].flatMap({ Int($0) }) else { return true }
         let said = fold(text)
         let words = LocalWhen.words(said)
-        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(m.1) { return false }
+        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(weekdaySaved) { return false }
         let today = calendar.startOfDay(for: now)
         var parts = calendar.dateComponents([.year], from: today)
         parts.month = month; parts.day = day
@@ -652,10 +652,14 @@ public enum OnDevicePromptBuilder {
 
     /// "Listo: <resultado>" sin ids internos: lo que el dueño lee si el modelo
     /// no redacta la confirmación.
+    static let listIds = ICURegex(#"\[[^\]\n]{6,}\]\s*"#)
+    static let savedMoment = ICURegex(#"(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})"#)
+    static let idParenthesis = ICURegex(#"\s*\(id [^)]*\)"#)
+    static let idSuffix = ICURegex(#"\s*Id [A-Za-z0-9-]+\.?"#)
+
     public static func confirmation(results: [String]) -> String {
         let cleaned = results.map { result in
-            result.replacing(/\s*\(id [^)]*\)/, with: "")
-                .replacing(/\s*Id [A-Za-z0-9-]+\.?/, with: "")
+            Self.idSuffix.replacing(in: Self.idParenthesis.replacing(in: result, with: ""), with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")

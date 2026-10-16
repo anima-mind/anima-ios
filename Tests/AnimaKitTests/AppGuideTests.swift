@@ -24,6 +24,16 @@ import Testing
         #expect(!AppGuide.compactBlock.localizedCaseInsensitiveContains("check-in"))
     }
 
+    /// Tab bar: lo más usado primero; el mapa de ella las nombra en ese orden.
+    @Test func tabOrderPutsWhatIsUsedMostFirst() {
+        #expect(ShellTab.allCases == [.chat, .goals, .reminders, .memory, .settings])
+        #expect(ShellTab.allCases.map(\.rawValue) == ["chat", "goals", "reminders", "memory", "settings"])
+        for guide in [AppGuide.block, AppGuide.compactBlock] {
+            let positions = ShellTab.allCases.compactMap { guide.range(of: $0.title)?.lowerBound }
+            #expect(positions.count == ShellTab.allCases.count && positions == positions.sorted())
+        }
+    }
+
     @Test func staysCompact() {
         // ~250-350 tokens (heurística chars/4 del store).
         #expect(AppGuide.block.count / 4 <= 350)

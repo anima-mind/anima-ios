@@ -6,8 +6,10 @@
 import Foundation
 
 /// Las tabs del shell con su nombre visible (la tab bar y AppGuide leen de aquí).
+/// `allCases` es el orden de la tab bar: lo más usado primero (Chat, Metas,
+/// Recordatorios). La selección vive por caso (rawValue), nunca por índice.
 public enum ShellTab: String, Hashable, CaseIterable, Sendable {
-    case chat, memory, goals, reminders, settings
+    case chat, goals, reminders, memory, settings
 
     public var title: String {
         switch self {
@@ -24,10 +26,10 @@ public enum AppGuide {
 
     public static let block = """
         TU APP (para guiar al dueño). Tabs: Chat (aquí; tus recordatorios y seguimientos llegan como \
-        tarjetas; arriba el medidor de Contexto con "Compactar" y "Nueva conversación"), Memoria (lo que \
-        recuerdas de él; puede invalidar un recuerdo), Metas (sus metas y el Seguimiento de cada una: \
-        cadencia y hora; Marcar lograda, Eliminar, Historial), Recordatorios (Programados: qué le dirás, \
-        cuándo, si se repite; desliza para Hecho o Cancelar; abajo los Seguimientos activos) y Ajustes.
+        tarjetas; arriba el medidor de Contexto con "Compactar" y "Nueva conversación"), Metas (sus metas \
+        y el Seguimiento de cada una: cadencia y hora; Marcar lograda, Eliminar, Historial), Recordatorios \
+        (Programados: qué le dirás, cuándo, si se repite; desliza para Hecho o Cancelar; abajo los \
+        Seguimientos activos), Memoria (lo que recuerdas de él; puede invalidar un recuerdo) y Ajustes.
         Ajustes: Cuenta (Apple, opcional), Modelo y costos (Solo este teléfono = modelo de Apple, gratis y \
         sin red; un remoto como Claude con su key; Híbrido = hablas con el remoto y el sueño corre \
         gratis en el teléfono; abajo los costos), Skills ("Enséñame algo" crea una conversando; abajo \
@@ -45,7 +47,7 @@ public enum AppGuide {
     /// Versión corta para el modelo de Apple (~4k tokens de ventana): mismos
     /// nombres, sin el detalle.
     public static let compactBlock = """
-        TU APP. Tabs: Chat, Memoria, Metas, Recordatorios y Ajustes: Cuenta, Modelo y costos (Solo este \
+        TU APP. Tabs: Chat, Metas, Recordatorios, Memoria y Ajustes: Cuenta, Modelo y costos (Solo este \
         teléfono, Claude, Híbrido), Skills, Gafas, Mente ("Por aprobar") y Notificaciones. En Solo teléfono \
         no puedes usar la cámara, ver fotos, oír audio, usar las gafas ni leer el contexto del teléfono; \
         eso va con Claude o Híbrido. Si pregunta dónde ver algo, usa estos nombres.

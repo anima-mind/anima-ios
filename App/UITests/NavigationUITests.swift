@@ -78,8 +78,13 @@ final class NavigationUITests: AnimaUITestCase {
         waitUntil(element(app, "mind.sheet"), "exists == false")
         waitUntil(tabButton(app, "Memoria"), "isHittable == true")
 
+        // Orden de la tab bar: lo más usado primero (Chat, Metas, Recordatorios), luego Memoria y Ajustes.
+        let order = ["Chat", "Metas", "Recordatorios", "Memoria", "Ajustes"]
+        let xs = order.map { tabButton(app, $0).frame.midX }
+        XCTAssertEqual(xs, xs.sorted(), "orden de las tabs: \(zip(order, xs).map { "\($0) \($1)" })")
+
         // Tabs: cada una deja la tab bar usable.
-        for tab in ["Memoria", "Metas", "Recordatorios", "Ajustes", "Chat"] {
+        for tab in ["Metas", "Recordatorios", "Memoria", "Ajustes", "Chat"] {
             openTab(app, tab)
             waitTabSelected(app, tab)
         }

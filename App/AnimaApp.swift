@@ -1311,6 +1311,8 @@ struct RootView: View {
             hasOnboarded: app.onboarded) == .landing
     }
 
+    /// Orden de la tab bar = `ShellTab.allCases` (Chat, Metas, Recordatorios,
+    /// Memoria, Ajustes): lo más usado primero. La selección es por caso.
     private var shellTabs: some View {
         TabView(selection: $app.selectedTab) {
             if let chat = app.chatModel {
@@ -1318,11 +1320,6 @@ struct RootView: View {
                     .confirmationOverlay(app.confirmation)
                     .tabItem { Label(AppTab.chat.title, systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
                     .tag(AppTab.chat)
-            }
-            if let memory = app.memoryModel {
-                MemoryBrowserView(model: memory)
-                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
-                    .tag(AppTab.memory)
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
@@ -1333,6 +1330,11 @@ struct RootView: View {
                 RemindersView(model: reminders)
                     .tabItem { Label(AppTab.reminders.title, systemImage: "bell").accessibilityIdentifier("tab.reminders") }
                     .tag(AppTab.reminders)
+            }
+            if let memory = app.memoryModel {
+                MemoryBrowserView(model: memory)
+                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
+                    .tag(AppTab.memory)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)

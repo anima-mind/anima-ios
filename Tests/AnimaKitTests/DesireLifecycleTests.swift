@@ -25,16 +25,19 @@ import GRDB
         #expect(await other.allGoals().count == 1)
     }
 
-    @Test func abandonedGoalLeavesDesireAndCanBeRestatedFresh() async throws {
+    @Test func abandonedGoalLeavesDesireAndIsReactivatedWhenRestated() async throws {
         let (other, _, _) = try model()
         let id = await other.ingestStated(statement: "leer más", desiredState: .daysSinceLastMention(topic: "libro", atMost: 3),
                                           evidence: "e")
         await other.abandon(id: id)
         #expect(await other.goal(id: id)?.status == .abandoned)
         #expect(await other.desire().isEmpty)
-        let fresh = await other.ingestStated(statement: "leer más", desiredState: .daysSinceLastMention(topic: "libro", atMost: 3),
+        // Volver a declararla (después del abandono) la reactiva: la misma meta, activa.
+        let again = await other.ingestStated(statement: "leer más", desiredState: .daysSinceLastMention(topic: "libro", atMost: 3),
                                              evidence: "otra vez")
-        #expect(fresh != id)
+        #expect(again == id)
+        #expect(await other.goal(id: id)?.status == .active)
+        #expect(await other.desire().map(\.id) == [id])
     }
 
     @Test func achievedGoalStopsMotivating() async throws {

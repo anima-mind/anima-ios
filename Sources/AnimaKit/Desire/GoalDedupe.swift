@@ -58,6 +58,26 @@ public enum GoalDedupe {
         return !ca.isEmpty && ca == cb
     }
 
+    /// Cuántas palabras de contenido comparten dos textos (sin cadencia, números
+    /// ni letras sueltas): "ahorrar" ↔ "Ahorrar 30 millones…" = 1. Para ubicar la
+    /// meta que el dueño nombra a medias ("ya no quiero ahorrar").
+    public static func overlap(_ a: String, _ b: String) -> Int {
+        contentTerms(a).intersection(contentTerms(b)).count
+    }
+
+    /// ¿Hablan de lo mismo aunque no sean la misma meta exacta? La mayoría (≥ 60 %)
+    /// de las palabras de contenido del más corto están en el otro.
+    public static func related(_ a: String, _ b: String) -> Bool {
+        let shared = overlap(a, b)
+        let smaller = min(contentTerms(a).count, contentTerms(b).count)
+        return shared > 0 && smaller > 0 && Double(shared) / Double(smaller) >= 0.6
+    }
+
+    static func contentTerms(_ text: String) -> Set<String> {
+        let key = key(text)
+        return key.terms.subtracting(cadence).subtracting(key.numbers).filter { $0.count > 1 }
+    }
+
     /// Marcadores de frecuencia: no cambian QUÉ es la meta.
     static let cadence: Set<String> = [
         "cada", "semana", "dia", "mes", "ano", "todo", "toda", "todos", "todas", "noche", "siempre", "habito",

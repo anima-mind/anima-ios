@@ -58,11 +58,19 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
     public var checkIn: CheckInCadence
     /// Por qué quedó así (p. ej. "duplicada" al fusionar metas repetidas).
     public var statusReason: String?
+    /// La meta que la reemplazó ("ya no X, mejor Y"): solo en abandonadas.
+    public var supersededBy: String?
+    /// Cuándo se dejó (abandonada o reemplazada).
+    public var abandonedAt: Date?
+    /// La última vez que el dueño la declaró o la reactivó (el sueño compara
+    /// contra esta fecha: lo último que dijo el dueño gana).
+    public var declaredAt: Date?
 
     public init(id: String, statement: String, desiredState: ObservablePredicate,
                 source: GoalSource, status: GoalStatus, priority: Int, evidence: String,
                 confirmedByOther: Bool, createdAt: Date, updatedAt: Date, checkIn: CheckInCadence = .off,
-                statusReason: String? = nil) {
+                statusReason: String? = nil, supersededBy: String? = nil, abandonedAt: Date? = nil,
+                declaredAt: Date? = nil) {
         self.id = id
         self.statement = statement
         self.desiredState = desiredState
@@ -75,6 +83,9 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
         self.updatedAt = updatedAt
         self.checkIn = checkIn
         self.statusReason = statusReason
+        self.supersededBy = supersededBy
+        self.abandonedAt = abandonedAt
+        self.declaredAt = declaredAt
     }
 
     /// Un goal motiva acciones solo si está activo y, cuando es inferred, fue
@@ -86,6 +97,48 @@ public struct Goal: Sendable, Equatable, Identifiable, Codable {
     public var motivates: Bool {
         status == .active && (source != .inferred || confirmedByOther)
     }
+}
+
+/// Qué pasó al declarar una meta.
+public struct GoalDeclaration: Sendable, Equatable {
+    public enum Outcome: Sendable, Equatable {
+        /// Nueva.
+        case created
+        /// Ya existía abierta (se reforzó la evidencia).
+        case reinforced
+        /// El dueño la había dejado y la volvió a declarar después: vuelve a estar activa.
+        case reactivated
+        /// La declaración es ANTERIOR a que el dueño la dejara: no se toca.
+        case staleAfterAbandon
+    }
+    public var id: String
+    public var outcome: Outcome
+}
+
+/// Lo que se canceló al dejar una meta (Anima lo cuenta tal cual).
+public struct GoalAbandonment: Sendable, Equatable {
+    /// La meta como estaba antes de dejarla.
+    public var goal: Goal
+    /// El seguimiento que tenía (nil si no tenía).
+    public var cancelledCheckIn: CheckInCadence?
+    /// Textos de los recordatorios ligados que se cancelaron.
+    public var cancelledReminders: [String]
+    /// Textos de los recordatorios que pasaron a la meta nueva (reemplazo).
+    public var movedReminders: [String]
+}
+
+public enum GoalReplacement: Sendable, Equatable {
+    case replaced(new: Goal, declaration: GoalDeclaration, abandonment: GoalAbandonment)
+    /// La "nueva" es la misma meta.
+    case same(Goal)
+    /// No hay una meta abierta con ese id.
+    case notFound
+}
+
+public enum GoalMatch: Sendable, Equatable {
+    case one(Goal)
+    case none
+    case ambiguous([Goal])
 }
 
 public actor OtherModel {
@@ -104,12 +157,87 @@ public actor OtherModel {
 
     /// Meta declarada por el dueño (la extrae el Consolidator del ciclo, o el chat).
     /// Nace ACTIVE (stated motiva de inmediato). Idempotente por statement: si ya
-    /// existe una meta no-abandonada con el mismo enunciado, refuerza su evidencia.
+    /// existe una meta abierta equivalente, refuerza su evidencia.
     @discardableResult
     public func ingestStated(statement: String, desiredState: ObservablePredicate,
                              evidence: String, priority: Int = 5) -> String {
-        upsert(statement: statement, desiredState: desiredState, source: .stated,
-               status: .active, evidence: evidence, priority: priority, confirmed: false)
+        declare(statement: statement, desiredState: desiredState, evidence: evidence, priority: priority).id
+    }
+
+    /// Declarar con fecha: `statedAt` = cuándo lo dijo el dueño (el chat: ahora;
+    /// el sueño: la hora del mensaje). Una meta que el dueño DEJÓ solo vuelve si
+    /// la declaración es posterior al abandono (lo último que dijo gana): así el
+    /// sueño no resucita "Ahorrar 30M" desde un mensaje viejo del historial.
+    @discardableResult
+    public func declare(statement: String, desiredState: ObservablePredicate, evidence: String,
+                        priority: Int = 5, statedAt: Date? = nil) -> GoalDeclaration {
+        let trimmed = GoalDedupe.neutral(statement)
+        let at = (statedAt ?? now()).timeIntervalSince1970
+        let ts = now().timeIntervalSince1970
+        let predicateJSON = Self.encode(desiredState)
+        let result = try? queue.write { db -> GoalDeclaration in
+            let goals = try Row.fetchAll(db, sql: "SELECT * FROM goal ORDER BY created_at ASC").map(Self.goal(from:))
+            if let existing = Self.openEquivalent(in: goals, to: trimmed) {
+                if existing.source == .inferred {
+                    try db.execute(sql: """
+                        UPDATE goal SET source='stated', status='active', statement=?, evidence=?, updated_at=?,
+                                        declared_at=MAX(COALESCE(declared_at, 0), ?)
+                        WHERE id=?
+                        """, arguments: [trimmed, evidence, ts, at, existing.id])
+                } else {
+                    try db.execute(sql: """
+                        UPDATE goal SET evidence=?, updated_at=?, declared_at=MAX(COALESCE(declared_at, 0), ?) WHERE id=?
+                        """, arguments: [evidence, ts, at, existing.id])
+                }
+                return GoalDeclaration(id: existing.id, outcome: .reinforced)
+            }
+            if let left = Self.leftEquivalent(in: goals, to: trimmed) {
+                let abandonedAt = left.abandonedAt?.timeIntervalSince1970 ?? left.updatedAt.timeIntervalSince1970
+                // Sin fecha = el dueño lo dice AHORA (chat): siempre posterior al abandono.
+                guard statedAt == nil || at > abandonedAt else {
+                    return GoalDeclaration(id: left.id, outcome: .staleAfterAbandon)
+                }
+                try db.execute(sql: """
+                    UPDATE goal SET source='stated', status='active', statement=?, predicate_json=?, evidence=?,
+                                    status_reason=NULL, superseded_by=NULL, abandoned_at=NULL, declared_at=?,
+                                    updated_at=?
+                    WHERE id=?
+                    """, arguments: [trimmed, predicateJSON, evidence, at, ts, left.id])
+                return GoalDeclaration(id: left.id, outcome: .reactivated)
+            }
+            // Una reformulación de una meta que el dueño dejó DESPUÉS de este mensaje
+            // ("Ahorrar 30M para diciembre" ↔ "Ahorrar 30 millones … de 2026"): tampoco revive.
+            if statedAt != nil, let left = goals.first(where: { goal in
+                goal.status == .abandoned && goal.statusReason != GoalMerge.reason
+                    && (goal.abandonedAt ?? goal.updatedAt).timeIntervalSince1970 >= at
+                    && GoalDedupe.related(goal.statement, trimmed)
+            }) {
+                return GoalDeclaration(id: left.id, outcome: .staleAfterAbandon)
+            }
+            let gid = UUID().uuidString
+            try db.execute(sql: """
+                INSERT INTO goal (id, statement, predicate_json, source, status, priority, evidence,
+                                  confirmed_by_other, created_at, updated_at, declared_at)
+                VALUES (?,?,?,'stated','active',?,?,0,?,?,?)
+                """, arguments: [gid, trimmed, predicateJSON, priority, evidence, ts, ts, at])
+            return GoalDeclaration(id: gid, outcome: .created)
+        }
+        return result ?? GoalDeclaration(id: UUID().uuidString, outcome: .created)
+    }
+
+    /// La meta abierta equivalente (stated > inferred > structural, la más vieja).
+    static func openEquivalent(in goals: [Goal], to statement: String) -> Goal? {
+        goals.filter(\.isOpen)
+            .sorted { ($0.source.precedence, $0.createdAt) < ($1.source.precedence, $1.createdAt) }
+            .first { GoalDedupe.equivalent($0.statement, statement) }
+    }
+
+    /// La meta equivalente que el dueño dejó (la más reciente); nunca una
+    /// fusionada como duplicada (su canónica es la que cuenta).
+    static func leftEquivalent(in goals: [Goal], to statement: String) -> Goal? {
+        goals.filter { $0.status == .abandoned && $0.statusReason != GoalMerge.reason }
+            .filter { GoalDedupe.equivalent($0.statement, statement) }
+            .max { ($0.abandonedAt ?? $0.updatedAt) < ($1.abandonedAt ?? $1.updatedAt) }
     }
 
     /// Meta estructural del harness (p.ej. "no perder pendientes"). Nace ACTIVE.
@@ -131,7 +259,7 @@ public actor OtherModel {
 
     /// Dedupe semántico determinista (batch 8 #5): si ya hay una meta
     /// equivalente ABIERTA (activa o por confirmar) se refuerza su evidencia y NO se crea otra.
-    /// Una declarada sobre una inferida equivalente la promueve (stated/active).
+    /// (Las declaradas van por `declare`, que además promueve una inferida equivalente.)
     /// Una inferida jamás nace si hay una equivalente —incluida una que el
     /// dueño ya rechazó o que se fusionó como duplicada—. El enunciado se guarda
     /// neutral ("Bajar 10 kg"), nunca "El dueño quiere…".
@@ -145,15 +273,8 @@ public actor OtherModel {
             let alive = goals.filter(\.isOpen)
                 .sorted { ($0.source.precedence, $0.createdAt) < ($1.source.precedence, $1.createdAt) }
             if let existing = alive.first(where: { GoalDedupe.equivalent($0.statement, trimmed) }) {
-                if source == .stated, existing.source == .inferred {
-                    try db.execute(sql: """
-                        UPDATE goal SET source='stated', status='active', statement=?, evidence=?, updated_at=?
-                        WHERE id=?
-                        """, arguments: [trimmed, evidence, ts, existing.id])
-                } else {
-                    try db.execute(sql: "UPDATE goal SET evidence=?, updated_at=? WHERE id=?",
-                                   arguments: [evidence, ts, existing.id])
-                }
+                try db.execute(sql: "UPDATE goal SET evidence=?, updated_at=? WHERE id=?",
+                               arguments: [evidence, ts, existing.id])
                 return existing.id
             }
             if source == .inferred,
@@ -163,10 +284,10 @@ public actor OtherModel {
             let gid = UUID().uuidString
             try db.execute(sql: """
                 INSERT INTO goal (id, statement, predicate_json, source, status, priority, evidence,
-                                  confirmed_by_other, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                                  confirmed_by_other, created_at, updated_at, declared_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """, arguments: [gid, trimmed, predicateJSON, source.rawValue, status.rawValue,
-                                 priority, evidence, confirmed ? 1 : 0, ts, ts])
+                                 priority, evidence, confirmed ? 1 : 0, ts, ts, ts])
             return gid
         }) ?? UUID().uuidString
         return id
@@ -219,13 +340,102 @@ public actor OtherModel {
         }
     }
 
-    /// El dueño rechaza (o abandona) una meta → abandoned (deja de existir para el deseo).
-    public func abandon(id: String, reason: String? = nil) {
+    /// El dueño rechaza, deja o reemplaza una meta → abandoned (deja de existir
+    /// para el deseo). Con ella se cancela su seguimiento (cadencia a none) y los
+    /// recordatorios de Anima ligados; en un reemplazo, los que hablan de la
+    /// nueva pasan a ella. nil si la meta no existe o ya estaba cerrada.
+    @discardableResult
+    public func abandon(id: String, reason: String? = nil, supersededBy: String? = nil) -> GoalAbandonment? {
         let ts = now().timeIntervalSince1970
-        try? queue.write { db in
-            try db.execute(sql: "UPDATE goal SET status='abandoned', status_reason=?, updated_at=? WHERE id=?",
-                           arguments: [reason, ts, id])
+        return (try? queue.write { db -> GoalAbandonment? in
+            guard let goal = try Row.fetchOne(db, sql: "SELECT * FROM goal WHERE id=?", arguments: [id])
+                .map(Self.goal(from:)), goal.isOpen else { return nil }
+            let successor = try supersededBy.flatMap {
+                try Row.fetchOne(db, sql: "SELECT * FROM goal WHERE id=?", arguments: [$0]).map(Self.goal(from:))
+            }
+            try db.execute(sql: """
+                UPDATE goal SET status='abandoned', status_reason=?, superseded_by=?, abandoned_at=?, updated_at=?,
+                                checkin_cadence='none'
+                WHERE id=?
+                """, arguments: [reason, successor?.id, ts, ts, id])
+            var cancelled: [String] = []
+            var moved: [String] = []
+            for row in try Row.fetchAll(db, sql: """
+                SELECT id, text FROM anima_reminder WHERE goal_id=? AND status IN ('scheduled','fired')
+                """, arguments: [id]) {
+                let reminderId: String = row["id"]
+                let text: String = row["text"]
+                if let successor, GoalDedupe.overlap(text, successor.statement) > GoalDedupe.overlap(text, goal.statement) {
+                    try db.execute(sql: "UPDATE anima_reminder SET goal_id=? WHERE id=?",
+                                   arguments: [successor.id, reminderId])
+                    moved.append(text)
+                } else {
+                    try db.execute(sql: "UPDATE anima_reminder SET status='cancelled' WHERE id=?", arguments: [reminderId])
+                    cancelled.append(text)
+                }
+            }
+            return GoalAbandonment(goal: goal, cancelledCheckIn: goal.checkIn.isActive ? goal.checkIn : nil,
+                                   cancelledReminders: cancelled, movedReminders: moved)
+        }) ?? nil
+    }
+
+    /// "Ya no X, mejor Y": declara Y y deja X reemplazada por ella (superseded_by).
+    /// `.same` si Y es la misma meta que X (no hay nada que reemplazar).
+    public func replace(id: String, with statement: String, desiredState: ObservablePredicate,
+                        evidence: String, priority: Int = 5, statedAt: Date? = nil) -> GoalReplacement {
+        guard let old = goal(id: id), old.isOpen else { return .notFound }
+        if GoalDedupe.equivalent(old.statement, statement) { return .same(old) }
+        let declaration = declare(statement: statement, desiredState: desiredState, evidence: evidence,
+                                  priority: priority, statedAt: statedAt)
+        guard declaration.id != old.id else { return .same(old) }
+        guard let abandonment = abandon(id: old.id, reason: Self.replacedReason, supersededBy: declaration.id),
+              let new = goal(id: declaration.id) else { return .notFound }
+        return .replaced(new: new, declaration: declaration, abandonment: abandonment)
+    }
+
+    public static let replacedReason = "reemplazada"
+    public static let leftReason = "el dueño la dejó"
+
+    /// Vuelve a activar una meta dejada (Metas → Historial → Reactivar). false si
+    /// no estaba dejada o si ya hay una abierta equivalente.
+    @discardableResult
+    public func reactivate(id: String) -> Bool {
+        let ts = now().timeIntervalSince1970
+        return (try? queue.write { db -> Bool in
+            let goals = try Row.fetchAll(db, sql: "SELECT * FROM goal ORDER BY created_at ASC").map(Self.goal(from:))
+            guard let goal = goals.first(where: { $0.id == id }), goal.status == .abandoned,
+                  Self.openEquivalent(in: goals, to: goal.statement) == nil else { return false }
+            try db.execute(sql: """
+                UPDATE goal SET status='active', source=CASE source WHEN 'inferred' THEN 'stated' ELSE source END,
+                                status_reason=NULL, superseded_by=NULL, abandoned_at=NULL, declared_at=?, updated_at=?
+                WHERE id=?
+                """, arguments: [ts, ts, id])
+            return true
+        }) ?? false
+    }
+
+    /// La meta abierta a la que se refiere el dueño ("ahorrar", "la del gym", un
+    /// id): id exacto > equivalente > la que más palabras comparte. Con una sola
+    /// meta abierta, "mi meta" es esa.
+    public func matchOpen(_ reference: String) -> GoalMatch {
+        let open = allGoals().filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+        let ref = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let byId = open.first(where: { $0.id == ref }) { return .one(byId) }
+        if let equivalent = Self.openEquivalent(in: open, to: ref) { return .one(equivalent) }
+        let scored = open.map { ($0, GoalDedupe.overlap(ref, $0.statement)) }.filter { $0.1 > 0 }
+        if let best = scored.map(\.1).max() {
+            let top = scored.filter { $0.1 == best }.map(\.0)
+            return top.count == 1 ? .one(top[0]) : .ambiguous(top)
         }
+        if GoalDedupe.key(ref).terms.isEmpty, open.count == 1 { return .one(open[0]) }
+        return open.isEmpty ? .none : .ambiguous(open)
+    }
+
+    /// Metas que el dueño dejó (más reciente primero; sin las fusionadas).
+    public func leftGoals(limit: Int = 10) -> [Goal] {
+        allGoals().filter { $0.status == .abandoned && $0.statusReason != GoalMerge.reason }
+            .sorted { ($0.abandonedAt ?? $0.updatedAt) > ($1.abandonedAt ?? $1.updatedAt) }
+            .prefix(limit).map { $0 }
     }
 
     /// Fusiona las metas duplicadas existentes (lo corre la migración v17 y
@@ -444,7 +654,10 @@ public actor OtherModel {
                                     hour: row["checkin_hour"] ?? CheckInCadence.defaultHour,
                                     minute: row["checkin_minute"] ?? 0,
                                     weekday: row["checkin_weekday"]),
-            statusReason: row["status_reason"])
+            statusReason: row["status_reason"],
+            supersededBy: row["superseded_by"],
+            abandonedAt: (row["abandoned_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+            declaredAt: (row["declared_at"] as Double?).map(Date.init(timeIntervalSince1970:)))
     }
 
     static func checkIn(from row: Row) -> GoalCheckIn {

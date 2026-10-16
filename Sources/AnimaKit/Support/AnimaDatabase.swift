@@ -118,6 +118,8 @@ public enum AnimaDatabase {
         m.registerMigration("v20-turn-quote") { db in
             try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN quote_json TEXT NULL")
         }
+        // Metas que se dejan o se reemplazan (superseded_by, abandoned_at, declared_at).
+        GoalLifecycleV21.register(&m)
 
         return m
     }

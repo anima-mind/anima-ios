@@ -1,8 +1,11 @@
 // GoalsTool.swift — tool `goals`: el chat declara metas YA (sin esperar al ciclo
 // nocturno) y gestiona su check-in. Leer y registrar la respuesta del dueño a un
 // check-in = aferente (lo dijo él en la conversación); declarar, cambiar la
-// cadencia y marcar lograda = eferente (ask). Tras cada cambio el shell
-// re-sincroniza las notificaciones locales (`onChange`).
+// cadencia, marcar lograda, dejar y reemplazar = eferente (ask). Tras cada
+// cambio el shell re-sincroniza las notificaciones locales (`onChange`).
+// "Ya no quiero ahorrar, mejor abonar a la deuda" = replace (campo): la vieja
+// queda reemplazada (superseded_by), con su seguimiento y sus recordatorios
+// cancelados, y el resultado dice exactamente qué se canceló.
 
 import Foundation
 
@@ -42,8 +45,13 @@ public struct GoalsTool: SensorimotorTool {
                 workouts_per_week{value}, reminders_overdue_at_most{value}, \
                 sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, \
                 days_since_last_mention_at_most{topic,days}, progress_check_in{every_days}; sin \
-                predicate se usa progress_check_in. Las metas son reversibles desde la tab Metas: \
-                llama la tool directo, sin pedir permiso en el chat, y cuéntale al dueño qué quedó.
+                predicate se usa progress_check_in. Si el dueño ya no quiere una meta ("ya no quiero \
+                X", "olvida la meta de X", "mejor Y en vez de X"): replace {goal_id o goal (texto de la \
+                meta vieja), statement (la nueva), checkin?} cuando la cambia por otra, o abandon \
+                {goal_id o goal}; NUNCA declares la nueva dejando la vieja activa. Ambas cancelan el \
+                seguimiento y los recordatorios de la vieja. Las metas son reversibles desde la tab \
+                Metas (Historial → Reactivar): llama la tool directo, sin pedir permiso en el chat, y \
+                cuéntale al dueño qué quedó y qué se canceló.
                 """,
             inputSchema: .object([
                 "type": .string("object"),
@@ -51,10 +59,12 @@ public struct GoalsTool: SensorimotorTool {
                     "action": .object([
                         "type": .string("string"),
                         "enum": .array(["list", "declare", "set_checkin", "clear_checkin", "record_checkin",
-                                        "mark_achieved"].map { .string($0) }),
+                                        "mark_achieved", "abandon", "replace"].map { .string($0) }),
                     ]),
                     "statement": .object(["type": .string("string"),
-                                          "description": .string("La meta en palabras del dueño (declare).")]),
+                                          "description": .string("La meta en palabras del dueño (declare; en replace, la nueva).")]),
+                    "goal": .object(["type": .string("string"),
+                                     "description": .string("abandon/replace sin goal_id: la meta vieja en palabras del dueño.")]),
                     "predicate": .object(["type": .string("object"),
                                           "description": .string("Predicado observable {kind, ...} (declare).")]),
                     "checkin": checkinSchema,
@@ -92,6 +102,11 @@ public struct GoalsTool: SensorimotorTool {
             return "Quitar el check-in de la meta \(goal)"
         case "mark_achieved":
             return "Marcar como lograda la meta \(goal)"
+        case "abandon":
+            return "Dejar la meta \(input["goal"]?.stringValue.map { "'\($0)'" } ?? goal)"
+        case "replace":
+            let old = input["goal"]?.stringValue.map { "'\($0)'" } ?? goal
+            return "Cambiar la meta \(old) por '\(input["statement"]?.stringValue ?? "(sin enunciado)")'"
         default:
             return "goals: \(operation(for: input))"
         }
@@ -108,6 +123,8 @@ public struct GoalsTool: SensorimotorTool {
         case "clear_checkin": return await clearCheckIn(input)
         case "record_checkin": return await recordCheckIn(input)
         case "mark_achieved": return await markAchieved(input)
+        case "abandon": return await abandon(input)
+        case "replace": return await replace(input)
         default: return Self.error("acción de goals desconocida: \(action)")
         }
     }
@@ -149,8 +166,9 @@ public struct GoalsTool: SensorimotorTool {
             predicate = .progressCheckIn(everyDays: Self.defaultEveryDays(checkIn?.cadence ?? .none))
         }
         let existing = await otherModel.equivalentGoal(to: statement)
-        let id = await otherModel.ingestStated(statement: statement, desiredState: predicate,
-                                               evidence: "declarada en el chat")
+        let declaration = await otherModel.declare(statement: statement, desiredState: predicate,
+                                                   evidence: "declarada en el chat")
+        let id = declaration.id
         if let checkIn, checkIn.isActive { _ = await otherModel.setCheckIn(id: id, checkIn) }
         await onChange()
         let suffix = (checkIn?.isActive ?? false) ? " Te pregunto \(checkIn!.phrase)." : ""
@@ -159,7 +177,115 @@ public struct GoalsTool: SensorimotorTool {
             return ToolResult(content: "Esa meta ya existía (id \(id)): \(existing.statement). No la dupliqué.\(suffix)")
         }
         let saved = await otherModel.goal(id: id)?.statement ?? statement
+        if declaration.outcome == .reactivated {
+            return ToolResult(content: "La habías dejado y la reactivé (id \(id)): \(saved).\(suffix)")
+        }
         return ToolResult(content: "Meta registrada (id \(id)): \(saved).\(suffix)")
+    }
+
+    private func abandon(_ input: JSONValue) async -> ToolResult {
+        let target: Goal
+        switch await resolveGoal(input) {
+        case .success(let goal): target = goal
+        case .failure(let error): return error.result
+        }
+        guard let abandonment = await otherModel.abandon(id: target.id, reason: OtherModel.leftReason) else {
+            return Self.notFound
+        }
+        await onChange()
+        return ToolResult(content: "Listo: dejé la meta «\(target.statement)» (id \(target.id)); ya no te la recuerdo."
+                          + Self.cancellations(abandonment) + Self.historyNote)
+    }
+
+    private func replace(_ input: JSONValue) async -> ToolResult {
+        let statement = (input["statement"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !statement.isEmpty else { return Self.error("falta 'statement' (la meta nueva).") }
+        var checkIn: CheckInCadence?
+        if let raw = input["checkin"] {
+            guard let parsed = Self.cadence(from: raw) else { return Self.error(Self.cadenceHelp) }
+            checkIn = parsed
+        }
+        let predicate: ObservablePredicate
+        if let raw = input["predicate"] {
+            guard let parsed = Self.predicate(from: raw) else {
+                return Self.error("'predicate' no es del vocabulario cerrado (ver descripción de la tool).")
+            }
+            predicate = parsed
+        } else {
+            predicate = .progressCheckIn(everyDays: Self.defaultEveryDays(checkIn?.cadence ?? .none))
+        }
+        let old: Goal
+        switch await resolveGoal(input) {
+        case .success(let goal): old = goal
+        case .failure(let error): return error.result
+        }
+        switch await otherModel.replace(id: old.id, with: statement, desiredState: predicate,
+                                        evidence: "declarada en el chat (reemplaza a «\(old.statement)»)") {
+        case .notFound:
+            return Self.notFound
+        case .same(let goal):
+            return ToolResult(content: "Es la misma meta (id \(goal.id)): \(goal.statement). No cambié nada; si "
+                              + "quieres ajustar el seguimiento usa set_checkin.")
+        case .replaced(let new, _, let abandonment):
+            if let checkIn, checkIn.isActive { _ = await otherModel.setCheckIn(id: new.id, checkIn) }
+            await onChange()
+            var text = "Listo: cambié la meta «\(old.statement)» por «\(new.statement)» (id \(new.id)). "
+                + "La vieja queda como reemplazada; ya no te la recuerdo."
+            text += Self.cancellations(abandonment)
+            if let checkIn, checkIn.isActive {
+                text += " Por la nueva te pregunto \(checkIn.phrase)."
+            } else {
+                text += " La nueva no tiene seguimiento todavía."
+            }
+            return ToolResult(content: text + Self.historyNote)
+        }
+    }
+
+    /// Lo cancelado al dejar una meta, dicho tal cual (sin inventar nada).
+    static func cancellations(_ abandonment: GoalAbandonment) -> String {
+        var parts: [String] = []
+        if let checkIn = abandonment.cancelledCheckIn { parts.append("su seguimiento (\(checkIn.phrase))") }
+        let reminders = abandonment.cancelledReminders
+        if !reminders.isEmpty {
+            let quoted = reminders.prefix(3).map { "«\($0)»" }.joined(separator: ", ")
+            parts.append((reminders.count == 1 ? "1 recordatorio ligado" : "\(reminders.count) recordatorios ligados")
+                         + " (\(quoted))")
+        }
+        var text = parts.isEmpty ? "" : " Cancelé " + parts.joined(separator: " y ") + "."
+        if !abandonment.movedReminders.isEmpty {
+            let quoted = abandonment.movedReminders.prefix(3).map { "«\($0)»" }.joined(separator: ", ")
+            text += " Pasé a la nueva: \(quoted)."
+        }
+        return text
+    }
+
+    static let historyNote = " Queda en Metas → Historial por si quieres reactivarla."
+
+    private struct GoalLookupError: Error {
+        let result: ToolResult
+    }
+
+    /// goal_id si viene (y existe abierta); si no, la meta que nombra `goal`.
+    private func resolveGoal(_ input: JSONValue) async -> Result<Goal, GoalLookupError> {
+        if let id = input["goal_id"]?.stringValue, !id.isEmpty {
+            if let goal = await otherModel.goal(id: id), goal.isOpen { return .success(goal) }
+            if input["goal"]?.stringValue == nil { return .failure(GoalLookupError(result: Self.notFound)) }
+        }
+        guard let reference = input["goal"]?.stringValue, !reference.isEmpty else {
+            return .failure(GoalLookupError(result: Self.error("falta 'goal_id' o 'goal' (la meta que deja).")))
+        }
+        switch await otherModel.matchOpen(reference) {
+        case .one(let goal):
+            return .success(goal)
+        case .none:
+            return .failure(GoalLookupError(result: ToolResult(
+                content: "Error: no existe una meta abierta que coincida con «\(reference)»; el dueño no tiene metas activas.",
+                isError: true)))
+        case .ambiguous(let goals):
+            let options = goals.prefix(5).map { "[\($0.id)] \($0.statement)" }.joined(separator: "; ")
+            return .failure(GoalLookupError(result: Self.error(
+                "«\(reference)» no identifica una sola meta; usa goal_id de una de estas: \(options).")))
+        }
     }
 
     private func setCheckIn(_ input: JSONValue) async -> ToolResult {

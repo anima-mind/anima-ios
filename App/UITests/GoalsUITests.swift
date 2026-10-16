@@ -77,3 +77,59 @@ final class GoalsDeleteUITests: AnimaUITestCase {
         XCTAssertTrue(statement.exists)
     }
 }
+
+/// Campo 2026-10-15 ("ya no quiero ahorrar…" y quedaban las dos): dejar una meta
+/// en Metas cancela su seguimiento (sale de Recordatorios) y desde el Historial
+/// se reactiva.
+final class GoalsLeaveUITests: AnimaUITestCase {
+    @MainActor
+    private func byPrefix(_ app: XCUIApplication, _ prefix: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix)).firstMatch
+    }
+
+    @MainActor
+    func testLeavingAGoalCancelsItsFollowUpAndHistoryReactivatesIt() {
+        let app = makeApp(reset: true)
+        app.launchArguments.append(GoalsUITests.seedFlag)
+        app.launch()
+        onboard(app)
+        openTab(app, "Metas")
+        let cadence = byPrefix(app, "goal.checkin.cadence.")
+        tap(cadence, until: app.buttons["Diario"])
+        tap(app.buttons["Diario"])
+        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Seguimiento cada día'")
+
+        // El seguimiento aparece en Recordatorios.
+        openTab(app, "Recordatorios")
+        let followUp = element(app, "reminders.checkin")
+        waitFor(followUp)
+
+        // Eliminar (dejar) la meta.
+        openTab(app, "Metas")
+        let statement = text(app, "Ahorrar 10 millones para invertir")
+        waitFor(statement)
+        statement.swipeLeft()
+        tap(app.buttons["Eliminar"])
+        let confirm = app.sheets.buttons["Eliminar"].exists ? app.sheets.buttons["Eliminar"]
+            : app.buttons.matching(NSPredicate(format: "label == 'Eliminar'")).element(boundBy: 0)
+        tap(confirm)
+        let history = element(app, "goals.history")
+        waitFor(history)
+
+        // Su seguimiento ya no está en Recordatorios.
+        openTab(app, "Recordatorios")
+        waitUntil(element(app, "reminders.checkin"), "exists == false")
+        screenshot(app, "recordatorios-sin-seguimiento")
+
+        // Historial → Reactivar: vuelve a las metas activas, sin seguimiento (se fija de nuevo).
+        openTab(app, "Metas")
+        let row = text(app, "abandonada")
+        tap(element(app, "goals.history"), until: row)
+        row.swipeLeft()
+        tap(app.buttons["Reactivar"])
+        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Sin seguimiento'")
+        waitUntil(element(app, "goals.history"), "exists == false")
+        screenshot(app, "metas-reactivada")
+    }
+}

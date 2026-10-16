@@ -478,6 +478,10 @@ public enum OnDevicePromptBuilder {
             if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
                 salient = [SalientGroup(["tab"])]
             }
+            // Dejar una meta se pide con la frase explícita: se dice siempre.
+            if results.contains(where: { $0.contains("deja mi meta de") }) {
+                salient = [SalientGroup(["deja mi meta"])]
+            }
             if results.contains(where: { $0.contains("ya pasó, así que te lo puse para mañana") }) {
                 salient.append(SalientGroup(["pas"]))
             }
@@ -498,7 +502,7 @@ public enum OnDevicePromptBuilder {
             // "ya no quiero ahorrar…": dejar la meta se hace siempre (el adapter
             // repara la llamada desde lo que dijo el dueño si el 3B no la hace).
             requiredQueryTool = (LocalToolAdapter.queryTool(ownerTurn)
-                ?? (GoalDrop.parse(ownerTurn) != nil ? "drop_goal" : nil))
+                ?? (GoalDrop.isClearDrop(ownerTurn) ? "drop_goal" : nil))
                 .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
             // Recordatorio citado + pedido estricto de "hecho"/"deshacer" (lista
             // blanca del adapter): la tool sin parámetros viaja SOLA y se ejecuta
@@ -672,6 +676,8 @@ public enum OnDevicePromptBuilder {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")
+        // Lo que NO se hizo ("No la dejé…", "¿Quieres que…?") no abre con "Listo".
+        if body.hasPrefix("No ") || body.hasPrefix("¿") { return body }
         let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
         return (trimmed.first?.isLowercase == true ? "Listo, " : "Listo: ") + trimmed
     }

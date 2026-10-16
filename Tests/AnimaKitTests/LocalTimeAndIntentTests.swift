@@ -218,7 +218,7 @@ import Testing
     @Test func aChangeRequestSaysWhereItIsDone() async throws {
         let shown = LocalToolAdapter.present(ToolResult(content: "- [G1] correr 10 km (stated, x)"), local: "list_goals",
                                              input: .object([:]), ownerText: "elimina mi meta de correr")
-        #expect(shown.content == "Eso no lo puedo cambiar desde aquí: hazlo en la tab Metas. Lo que hay:\n- correr 10 km")
+        #expect(shown.content == "No cambié nada. Para dejar o cambiar una meta, dímelo así: «deja mi meta de …». Lo que hay:\n- correr 10 km")
         let ctx = AssembledContext(messages: [
             .user("elimina mi meta de correr"),
             .assistant([.toolUse(id: "t1", name: "list_goals", input: .object([:]))]),

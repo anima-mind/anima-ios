@@ -46,6 +46,56 @@ import Testing
     }
 }
 
+@Suite struct GoalDropReadingTests {
+    @Test(arguments: [
+        ("dejo el gym", "gym"), ("me rindo con el ahorro", "ahorro"), ("ya fue lo del ahorro", "ahorro"),
+        ("estoy pensando en dejar de ahorrar", "ahorrar"), ("ya no voy al gym", "gym"), ("borra mi meta", "mi meta"),
+        ("¿y si dejo mi meta de correr?", "mi meta de correr"),
+    ])
+    func partialSignalsOnlyAsk(text: String, reference: String) {
+        #expect(GoalDrop.read(text) == .unclear(reference))
+        #expect(!GoalDrop.isClearDrop(text))
+    }
+
+    @Test(arguments: goalDropNegatives.filter { !["dejo el gym", "me rindo con el ahorro", "ya fue lo del ahorro",
+                                                   "estoy pensando en dejar de ahorrar", "ya no voy al gym"].contains($0) })
+    func exclusionsReadAsNothing(text: String) {
+        #expect(GoalDrop.read(text) == .none)
+    }
+
+    @Test func askDropAsksAboutTheNamedGoalAndNeverActs() async throws {
+        let w = try GoalLifecycleModelTests.World()
+        let tool = GoalsTool(otherModel: w.other)
+        let none = await tool.execute(.object(["action": .string("ask_drop"), "goal": .string("gym")]))
+        #expect(none.content == "No dejé ninguna meta." && !none.isError)
+        let id = await w.other.ingestStated(statement: "Ir al gym 3 veces por semana", desiredState: .progressCheckIn(everyDays: 7),
+                                            evidence: "e")
+        let one = await tool.execute(.object(["action": .string("ask_drop"), "goal": .string("gym")]))
+        #expect(one.content == "No la dejé todavía: no me quedó claro. ¿Quieres que deje tu meta «Ir al gym 3 veces por semana»? "
+                + "Si es así, dime «deja mi meta de gym».")
+        let bare = await tool.execute(.object(["action": .string("ask_drop"), "goal": .string("mi meta")]))
+        #expect(bare.content.contains("«Ir al gym 3 veces por semana»"))
+        _ = await w.other.ingestStated(statement: "Correr al gym los lunes", desiredState: .progressCheckIn(everyDays: 7), evidence: "e")
+        let many = await tool.execute(.object(["action": .string("ask_drop"), "goal": .string("gym")]))
+        #expect(many.content.hasPrefix("No dejé ninguna meta. ¿Cuál quieres dejar:"))
+        #expect(await w.other.goal(id: id)?.status == .active)
+        #expect(tool.kind(for: .object(["action": .string("ask_drop")])) == .afferent)
+        #expect(!ActionClaimGuard.isWrite(tool: "goals", input: .object(["action": .string("ask_drop")])))
+    }
+
+    @Test func shortInfinitivesAndHintsOnlyAboutGoals() {
+        #expect(GoalDrop.parse("ya no quiero ir al gym") == GoalDrop.Parsed(old: "ir al gym", new: nil))
+        #expect(LocalWhen.changeHint("ya no tengo hambre") == nil)
+        #expect(GoalDrop.read("ya no quiero cambiar mi meta") == .none)
+        #expect(LocalWhen.changeHint("ya no quiero cambiar mi meta")?.contains("deja mi meta de") == true)
+    }
+
+    @Test func whatWasNotDoneIsNotConfirmedAsDone() {
+        #expect(OnDevicePromptBuilder.confirmation(results: ["No dejé ninguna meta."]) == "No dejé ninguna meta.")
+        #expect(OnDevicePromptBuilder.confirmation(results: ["¿Quieres que deje tu meta «X»?"]) == "¿Quieres que deje tu meta «X»?")
+    }
+}
+
 @Suite struct LocalDropGoalTests {
     static let now = Date(timeIntervalSince1970: 1_791_228_600)
 
@@ -69,14 +119,15 @@ import Testing
     @Test func dropWithoutReplacementAndWithoutOwnerText() {
         #expect(Self.resolve("drop_goal", [:], owner: "olvida mi meta de correr")
                 == .real(name: "goals", input: .object(["action": .string("abandon"), "goal": .string("correr")])))
-        #expect(Self.resolve("drop_goal", ["goal": .string("correr")], owner: "")
-                == .real(name: "goals", input: .object(["action": .string("abandon"), "goal": .string("correr")])))
-        // El 3B copia el ejemplo ("correr") cuando el dueño no nombró nada: no se inventa la meta.
-        guard case .invalid(let tool, let message) = Self.resolve("drop_goal", ["goal": .string("correr")], owner: "hola")
-        else { Issue.record("esperaba invalid"); return }
-        #expect(tool == "goals" && message.contains("`goal`"))
-        #expect(Self.resolve("drop_goal", ["goal": .string("none")], owner: "")
-                != .real(name: "goals", input: .object(["action": .string("abandon"), "goal": .string("none")])))
+        // Review #45: sin texto del dueño que lo respalde, la propuesta del 3B no se ejecuta.
+        let ask = JSONValue.object(["action": .string("ask_drop"), "goal": .string("")])
+        #expect(Self.resolve("drop_goal", ["goal": .string("correr")], owner: "") == .real(name: "goals", input: ask))
+        #expect(Self.resolve("drop_goal", ["goal": .string("correr")], owner: "hola") == .real(name: "goals", input: ask))
+        #expect(Self.resolve("drop_goal", ["goal": .string("ahorrar")], owner: "olvida lo que dije de ahorrar, era broma")
+                == .real(name: "goals", input: ask))
+        // Con duda: se pregunta por la meta que nombró.
+        #expect(Self.resolve("drop_goal", ["goal": .string("ahorrar")], owner: "estoy pensando en dejar de ahorrar")
+                == .real(name: "goals", input: .object(["action": .string("ask_drop"), "goal": .string("ahorrar")])))
     }
 
     @Test func aDeclareWhileDroppingIsAReplacementWithTheOwnersCadence() {
@@ -121,7 +172,13 @@ import Testing
         let reminder = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("ya no quiero que me recuerdes lo del banco")]),
                                                      tools: tools, opts: try OnDeviceTestConfig.opts())
         #expect(reminder.requiredQueryTool == nil)
-        #expect(LocalWhen.changeHint(owner) == "No la dejé todavía: dímelo de nuevo o elimínala en la tab Metas.")
+        #expect(LocalWhen.changeHint(owner) == "No la dejé todavía: dímelo de nuevo y lo hago.")
+    }
+
+    @Test func idShapesAreNotStatements() {
+        #expect(Consolidator.looksLikeAnId("goal_123") && Consolidator.looksLikeAnId("[A1B2C3D4-0000-1111-2222-333344445555]"))
+        #expect(!Consolidator.looksLikeAnId("Abonar 5M a la deuda") && !Consolidator.looksLikeAnId("nadar"))
+        #expect(!Consolidator.looksLikeAnId("5M"))
     }
 }
 

@@ -453,9 +453,10 @@ public actor Consolidator {
             events.append((messages[index].at, 1, .declared(goal)))
         }
         for left in extraction.abandoned ?? [] {
-            // Dejar exige ubicar el mensaje y que el mensaje lo diga (fail-closed).
+            // Dejar exige ubicar el mensaje y que el mensaje lo diga SIN duda, en
+            // primera persona (la misma regla del modelo local: GoalDrop.read).
             guard let index = Self.messageIndex(left.message, evidence: left.evidence, in: messages),
-                  GoalDrop.hasCue(messages[index].text) else { continue }
+                  GoalDrop.isClearDrop(messages[index].text) else { continue }
             events.append((messages[index].at, 0, .left(left)))
         }
         events.sort { ($0.at, $0.order) < ($1.at, $1.order) }
@@ -468,15 +469,24 @@ public actor Consolidator {
                                          evidence: goal.evidence ?? "", priority: goal.priority ?? 5, statedAt: at)
             case .left(let left):
                 guard let target = await Self.leftTarget(left, otherModel: otherModel),
-                      at > (target.declaredAt ?? target.createdAt) else { continue }
+                      at > (target.declaredAt ?? target.createdAt),
+                      // Y la meta que el mensaje deja es ESTA (no otra que el modelo eligió).
+                      let said = GoalDrop.parse(messages.first { $0.at == at }?.text ?? ""),
+                      GoalDedupe.overlap(said.old, target.statement) > 0 || said.old.lowercased().contains("meta")
+                else { continue }
                 let evidence = left.evidence ?? ""
-                if let replacement = left.replaced_by?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   let successor = await otherModel.goal(id: replacement) {
+                let replacement = left.replaced_by?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if let successor = await otherModel.goal(id: replacement) {
                     // Medido con Haiku: replaced_by trae el id de la nueva cuando ya existe.
-                    guard successor.isOpen, successor.id != target.id else { continue }
-                    await otherModel.abandon(id: target.id, reason: OtherModel.replacedReason, supersededBy: successor.id)
-                } else if let replacement = left.replaced_by?.trimmingCharacters(in: .whitespacesAndNewlines),
-                          !replacement.isEmpty {
+                    guard successor.id != target.id else { continue }
+                    // Una lograda (o ya cerrada) no reemplaza; la vieja igual queda dejada ("ya no" gana).
+                    if successor.isOpen {
+                        await otherModel.abandon(id: target.id, reason: OtherModel.replacedReason,
+                                                 supersededBy: successor.id)
+                    } else {
+                        await otherModel.abandon(id: target.id, reason: OtherModel.leftReason)
+                    }
+                } else if !replacement.isEmpty, !Self.looksLikeAnId(replacement) {
                     let declared = (extraction.goals ?? []).first { GoalDedupe.equivalent($0.statement, replacement) }
                     let predicate = declared?.predicate?.toPredicate() ?? .progressCheckIn(everyDays: 7)
                     _ = await otherModel.replace(id: target.id, with: replacement, desiredState: predicate,
@@ -486,6 +496,17 @@ public actor Consolidator {
                 }
             }
         }
+    }
+
+    /// "70C261B2-BD5B-…", "goal_123": un id (inventado si no existe) nunca es el
+    /// enunciado de una meta nueva.
+    static func looksLikeAnId(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "[]")))
+        if trimmed.range(of: #"^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$"#, options: .regularExpression) != nil {
+            return true
+        }
+        return !trimmed.contains(" ") && trimmed.contains(where: \.isNumber)
+            && trimmed.range(of: #"^[A-Za-z0-9_\-:]{6,}$"#, options: .regularExpression) != nil
     }
 
     /// La meta abierta que el modelo dice que el dueño dejó: por id, o por

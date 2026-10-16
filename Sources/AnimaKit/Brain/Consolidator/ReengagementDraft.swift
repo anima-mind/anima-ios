@@ -77,11 +77,18 @@ public enum ReengagementDraft {
     /// ahorro?" tras "ya no quiero ahorrar"), salvo que hablen más de una vigente.
     public static func withoutLeftGoals(_ questions: [String], left: [String], active: [String]) -> [String] {
         guard !left.isEmpty else { return questions }
+        func overlap(_ a: String, _ b: String) -> Int { stems(a).intersection(stems(b)).count }
         return questions.filter { question in
-            let leftOverlap = left.map { GoalDedupe.overlap(question, $0) }.max() ?? 0
-            let activeOverlap = active.map { GoalDedupe.overlap(question, $0) }.max() ?? 0
+            let leftOverlap = left.map { overlap(question, $0) }.max() ?? 0
+            let activeOverlap = active.map { overlap(question, $0) }.max() ?? 0
             return leftOverlap == 0 || activeOverlap > leftOverlap
         }
+    }
+
+    /// Raíces simples ("ahorrando", "ahorro", "Ahorrar" ⇒ "ahorr"): las palabras
+    /// de contenido cortadas a 5 letras.
+    static func stems(_ text: String) -> Set<String> {
+        Set(GoalDedupe.contentTerms(text).map { $0.count > 5 ? String($0.prefix(5)) : $0 })
     }
 
     // MARK: - Parseo tolerante

@@ -341,9 +341,9 @@ public enum LocalToolAdapter {
         case "drop_goal":
             return dropGoal(modelOld: args.text("goal"), modelNew: nil, ownerText: ownerText, when: when, tool: tool)
 
-        case "declare_goal" where GoalDrop.parse(ownerText) != nil:
+        case "declare_goal" where GoalDrop.read(ownerText) != .none:
             // "ya no quiero ahorrar, mejor quiero abonar a la deuda": no es una meta
-            // más (campo: quedaban las dos), es un reemplazo.
+            // más (campo: quedaban las dos), es un reemplazo; con duda, se pregunta.
             return dropGoal(modelOld: nil, modelNew: args.text("statement"), ownerText: ownerText,
                             when: when, tool: tool)
 
@@ -496,23 +496,29 @@ public enum LocalToolAdapter {
         }
     }
 
-    /// goals.replace / goals.abandon desde lo que dijo el dueño: su texto gana
-    /// ("ya no quiero X, mejor Y"); lo del modelo solo si nombra algo que dijo
-    /// (medido en otras tools: el 3B copia el ejemplo).
+    /// goals.replace / goals.abandon SOLO si el texto del dueño deja la meta sin
+    /// duda (GoalDrop.read == .drop): su texto gana ("ya no quiero X, mejor Y").
+    /// Con duda o sin señal, la propuesta del 3B no se ejecuta: `goals.ask_drop`
+    /// pregunta (o dice que no dejó nada). Review #45: ante la duda no se actúa.
     static func dropGoal(modelOld: String?, modelNew: String?, ownerText: String, when: LocalWhen,
                          tool: LocalTool) -> Resolution {
-        let parsed = GoalDrop.parse(ownerText)
         let owner = Set(OnDevicePromptBuilder.salientStems(ownerText))
         func said(_ text: String?) -> String? {
             guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
                   !["none", "ninguna", "ninguno", "null", "nil", "no"].contains(LocalWhen.fold(text)) else { return nil }
-            guard !ownerText.isEmpty else { return text }
             return OnDevicePromptBuilder.salientStems(text).contains { owner.contains($0) } ? text : nil
         }
-        guard let old = parsed?.old ?? said(modelOld) else {
-            return .invalid(tool: tool.realTool, message: missing("goal", "la meta que el dueño deja"))
+        func ask(_ reference: String) -> Resolution {
+            .real(name: "goals", input: .object(["action": .string("ask_drop"), "goal": .string(reference)]))
         }
-        var newGoal = parsed?.new ?? (parsed == nil ? said(modelNew) : nil)
+        let parsed: GoalDrop.Parsed
+        switch GoalDrop.read(ownerText) {
+        case .drop(let reading): parsed = reading
+        case .unclear(let reference): return ask(reference)
+        case .none: return ask("")
+        }
+        let old = parsed.old
+        var newGoal = parsed.new ?? said(modelNew)
         if let candidate = newGoal, GoalDedupe.overlap(candidate, old) > 0, GoalDedupe.related(candidate, old),
            GoalDedupe.key(candidate).numbers == GoalDedupe.key(old).numbers { newGoal = nil }
         guard let newGoal else {
@@ -599,6 +605,9 @@ public enum LocalToolAdapter {
     /// hace (medido: "La meta de correr 10 km ya no está en el registro").
     static func changeNote(_ ownerText: String, tab: String) -> String {
         guard LocalWhen.asksToChange(ownerText) else { return "" }
+        if tab == "Metas" {
+            return "No cambié nada. Para dejar o cambiar una meta, dímelo así: «deja mi meta de …». Lo que hay:\n"
+        }
         return "Eso no lo puedo cambiar desde aquí: hazlo en la tab \(tab). Lo que hay:\n"
     }
 
@@ -743,7 +752,8 @@ public enum LocalToolAdapter {
     public static func intended(name: String, ownerText: String) -> String {
         guard readOnlyTools.contains(name) else { return name }
         // "ya no quiero ahorrar…", "olvida la meta de correr": dejar una meta tiene tool.
-        if GoalDrop.parse(ownerText) != nil { return "drop_goal" }
+        // Con duda también: drop_goal solo pregunta (goals.ask_drop), no actúa.
+        if GoalDrop.read(ownerText) != .none { return "drop_goal" }
         let raw = ownerText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let owner = LocalWhen.fold(raw)
         // Una consulta nunca se redirige, lleve o no "?" ("quiero ver mis metas",
@@ -1300,12 +1310,16 @@ struct LocalWhen {
         if owner.contains("recordatorio") || owner.contains("recuerd") || owner.contains("recordarme") {
             return "Eso lo borras en la tab Recordatorios."
         }
-        if GoalDrop.parse(ownerText) != nil { return "No la dejé todavía: dímelo de nuevo o elimínala en la tab Metas." }
+        if GoalDrop.parse(ownerText) != nil { return "No la dejé todavía: dímelo de nuevo y lo hago." }
         if ["evento", "cita", "agenda", "calendario"].contains(where: owner.contains) {
             return "Eso lo borras en tu app Calendario."
         }
-        return owner.contains("cumpl") || owner.contains("logr") || owner.contains("termin")
-            ? "Márcala como lograda en la tab Metas." : "Para cambiarla o borrarla, hazlo en la tab Metas."
+        if owner.contains("cumpl") || owner.contains("logr") || owner.contains("termin") {
+            return "Márcala como lograda en la tab Metas."
+        }
+        // Solo si habla de una meta ("ya no tengo hambre" no lleva nota).
+        guard GoalDrop.read(ownerText) != .none || owner.contains("meta") || owner.contains("objetivo") else { return nil }
+        return "Para dejarla o cambiarla, dímelo así: «deja mi meta de …» o «cambia mi meta de … por …»."
     }
 
     /// "qué tengo / qué hay / tengo algo" + (fin | hoy | un rango), plegado.

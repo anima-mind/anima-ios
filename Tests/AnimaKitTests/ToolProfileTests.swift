@@ -10,7 +10,10 @@ import Testing
     static let measuredFullRegistryTokens = 3797
     /// 900 → 960 con `drop_goal` (dejar/cambiar una meta, campo): medido con el
     /// tokenizer real, set local 949 (antes 872); system + tools 1326 ≤ 1500 y
-    /// quedan 2770 ≥ 2000 libres para la conversación.
+    /// quedan 2770 ≥ 2000 libres para la conversación. Margen: 11 tokens (review
+    /// #45). Recortar descripciones ganaba ~4 (quitar "calendario"/"programados")
+    /// a costa de precisión del 3B: no se recortó; la próxima tool local exige
+    /// re-medir y decidir el techo, no subirlo a ciegas.
     static let onDeviceToolCeiling = 960
     static let onDeviceSystemCeiling = 1500
     static let onDeviceRoomFloor = 2000

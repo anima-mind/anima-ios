@@ -75,14 +75,17 @@ public enum AnimaDeepLink: Sendable, Equatable {
     public static func parse(_ url: URL) -> AnimaDeepLink? {
         guard url.scheme?.lowercased() == scheme,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        let id = components.queryItems?.first { $0.name == "id" }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        // Un id que no tiene forma de id real (vacío, largo, texto) no abre nada
+        // con él: los ids de los stores son UUID (mismo filtro que la cita).
+        let id = components.queryItems?.first { $0.name == "id" }?.value.flatMap { ChatQuoteRef.isValidId($0) ? $0 : nil }
         switch components.host?.lowercased() {
         case "glasses":
             return .glasses
         case "chat":
-            if let token = components.queryItems?.first(where: { $0.name == "quote" })?.value,
-               let ref = ChatQuoteRef(token: token) {
-                return .chatQuote(ref)
+            if let token = components.queryItems?.first(where: { $0.name == "quote" })?.value {
+                // Una cita ilegible abre el chat a secas: sin cita y sin mic (un
+                // link manipulado no arranca la escucha).
+                return ChatQuoteRef(token: token).map(AnimaDeepLink.chatQuote) ?? .chat(turn: nil)
             }
             if components.queryItems?.contains(where: { $0.name == "mic" && $0.value == "1" }) == true {
                 return .talk

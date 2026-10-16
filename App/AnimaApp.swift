@@ -281,16 +281,18 @@ final class AppModel: ObservableObject {
             let nudgePreference = ReengagementPreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             let nudgeQuestions = ReengagementQuestionStore(queue: queue)
             self.nudgeQuestions = nudgeQuestions
+            // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño (y los
+            // avisos por inactividad lo esquivan como a cualquier otro de Anima).
+            let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             let reengagement = ReengagementEngine(preference: nudgePreference, questions: nudgeQuestions,
-                                                  pulsesToday: ReengagementEngine.pulseCounter(queue: queue))
+                                                  pulsesToday: ReengagementEngine.pulseCounter(queue: queue),
+                                                  wake: wakePreference)
             self.proactiveScheduler = ProactiveScheduler(scheduler: notifications, reminders: reminderStore,
                                                          otherModel: otherModel,
                                                          selfName: { await selfModel.name() },
                                                          preference: preference, reengagement: reengagement)
             self.reconciler = ProactiveReconciler(reminders: reminderStore, otherModel: otherModel, store: store,
                                                   reengagement: reengagement)
-            // Batch 8 #7: el aviso de despertar al completar un ciclo de sueño.
-            let wakePreference = WakePreference(defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
             let wake = WakeNotifier(scheduler: notifications, general: preference, preference: wakePreference,
                                     selfName: { await selfModel.name() },
                                     isForeground: { await MainActor.run { Self.isForeground } })
@@ -514,6 +516,10 @@ final class AppModel: ObservableObject {
         // reprograma el aviso por inactividad desde ahora.
         let proactive = proactiveScheduler
         await loop.setOnOwnerTurn { _ in await proactive?.ownerUsedAnima() }
+        // Lo que ella dice sin turno (recordatorios, check-ins, avisos, propuestas)
+        // entra al transcript en cola con los turnos: nunca a mitad de uno.
+        let gate: TranscriptGate = { [loop] sid, write in await loop.appendAfterTurns(sessionId: sid, write) }
+        await reconciler?.setTranscriptGate(gate)
 
         // El Consolidator (§5.4) para el sueño: el selector decide dónde corre
         // (Híbrido / Solo teléfono → modelo local, gratis y sin red). Fase 4: la
@@ -579,6 +585,7 @@ final class AppModel: ObservableObject {
                                                                                mentions: MentionIndex(queue: store.database)),
                                       queue: store.database, selector: selector,
                                       store: store, telemetry: telemetry)
+            await engine.setTranscriptGate(gate)
             self.desireEngine = engine
             desireEngine = engine
             if UITestMode.seedsIntention { await UITestMode.seedIntention(engine, otherModel, sessionId: sessionId) }

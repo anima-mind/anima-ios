@@ -84,6 +84,10 @@ public struct ProactiveTag: Codable, Sendable, Equatable {
     }
 }
 
+/// Escribe en el transcript EN COLA con los turnos de la sesión (en la app:
+/// `AgentLoop.appendAfterTurns`). Sin ella se escribe directo (tests, previews).
+public typealias TranscriptGate = @Sendable (SessionID, @escaping @Sendable () -> Void) async -> Void
+
 public actor ProactiveReconciler {
     private let reminders: AnimaReminderStore
     private let otherModel: OtherModel?
@@ -103,6 +107,13 @@ public actor ProactiveReconciler {
         self.reengagement = reengagement
     }
 
+    /// Lo que ella dice sin turno no se intercala con un turno en vuelo.
+    private var transcriptGate: TranscriptGate?
+
+    public func setTranscriptGate(_ gate: TranscriptGate?) {
+        transcriptGate = gate
+    }
+
     /// Vencidos → entregados → mensajes en su voz en la sesión dada.
     @discardableResult
     public func reconcileDueReminders(sessionId: SessionID?) async -> [ProactiveMessage] {
@@ -113,7 +124,7 @@ public actor ProactiveReconciler {
             if let goalId = due.goalId { goal = await otherModel?.goal(id: goalId) }
             let message = ProactiveMessage(kind: .reminder(id: due.id), text: due.spokenMessage, at: due.fireAt,
                                            goalStatement: goal?.statement)
-            persist(message, sessionId: sessionId)
+            await persist(message, sessionId: sessionId)
             out.append(message)
         }
         return out
@@ -134,7 +145,7 @@ public actor ProactiveReconciler {
         await otherModel.markCheckInAsked(goalId: goalId)
         let message = ProactiveMessage(kind: .checkIn(goalId: goalId), text: text, at: now(),
                                        goalStatement: goal.statement)
-        persist(message, sessionId: sessionId)
+        await persist(message, sessionId: sessionId)
         return message
     }
 
@@ -144,7 +155,7 @@ public actor ProactiveReconciler {
     public func nudgePrompt(ref: String, sessionId: SessionID?) async -> ProactiveMessage? {
         guard let reengagement, let opened = await reengagement.open(ref: ref) else { return nil }
         let message = ProactiveMessage(kind: .nudge(id: ref), text: opened.delivery.text, at: opened.delivery.at)
-        if !opened.alreadyShown { persist(message, sessionId: sessionId) }
+        if !opened.alreadyShown { await persist(message, sessionId: sessionId) }
         return message
     }
 
@@ -152,16 +163,22 @@ public actor ProactiveReconciler {
     /// respuesta también quedan en el chat, listos para responder.
     public func reconcileNudges(sessionId: SessionID?) async -> [ProactiveMessage] {
         guard let reengagement else { return [] }
-        return await reengagement.unseenRecent().map { item in
+        var out: [ProactiveMessage] = []
+        for item in await reengagement.unseenRecent() {
             let message = ProactiveMessage(kind: .nudge(id: item.ref), text: item.text, at: item.at)
-            persist(message, sessionId: sessionId)
-            return message
+            await persist(message, sessionId: sessionId)
+            out.append(message)
         }
+        return out
     }
 
     /// Turno assistant con su marca proactiva (el modelo ve el texto; el chat, la card).
-    func persist(_ message: ProactiveMessage, sessionId: SessionID?) {
+    /// En cola con los turnos de la sesión (jamás entre un tool_use y su tool_result).
+    func persist(_ message: ProactiveMessage, sessionId: SessionID?) async {
         guard let store, let sessionId else { return }
-        try? store.append(sessionId: sessionId, message: .assistant([.text(message.text)]), proactive: message.tag)
+        let write: @Sendable () -> Void = {
+            try? store.append(sessionId: sessionId, message: .assistant([.text(message.text)]), proactive: message.tag)
+        }
+        if let transcriptGate { await transcriptGate(sessionId, write) } else { write() }
     }
 }

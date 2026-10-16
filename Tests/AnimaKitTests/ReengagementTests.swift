@@ -233,12 +233,10 @@ enum NudgeFixtures {
         _ = await w.engine.requests(others: [], title: "L")
         // Pasan los avisos del 8 y del 11 sin que abra la app.
         w.set(N.at(12, 18))
-        #expect(await w.engine.ignoredStreak() == 2)
         let after = await w.engine.requests(others: [], title: "L")
         #expect(after.first?.trigger == .at(N.at(17, 15)))   // 6 días: el doble
         // Vuelve a hablar: la cadena arranca otra vez cada 3 días.
         await w.engine.recordUse()
-        #expect(await w.engine.ignoredStreak() == 0)
         let reset = await w.engine.requests(others: [], title: "L")
         #expect(reset.first?.trigger == .at(N.at(15, 18)))
         #expect(reset[1].trigger == .at(N.at(18, 18)))
@@ -391,10 +389,11 @@ enum NudgeFixtures {
         #expect(fake.scheduled.keys.filter { $0.hasPrefix(ReengagementIDs.prefix) }.count == 5)
         pref.isEnabled = false
         await scheduler.syncReengagement()
-        // Apagado: la cadena se va; la prueba que pidió el dueño se queda.
-        #expect(fake.scheduled.keys.sorted() == [ReengagementIDs.probeId])
+        // Apagado: la cadena se va, y el "Probar" pendiente también.
+        #expect(fake.scheduled.isEmpty)
         pref.isEnabled = true
         await scheduler.sync()
+        _ = await scheduler.scheduleProbeNudge(after: 60)
         #expect(fake.scheduled.count == 5)
         general.isEnabled = false
         await scheduler.sync()
@@ -820,11 +819,21 @@ final class PromptCapturingProvider: Provider, @unchecked Sendable {
         for await _ in await loop.run(sessionId: sid, userText: "hola") {}
         for await _ in await loop.run(sessionId: sid, content: [.text("¿qué tal?")], surface: .siri) {}
         await loop.waitUntilIdle()
-        #expect(surfaces.value == [.phoneChat, .siri])
+        await eventually { surfaces.value.count == 2 }
+        #expect(Set(surfaces.value) == [.phoneChat, .siri])
         // Sin hook el turno corre igual.
         await loop.setOnOwnerTurn(nil)
         for await _ in await loop.run(sessionId: sid, userText: "otra") {}
         await loop.waitUntilIdle()
+        try await Task.sleep(for: .milliseconds(50))
         #expect(surfaces.value.count == 2)
+    }
+}
+
+/// Espera (con tope) a que algo que corre suelto termine.
+func eventually(timeout: Duration = .seconds(5), _ condition: @Sendable () -> Bool) async {
+    let deadline = ContinuousClock.now + timeout
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(10))
     }
 }

@@ -50,7 +50,8 @@ public enum ReengagementDraft {
         - Entre 3 y 5 preguntas. Cada una es UNA frase corta (máximo 80 caracteres), en segunda persona, cálida y abierta.
         - Ánclalas en lo que sabes de él: algo que te contó, una meta y su avance, cómo ha estado de ánimo.
         - Nada de presión ni culpa ("¿por qué no me escribes?"), nada de vender ni de hablar de ti.
-        - Van en una notificación que otros pueden ver: NADA de salud, diagnósticos, medicamentos, dinero, montos, deudas, cifras ni citas textuales. Si el tema es delicado, pregunta en general ("¿Cómo has estado estos días?").
+        - Van en una notificación que otros pueden ver: NADA de salud, diagnósticos, medicamentos, dinero, montos, deudas, asuntos legales, adicciones, pareja, cifras ni citas textuales. Si el tema es delicado, pregunta en general ("¿Cómo has estado estos días?").
+        - No preguntes por la salud, el dinero ni la vida privada de otras personas.
         - Sin números, sin comillas, sin emojis.
         - Escribe en \(material.language).
 

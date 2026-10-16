@@ -89,6 +89,8 @@ public actor ProactiveScheduler {
                 Self.isManaged($0) || $0.hasPrefix(WakeNotice.prefix) || $0.hasPrefix(ReengagementIDs.prefix)
             }
             if !managed.isEmpty { await scheduler.cancel(ids: managed) }
+            await reengagement?.clearPlan()
+            await reengagement?.cancelProbe()
             return []
         }
         let base = await desiredRequests()
@@ -98,6 +100,7 @@ public actor ProactiveScheduler {
             _ = await scheduler.requestAuthorization()
         }
         let desired = base + (await nudgeRequests(others: base))
+        await cancelProbeIfOff()
         let desiredIds = Set(desired.map(\.id))
         let stale = await scheduler.pendingIds().filter { id in
             Self.isManaged(id) && !desiredIds.contains(id)
@@ -112,13 +115,24 @@ public actor ProactiveScheduler {
     /// La cadena (vacía sin permiso concedido o con el aviso apagado).
     private func nudgeRequests(others: [LocalNotificationRequest]) async -> [LocalNotificationRequest] {
         guard let reengagement else { return [] }
+        // Sin permiso nada se entrega: el plan se vacía (jamás cards de avisos que no sonaron).
         guard await scheduler.authorizationStatus() == .granted else {
-            _ = await reengagement.reconcileDelivered()
+            await reengagement.clearPlan()
             return []
         }
-        // Lo que el dueño pidió (recordatorios, check-ins) gana los cupos de iOS.
+        // Lo que el dueño pidió (recordatorios, check-ins) gana los cupos de iOS,
+        // y el plan guarda solo lo que cupo.
         let room = max(0, maxPending - others.count)
-        return Array(await reengagement.requests(others: others, title: await selfName()).prefix(room))
+        return await reengagement.requests(others: others, title: await selfName(), limit: room)
+    }
+
+    /// Toggle de los avisos apagado: el "Probar" pendiente también se cancela.
+    private func cancelProbeIfOff() async {
+        guard let reengagement, !(await reengagement.isEnabled) else { return }
+        await reengagement.cancelProbe()
+        if await scheduler.pendingIds().contains(ReengagementIDs.probeId) {
+            await scheduler.cancel(ids: [ReengagementIDs.probeId])
+        }
     }
 
     /// El dueño usó Anima (un turno de cualquier superficie, también en
@@ -135,6 +149,7 @@ public actor ProactiveScheduler {
     public func syncReengagement() async -> [String] {
         guard reengagement != nil, isEnabled else { return [] }
         let nudges = await nudgeRequests(others: await desiredRequests())
+        await cancelProbeIfOff()
         let ids = Set(nudges.map(\.id))
         let stale = await scheduler.pendingIds().filter { ReengagementIDs.isChain($0) && !ids.contains($0) }
         if !stale.isEmpty { await scheduler.cancel(ids: stale) }
@@ -153,6 +168,8 @@ public actor ProactiveScheduler {
         guard await scheduler.authorizationStatus() == .granted else { return nil }
         let request = await reengagement.probeRequest(after: seconds, title: await selfName())
         await scheduler.schedule(request)
+        // La cadena suelta la pregunta que ahora lleva el probe.
+        await syncReengagement()
         return request
     }
 

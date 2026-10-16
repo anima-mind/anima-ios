@@ -1165,8 +1165,10 @@ final class AppModel: ObservableObject {
                 if let prompt = await reconciler?.checkInPrompt(goalId: id, sessionId: activeSessionId) {
                     chatModel?.appendProactive([prompt])
                 }
+                // Review #43: el push del seguimiento abre su card de respuesta
+                // rápida, SIN cita ni teclado encima (como antes). Citarlo es de
+                // "Hablar en el chat" (tab Recordatorios) o del swipe sobre la card.
                 chatModel?.focus(.checkIn(goalId: id))
-                await chatModel?.reply(to: ChatQuoteRef(kind: .checkIn, id: id))
             }
         case .intention(let id):
             guard deferUntilReady(link) else { return }

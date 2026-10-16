@@ -79,7 +79,7 @@ final class ReplyQuoteUITests: AnimaUITestCase {
         // Deslizar a la derecha sobre el mensaje de Anima → su cita en el composer.
         reply.swipeRight()
         let quote = composerQuote(app)
-        waitUntil(quote, "label BEGINSWITH 'Respondiendo a mensaje de Anima'")
+        waitUntil(quote, "label BEGINSWITH 'Respondiendo al mensaje de Anima'")
         XCTAssertTrue(quote.label.contains("Te escucho"), quote.label)
         screenshot(app, "cita-swipe")
         tap(app.buttons["nav.close.quote"])
@@ -91,11 +91,45 @@ final class ReplyQuoteUITests: AnimaUITestCase {
         waitFor(mine)
         mine.press(forDuration: 1.2)
         tap(app.buttons["Responder"])
-        waitUntil(composerQuote(app), "label == 'Respondiendo a mensaje de Tú: hola'")
+        waitUntil(composerQuote(app), "label == 'Respondiendo a tu mensaje: hola'")
         tap(app.buttons["nav.close.quote"])
         waitUntil(element(app, "chat.quote.composer"), "exists == false")
         // Un scroll vertical normal no cita nada.
         element(app, "chat.messages").swipeDown()
         XCTAssertFalse(element(app, "chat.quote.composer").exists)
+    }
+}
+
+/// Review #43 (MEDIO 3): el push de un seguimiento (anima://goal?id=) abre su
+/// card de respuesta rápida SIN cita ni teclado; citarlo es explícito
+/// (anima://chat?quote=checkin:<id>, "Hablar en el chat").
+final class CheckInPushUITests: AnimaUITestCase {
+    @MainActor
+    func testCheckInPushOpensTheCardWithoutQuoteNorKeyboard() throws {
+        let app = makeApp(reset: true)
+        app.launchArguments.append(GoalsUITests.seedFlag)
+        app.launch()
+        onboard(app)
+        openTab(app, "Metas")
+        let talk = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'goal.talk.'")).firstMatch
+        waitFor(talk)
+        let goalId = String(talk.identifier.dropFirst("goal.talk.".count))
+        XCTAssertFalse(goalId.isEmpty)
+
+        app.open(try XCTUnwrap(URL(string: "anima://goal?id=\(goalId)")))
+        waitTabSelected(app, "Chat")
+        waitFor(element(app, "chat.proactive.checkin"), timeout: 20)
+        let input = app.textFields["chat.input"]
+        waitFor(input)
+        // Un respiro mayor que el reintento del foco (12 × 150 ms): nada debe aparecer.
+        XCTAssertFalse(element(app, "chat.quote.composer").waitForExistence(timeout: scaled(3)))
+        XCTAssertEqual(input.value(forKey: "hasKeyboardFocus") as? Bool, false)
+        XCTAssertEqual(app.keyboards.count, 0)
+        screenshot(app, "push-seguimiento-sin-cita")
+
+        // Control: citar el seguimiento a propósito sí abre con la cita y el foco.
+        app.open(try XCTUnwrap(URL(string: "anima://chat?quote=checkin:\(goalId)")))
+        waitUntil(element(app, "chat.quote.text"), "label BEGINSWITH 'Respondiendo a seguimiento Ahorrar 10 millones'")
+        waitUntil(input, "hasKeyboardFocus == true")
     }
 }

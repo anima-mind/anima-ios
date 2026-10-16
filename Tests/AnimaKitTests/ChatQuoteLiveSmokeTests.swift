@@ -40,22 +40,24 @@ import Testing
                     symbolic: SymbolicStore(queue: queue), queue: queue)
     }
 
-    static func run(_ c: Case, loop: AgentLoop, compact: Bool) async throws -> (calls: [String], text: String) {
+    static func run(_ c: Case, loop: AgentLoop, compact: Bool, prompt: String? = nil) async throws
+        -> (calls: [String], text: String) {
         let sid = try c.symbolic.startSession()
         let quote = ChatQuoteResolver.quote(c.quoted)
         var calls: [String] = []
         var text = ""
-        for await event in await loop.run(sessionId: sid, content: [.text(c.prompt)], surface: .phoneChat,
+        for await event in await loop.run(sessionId: sid, content: [.text(prompt ?? c.prompt)], surface: .phoneChat,
                                           quote: quote) {
             switch event {
             case .assistantMessage(let blocks):
                 for case .toolUse(_, let name, let input) in blocks { calls.append("\(name) \(LoopDetector.canonical(input))") }
             case .textDelta(let t): text += t
+            case .retracted: text = ""
             case .error(let m): print("[quote smoke] error:", m.prefix(200))
             default: break
             }
         }
-        print("[quote smoke] \(compact ? "local" : "claude") prompt=\(c.prompt) calls=\(calls) texto=\(text.prefix(200))")
+        print("[quote smoke] \(compact ? "local" : "claude") prompt=\(prompt ?? c.prompt) calls=\(calls) texto=\(text.prefix(200))")
         return (calls, text)
     }
 
@@ -65,6 +67,58 @@ import Testing
         #expect(moved?.fireAt == c.target, "citado: \(String(describing: moved?.fireAt)) ≠ \(c.target)")
         #expect(moved?.status == .scheduled)
         #expect(untouched?.fireAt == c.other.fireAt && untouched?.status == .scheduled, "el otro no se toca")
+    }
+
+    /// Review #43 (MEDIO 2): sin pedido del dueño no se toca nada.
+    static let controls = ["gracias", "¿a qué hora era?"]
+
+    static func assertUntouched(_ c: Case, _ calls: [String], _ prompt: String) async {
+        for r in [c.quoted, c.other] {
+            let now = await c.store.reminder(id: r.id)
+            #expect(now?.fireAt == r.fireAt && now?.status == .scheduled, "\(prompt): \(r.text) cambió")
+        }
+        #expect(!calls.contains { $0.contains("reschedule") || $0.contains("complete") || $0.contains("cancel")
+            || $0.hasPrefix("move_reminder") || $0.hasPrefix("done_reminder") }, "\(prompt): \(calls)")
+    }
+
+    static func claudeLoop(_ c: Case) -> AgentLoop? {
+        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".anima/test-token")
+        guard let token = try? String(contentsOf: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty, let mode = AuthMode.detect(fromToken: token) else { return nil }
+        let api = ProviderAPIConfig(
+            baseURL: URL(string: "https://api.anthropic.com")!, version: "2023-06-01", betas: [],
+            authBetas: [.oauth: ["oauth-2025-04-20", "claude-code-20250219"]],
+            authSystemPrefixes: [.oauth: "You are Claude Code, Anthropic's official CLI for Claude."])
+        let config = ProviderConfig(
+            systemPromptBase: "Eres Anima, una mente personal que vive en el teléfono del dueño. Responde breve, en español. Usa tus herramientas cuando el dueño te pida algo que ellas resuelven.",
+            api: api, routes: [.interactive: ModelRoute(model: "claude-opus-4-8", effort: "medium", maxTokens: 2000)])
+        return AgentLoop(provider: ClaudeProvider(), store: c.symbolic, telemetry: Telemetry(queue: c.queue),
+                         router: ModelRouter(config: config), authMode: mode, token: token,
+                         clientTools: [AnimaRemindersTool(store: c.store)], serverTools: [],
+                         permissionPolicy: .app(ownerAllowlist: { [] }), sleep: { _ in })
+    }
+
+    static func localLoop(_ c: Case) throws -> AgentLoop {
+        AgentLoop(provider: OnDeviceProvider.system(), store: c.symbolic, telemetry: Telemetry(queue: c.queue),
+                  router: try OnDeviceTestConfig.router(), authMode: .apiKey, token: "",
+                  clientTools: [AnimaRemindersTool(store: c.store)], serverTools: [],
+                  permissionPolicy: .app(ownerAllowlist: { [] }), sleep: { _ in })
+    }
+
+    @Test func noRequestNoChange() async throws {
+        guard Self.enabled else { return }
+        for prompt in Self.controls {
+            let c = try await Self.makeCase()
+            if let claude = Self.claudeLoop(c) {
+                let r = try await Self.run(c, loop: claude, compact: false, prompt: prompt)
+                await Self.assertUntouched(c, r.calls, prompt)
+            }
+            if OnDeviceAvailability.current().isAvailable {
+                let d = try await Self.makeCase()
+                let r = try await Self.run(d, loop: try Self.localLoop(d), compact: true, prompt: prompt)
+                await Self.assertUntouched(d, r.calls, prompt)
+            }
+        }
     }
 
     @Test func claudeMovesTheQuotedReminder() async throws {

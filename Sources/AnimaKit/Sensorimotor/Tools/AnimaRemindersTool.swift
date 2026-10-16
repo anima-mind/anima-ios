@@ -32,7 +32,7 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 usa `calendar`; si pide explícitamente sus recordatorios del iPhone o la app \
                 Recordatorios usa `reminders`. Si es ambiguo y parece una cita, pregunta una \
                 vez. Acciones: list, create {text, message, fire_at, repeat?, goal_id?}, complete {id}, \
-                cancel {id}, snooze {id, minutes}, reschedule {id, fire_at} (moverlo a otra fecha). En create, `message` es OBLIGATORIO: lo que \
+                cancel {id}, snooze {id, minutes}, reschedule {id, fire_at} (moverlo a otra fecha), reopen {id} (deshacer un "hecho" de las últimas 24 h). En create, `message` es OBLIGATORIO: lo que \
                 le dirás al dueño cuando llegue la hora, en tu voz y en segunda persona, una \
                 frase cálida y concreta (p.ej. "Oye, en media hora tienes la cita médica"); \
                 jamás un título impersonal como "Avisar de la cita". fire_at en ISO 8601 (con offset; sin offset = hora local), resuelto \
@@ -46,7 +46,7 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 "properties": .object([
                     "action": .object([
                         "type": .string("string"),
-                        "enum": .array(["list", "create", "complete", "cancel", "snooze", "reschedule"].map { .string($0) }),
+                        "enum": .array(["list", "create", "complete", "cancel", "snooze", "reschedule", "reopen"].map { .string($0) }),
                         "description": .string("Operación a realizar."),
                     ]),
                     "text": .object([
@@ -105,6 +105,8 @@ public struct AnimaRemindersTool: SensorimotorTool {
             return "Cancelar el recordatorio \(id)"
         case "snooze":
             return "Posponer \(Self.minutes(input) ?? 0) min el recordatorio \(id)"
+        case "reopen":
+            return "Deshacer el 'hecho' del recordatorio \(id)"
         case "reschedule":
             let when = input["fire_at"]?.stringValue.flatMap { Self.parseDate($0, timeZone: timeZone) }
                 .map { Self.readable($0, timeZone: timeZone) } ?? input["fire_at"]?.stringValue ?? "?"
@@ -139,6 +141,10 @@ public struct AnimaRemindersTool: SensorimotorTool {
                 let r = try await store.snooze(id: try Self.require(input, "id"), minutes: minutes)
                 await onChange()
                 return ToolResult(content: "Listo: te lo recuerdo el \(Self.readable(r.fireAt, timeZone: timeZone)) (id \(r.id)).")
+            case "reopen":
+                let r = try await store.reopen(id: try Self.require(input, "id"))
+                await onChange()
+                return ToolResult(content: "Listo: '\(r.text)' vuelve a estar pendiente (id \(r.id)).")
             case "reschedule":
                 let raw = try Self.require(input, "fire_at")
                 guard let fireAt = Self.parseDate(raw, timeZone: timeZone) else {

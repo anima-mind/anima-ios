@@ -19,14 +19,22 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
     public var detail: String?
     /// Lo citado ya no existe (borrado/cancelado): se cita igual, honesto.
     public var missing: Bool
+    /// Existe pero ya no está activo (un recordatorio ya marcado hecho): se
+    /// puede hablar de él, no moverlo ni volver a marcarlo.
+    public var closed: Bool
 
-    public init(ref: ChatQuoteRef, title: String, excerpt: String, detail: String? = nil, missing: Bool = false) {
+    public init(ref: ChatQuoteRef, title: String, excerpt: String, detail: String? = nil, missing: Bool = false,
+                closed: Bool = false) {
         self.ref = ref
         self.title = Self.oneLine(title, limit: Self.titleLimit)
         self.excerpt = Self.oneLine(excerpt, limit: Self.excerptLimit)
         self.detail = detail
         self.missing = missing
+        self.closed = closed
     }
+
+    /// ¿Se puede actuar sobre lo citado? (existe y sigue activo).
+    public var isActionable: Bool { !missing && !closed }
 
     public var id: String { ref.token }
     public var kind: ChatQuoteKind { ref.kind }
@@ -36,7 +44,7 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
 
     // MARK: Codable (claves explícitas; detail/missing opcionales para crecer sin romper)
 
-    enum CodingKeys: String, CodingKey { case kind, id, title, excerpt, detail, missing }
+    enum CodingKeys: String, CodingKey { case kind, id, title, excerpt, detail, missing, closed }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -45,6 +53,7 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
         excerpt = try c.decodeIfPresent(String.self, forKey: .excerpt) ?? ""
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
         missing = try c.decodeIfPresent(Bool.self, forKey: .missing) ?? false
+        closed = try c.decodeIfPresent(Bool.self, forKey: .closed) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -55,6 +64,7 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
         try c.encode(excerpt, forKey: .excerpt)
         try c.encodeIfPresent(detail, forKey: .detail)
         if missing { try c.encode(true, forKey: .missing) }
+        if closed { try c.encode(true, forKey: .closed) }
     }
 
     var json: String? {
@@ -79,18 +89,18 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
         }
     }
 
-    /// VoiceOver: "Respondiendo a recordatorio Abonar 5M a la deuda: …".
+    /// VoiceOver: "Respondiendo a recordatorio Abonar 5M a la deuda: …",
+    /// "Respondiendo a tu mensaje: …", "Respondiendo al mensaje de Anima: …".
     public var accessibilityLabel: String {
-        "Respondiendo a \(Self.kindName(kind)) \(title)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
-    }
-
-    static func kindName(_ kind: ChatQuoteKind) -> String {
+        let subject: String
         switch kind {
-        case .reminder: return "recordatorio"
-        case .goal: return "meta"
-        case .checkIn: return "seguimiento"
-        case .message: return "mensaje de"
+        case .reminder: subject = "recordatorio \(title)"
+        case .goal: subject = "meta \(title)"
+        case .checkIn: subject = "seguimiento \(title)"
+        case .message: subject = title == Self.ownerTitle ? "tu mensaje" : "al mensaje de \(title)"
         }
+        let lead = kind == .message && title != Self.ownerTitle ? "Respondiendo " : "Respondiendo a "
+        return lead + subject + (excerpt.isEmpty ? "" : ": \(excerpt)")
     }
 
     /// Lo citado ya no existe: el título que ya se conocía (o uno genérico) y la
@@ -121,28 +131,68 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
 
 /// La cita como contexto del turno: un bloque de texto que va ANTES del mensaje
 /// del dueño en el mismo turno user (se persiste con él: los turnos siguientes
-/// siguen sabiendo de qué se habla). La UI lo quita al pintar (`isBlock`).
+/// siguen sabiendo de qué se habla). La UI lo quita al pintar (`split`).
 /// Remoto: con el id y la tool que actúa sobre él. Local (3B, 4096 tokens): sin
 /// el id (el 3B leía los ids como texto) y recortado; las tools locales de la
 /// cita (`move_reminder`, `done_reminder`) actúan sobre el recordatorio citado.
 public enum ChatQuoteContext {
     public static let marker = "[El dueño responde a "
-    /// Tope del extracto en el bloque del modelo local.
+    /// Topes del bloque del modelo local: la línea entera queda < 80 tokens
+    /// (medido con el tokenizer del modelo de Apple en ChatQuoteTokenTests).
     public static let compactExcerptLimit = 90
+    public static let compactTitleLimit = 50
+    public static let compactDetailLimit = 45
 
-    /// ¿Es el bloque de contexto de una cita? (la UI no lo pinta).
-    public static func isBlock(_ text: String) -> Bool {
-        text.hasPrefix(marker) && text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("]")
+    /// El bloque de la cita se reconoce por su ESTRUCTURA, no solo por el texto
+    /// (review #43: un dueño que escribe "[El dueño responde a esto…]" no puede
+    /// desaparecer su turno): es el PRIMER bloque, de texto, con el marcador, y
+    /// le sigue al menos otro bloque (lo que dijo el dueño). Lo que el dueño
+    /// escribe o dicta viaja siempre como un solo bloque (o tras una foto).
+    public static func split(_ blocks: [ContentBlock]) -> (line: String?, rest: [ContentBlock]) {
+        guard blocks.count >= 2, case .text(let first) = blocks[0], first.hasPrefix(marker) else {
+            return (nil, blocks)
+        }
+        return (first.trimmingCharacters(in: .whitespacesAndNewlines), Array(blocks.dropFirst()))
     }
 
-    public static func block(_ quote: ChatQuote, compact: Bool) -> ContentBlock {
+    public static func withoutBlock(_ blocks: [ContentBlock]) -> [ContentBlock] { split(blocks).rest }
+
+    /// La respuesta repite el bloque de la cita: lo que queda sin él (o un
+    /// acuse breve si no queda nada). nil si no hay eco.
+    public static func withoutEcho(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix(marker) else { return nil }
+        let rest = trimmed.firstIndex(of: "]").map { trimmed[trimmed.index(after: $0)...] } ?? ""
+        let clean = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? echoFallback : clean
+    }
+
+    public static let echoFallback = "Aquí estoy. ¿Qué quieres hacer con eso?"
+
+    /// "tu recordatorio «Abonar 5M…»" desde la línea de la cita: lo citado, sin
+    /// ids ni instrucciones (para el resumen de la conversación).
+    public static func summary(_ line: String) -> String? {
+        guard line.hasPrefix(marker) else { return nil }
+        let body = line.dropFirst(marker.count)
+        // Hasta el primer "(" (ids, detalle) o el cierre: lo citado, sin instrucciones.
+        let cut = body.firstIndex(where: { $0 == "(" || $0 == "]" }) ?? body.endIndex
+        var head = body[..<cut].trimmingCharacters(in: .whitespaces)
+        if let close = head.lastIndex(of: "»") { head = String(head[...close]) }
+        if head.hasSuffix(".") { head.removeLast() }
+        return head.isEmpty ? nil : head
+    }
+
+    /// `localTools`: las tools de la cita que viajan en ESTE turno (modelo local,
+    /// solo si el dueño las pidió): la línea las nombra (medido: sin el nombre
+    /// el 3B listaba en vez de mover).
+    public static func block(_ quote: ChatQuote, compact: Bool, localTools: Set<String> = []) -> ContentBlock {
         // El salto doble final separa la cita del mensaje del dueño: el armado
         // local toma "lo último tras \n\n" como el turno del dueño.
-        .text(line(quote, compact: compact) + "\n")
+        .text(line(quote, compact: compact, localTools: localTools) + "\n")
     }
 
-    public static func line(_ quote: ChatQuote, compact: Bool) -> String {
-        compact ? compactLine(quote) : fullLine(quote)
+    public static func line(_ quote: ChatQuote, compact: Bool, localTools: Set<String> = []) -> String {
+        compact ? compactLine(quote, localTools: localTools) : fullLine(quote)
     }
 
     static func fullLine(_ q: ChatQuote) -> String {
@@ -175,23 +225,27 @@ public enum ChatQuoteContext {
         }
     }
 
-    static func compactLine(_ q: ChatQuote) -> String {
+    static func compactLine(_ q: ChatQuote, localTools: Set<String> = []) -> String {
         let excerpt = ChatQuote.oneLine(q.excerpt, limit: compactExcerptLimit)
-        let detail = q.detail.map { " (\($0))" } ?? ""
+        let title = ChatQuote.oneLine(q.title, limit: compactTitleLimit)
+        let detail = q.detail.map { " (\(ChatQuote.oneLine($0, limit: compactDetailLimit)))" } ?? ""
         if q.missing {
             switch q.kind {
-            case .reminder: return marker + "un recordatorio que ya no existe: «\(q.title)». No lo cambies; díselo.]"
-            case .goal, .checkIn: return marker + "una meta que ya no existe: «\(q.title)». Díselo.]"
+            case .reminder: return marker + "un recordatorio que ya no existe: «\(title)». No lo cambies; díselo.]"
+            case .goal, .checkIn: return marker + "una meta que ya no existe: «\(title)». Díselo.]"
             case .message: return marker + "un mensaje que ya no está.]"
             }
         }
         switch q.kind {
         case .reminder:
-            return marker + "tu recordatorio «\(q.title)»\(detail). Para moverlo usa move_reminder; para darlo por hecho, done_reminder.]"
+            var hint = ""
+            if localTools.contains("move_reminder") { hint += " Para moverlo usa move_reminder." }
+            if localTools.contains("done_reminder") { hint += " Para darlo por hecho usa done_reminder." }
+            return marker + "tu recordatorio «\(title)»\(detail).\(hint)]"
         case .goal:
-            return marker + "su meta «\(q.title)»\(detail).]"
+            return marker + "su meta «\(title)»\(detail).]"
         case .checkIn:
-            return marker + "tu seguimiento de su meta «\(q.title)»\(detail).]"
+            return marker + "tu seguimiento de su meta «\(title)»\(detail).]"
         case .message:
             let who = q.title == ChatQuote.ownerTitle ? "su propio mensaje" : "tu mensaje"
             return marker + "\(who): «\(excerpt)»]"
@@ -284,7 +338,8 @@ public struct ChatQuoteResolver: Sendable {
         if let phrase = reminder.repeatCadence.phrase { detail += ", \(phrase)" }
         let title = reminder.text.prefix(1).uppercased() + reminder.text.dropFirst()
         return ChatQuote(ref: ChatQuoteRef(kind: .reminder, id: reminder.id), title: title,
-                         excerpt: reminder.spokenMessage, detail: detail)
+                         excerpt: reminder.spokenMessage, detail: detail,
+                         closed: reminder.status == .done || reminder.status == .cancelled)
     }
 
     /// La meta (o su seguimiento): estado, seguimiento y progreso.

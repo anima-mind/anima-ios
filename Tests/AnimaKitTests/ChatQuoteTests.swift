@@ -143,7 +143,7 @@ enum QuoteFixtures {
                       "«Oye, hoy toca abonar los 5 millones.»", "anima_reminders"] {
             #expect(line.contains(piece), "falta \(piece)")
         }
-        #expect(ChatQuoteContext.isBlock(line))
+        #expect(ChatQuoteContext.split([.text(line), .text("x")]).line != nil)
         let goal = ChatQuote(ref: .init(kind: .goal, id: "g7"), title: "Ahorrar 30M", excerpt: "seguimiento",
                              detail: "activa, racha 3 días")
         let goalLine = ChatQuoteContext.line(goal, compact: false)
@@ -159,10 +159,30 @@ enum QuoteFixtures {
         #expect(hers.contains("tu mensaje: «¿Y el banco?»"))
     }
 
-    @Test func compactLineSkipsTheIdAndPointsToTheQuotedTools() {
+    @Test func compactLineSkipsTheIdAndToolNames() async {
         let line = ChatQuoteContext.line(QuoteFixtures.reminderQuote(id: "9F2C-UUID"), compact: true)
         #expect(!line.contains("9F2C-UUID"))
-        #expect(line.contains("move_reminder") && line.contains("done_reminder"))
+        // Las tools de la cita solo viajan si el dueño las pide: la línea nombra solo esas.
+        #expect(!line.contains("move_reminder") && !line.contains("done_reminder"))
+        let moving = ChatQuoteContext.line(QuoteFixtures.reminderQuote(), compact: true, localTools: ["move_reminder"])
+        #expect(moving.contains("move_reminder") && !moving.contains("done_reminder"))
+        // Review #43: el detalle no tiene tope ⇒ 242 chars medidos. Con los topes,
+        // el peor caso (título, detalle y extracto largos) queda < 80 tokens.
+        let worst = ChatQuote(ref: .init(kind: .reminder, id: "r"), title: String(repeating: "abonar deuda ", count: 10),
+                              excerpt: String(repeating: "oye ", count: 60),
+                              detail: "programado jue 29 oct, 6:33 p. m., " + String(repeating: "cada día ", count: 25))
+        let worstLines = ChatQuoteKind.allCases.map {
+            ChatQuoteContext.line(ChatQuote(ref: .init(kind: $0, id: "r"), title: worst.title, excerpt: worst.excerpt,
+                                            detail: worst.detail), compact: true)
+        }
+        for worstLine in worstLines {
+            #expect(worstLine.count <= 230, "\(worstLine.count): \(worstLine)")
+            #expect(Double(worstLine.count) / 3.6 < 80)
+            if let real = await RealToolSet.frameworkInstructionTokens(worstLine) {
+                print("[quote-tokens] tokenizer real: \(real) tokens (\(worstLine.count) chars)")
+                #expect(real < 80, "real \(real)")
+            }
+        }
         #expect(line.count < ChatQuoteContext.line(QuoteFixtures.reminderQuote(), compact: false).count)
         // ~4 chars/token: la cita local cabe holgada en el presupuesto del 3B.
         #expect(line.count / 3 < 80)
@@ -211,11 +231,20 @@ enum QuoteFixtures {
     }
 
     @Test func onlyTheHarnessBlockIsStripped() {
-        #expect(ChatQuoteContext.isBlock(ChatQuoteContext.marker + "algo]\n"))
-        // Controles negativos: texto del dueño que se le parece.
-        #expect(!ChatQuoteContext.isBlock("[El dueño dijo algo]"))
-        #expect(!ChatQuoteContext.isBlock(ChatQuoteContext.marker + "sin cierre"))
-        #expect(!ChatQuoteContext.isBlock("hola " + ChatQuoteContext.marker + "x]"))
+        let block = ChatQuoteContext.block(QuoteFixtures.reminderQuote(), compact: false)
+        let split = ChatQuoteContext.split([block, .text("hola")])
+        #expect(split.line?.hasPrefix(ChatQuoteContext.marker) == true && split.rest == [.text("hola")])
+        // Controles negativos (review #43): el dueño que escribe algo que se le
+        // parece, solo o tras una foto, no pierde su turno.
+        let forged = ChatQuoteContext.marker + "esto, ¿lo ves?]"
+        #expect(ChatQuoteContext.split([.text(forged)]).line == nil)
+        #expect(ChatQuoteContext.split([.image(mediaType: "image/jpeg", base64: "AA=="), .text(forged)]).line == nil)
+        #expect(ChatQuoteContext.split([.text("hola"), .text(forged)]).line == nil)
+        #expect(ChatQuoteContext.summary("x") == nil)
+        #expect(ChatQuoteContext.summary(ChatQuoteContext.line(QuoteFixtures.reminderQuote(), compact: false))
+                == "tu recordatorio «Abonar 5M a la deuda»")
+        #expect(ChatQuoteContext.summary(ChatQuoteContext.line(.missing(.init(kind: .message, id: "1")), compact: false))
+                == "un mensaje que ya no está en el chat")
         if case .text(let t) = ChatQuoteContext.block(QuoteFixtures.reminderQuote(), compact: false) {
             #expect(t.hasSuffix("]\n"))
         } else {
@@ -253,6 +282,16 @@ enum QuoteFixtures {
                          quote: quote)
         let voice = try #require(try store.visibleTurns(sessionId: sid).last)
         #expect(voice.isVoice && voice.text == "hola" && voice.quote == quote)
+        // Review #43: el dueño escribe algo que se parece al bloque: su turno se ve.
+        let forged = "[El dueño responde a esto, ¿lo ves?]"
+        try store.append(sessionId: sid, message: .user(forged))
+        #expect(try store.visibleTurns(sessionId: sid).last?.text == forged)
+        // Y aunque el turno tenga cita, solo el primer bloque es de la cita.
+        try store.append(sessionId: sid, message: Message(role: .user, content: [block, .text(forged)]), quote: quote)
+        #expect(try store.visibleTurns(sessionId: sid).last?.text == forged)
+        // Sin quote_json (fila vieja) el bloque no se esconde: nada se pierde.
+        try store.append(sessionId: sid, message: Message(role: .user, content: [block, .text("x")]))
+        #expect(try store.visibleTurns(sessionId: sid).last?.text.hasPrefix(ChatQuoteContext.marker) == true)
         // Una cita en un turno assistant no se pinta (solo el dueño cita).
         try store.append(sessionId: sid, message: .assistant([.text("x")]), quote: quote)
         #expect(try store.visibleTurns(sessionId: sid).last?.quote == nil)
@@ -428,9 +467,9 @@ enum QuoteFixtures {
         for await e in await loop.run(sessionId: sid, content: [.text("pásalo para el viernes")], surface: .phoneChat,
                                       quote: quote) { events.append(e) }
         let first = try #require(provider.captures.value.first)
-        #expect(first.tools.contains("move_reminder") && first.tools.contains("done_reminder"))
+        #expect(first.tools.contains("move_reminder") && !first.tools.contains("done_reminder"))
         let sent = QuoteFixtures.texts(first.messages.last { $0.role == .user })
-        #expect(sent.first == ChatQuoteContext.line(quote, compact: true) + "\n")
+        #expect(sent.first == ChatQuoteContext.line(quote, compact: true, localTools: ["move_reminder"]) + "\n")
         #expect(sent.first?.contains(r.id) == false)
         #expect(events.contains(.toolFinished(name: "anima_reminders", isError: false)))
         let after = await w.reminders.reminder(id: r.id)
@@ -457,20 +496,33 @@ enum QuoteFixtures {
     @Test func quotedToolsTravelOnlyWithALiveReminderQuote() throws {
         let tools = try RealToolSet.specs()
         let reminder = QuoteFixtures.reminderQuote()
-        let names = { (q: ChatQuote?) in ToolProfile.onDevice.apply(tools, quote: q).map(\.name) }
-        #expect(names(reminder).suffix(2) == ["move_reminder", "done_reminder"])
+        let names = { (q: ChatQuote?, owner: String) in ToolProfile.onDevice.apply(tools, quote: q, ownerText: owner).map(\.name) }
+        #expect(names(reminder, "pásalo para el viernes").last == "move_reminder")
+        #expect(!names(reminder, "pásalo para el viernes").contains("done_reminder"))
+        #expect(names(reminder, "ya lo pagué").last == "done_reminder")
+        #expect(names(reminder, "listo, ya lo mandé").last == "done_reminder")
+        // Review #43 (MEDIO 2): sin pedido del dueño no viaja ninguna.
+        for owner in ["gracias", "¿a qué hora era?", "", "ok", "¿ya lo hice?", "¿listo para mañana?"] {
+            let list = names(reminder, owner)
+            #expect(!list.contains("move_reminder") && !list.contains("done_reminder"), "\(owner)")
+        }
+        // Ni sobre un recordatorio que ya no está activo.
+        var closed = reminder
+        closed.closed = true
+        #expect(!names(closed, "pásalo para el viernes").contains("move_reminder"))
+        #expect(!names(closed, "ya lo hice").contains("done_reminder"))
         // Controles negativos: sin cita, cita de meta, cita de algo que ya no existe, remoto.
-        #expect(!names(nil).contains("move_reminder"))
-        #expect(!names(ChatQuote(ref: .init(kind: .goal, id: "g"), title: "x", excerpt: "")).contains("move_reminder"))
-        #expect(!names(.missing(reminder.ref)).contains("done_reminder"))
-        #expect(ToolProfile.full.apply(tools, quote: reminder) == tools)
+        #expect(!names(nil, "pásalo").contains("move_reminder"))
+        #expect(!names(ChatQuote(ref: .init(kind: .goal, id: "g"), title: "x", excerpt: ""), "pásalo").contains("move_reminder"))
+        #expect(!names(.missing(reminder.ref), "ya lo hice").contains("done_reminder"))
+        #expect(ToolProfile.full.apply(tools, quote: reminder, ownerText: "pásalo") == tools)
         // Sin la tool real registrada no viajan.
         #expect(ToolProfile.onDevice.apply([CalendarTool().spec], quote: reminder).map(\.name)
                 == ["add_calendar_event", "list_events"])
         // Idempotente: re-aplicar (el provider) conserva las de la cita.
-        let once = ToolProfile.onDevice.apply(tools, quote: reminder)
+        let once = ToolProfile.onDevice.apply(tools, quote: reminder, ownerText: "muévelo al lunes")
         #expect(ToolProfile.onDevice.apply(once) == once)
-        #expect(ToolProfile.onDevice.apply(once, quote: reminder) == once)
+        #expect(ToolProfile.onDevice.apply(once, quote: reminder, ownerText: "muévelo al lunes") == once)
         // Misma forma que el resto del set local: ≤3 obligatorios y un ejemplo literal.
         for tool in LocalToolAdapter.quotedReminderTools {
             guard case .client(_, let description, let schema) = tool.spec else { Issue.record("no client"); continue }
@@ -490,19 +542,30 @@ enum QuoteFixtures {
         #expect(input["action"]?.stringValue == "reschedule" && input["id"]?.stringValue == "R-42")
         #expect(input["fire_at"]?.stringValue?.hasPrefix("2026-10-09T18:33") == true)
 
-        let done = LocalToolAdapter.resolve(name: "done_reminder", input: .object([:]), now: now, quote: quote)
+        let done = LocalToolAdapter.resolve(name: "done_reminder", input: .object([:]), now: now, ownerText: "ya lo hice",
+                                            quote: quote)
         #expect(done == .real(name: "anima_reminders",
                               input: .object(["action": .string("complete"), "id": .string("R-42")])))
         // Controles negativos: sin cita, cita borrada, sin fecha, fecha pasada.
-        for q in [nil, ChatQuote.missing(quote.ref)] {
-            guard case .invalid = LocalToolAdapter.resolve(name: "done_reminder", input: .object([:]), now: now, quote: q)
+        var closed = quote
+        closed.closed = true
+        for q in [nil, ChatQuote.missing(quote.ref), closed] {
+            guard case .invalid = LocalToolAdapter.resolve(name: "done_reminder", input: .object([:]), now: now,
+                                                           ownerText: "ya lo hice", quote: q)
             else { Issue.record("debió rechazar"); continue }
         }
-        guard case .invalid = LocalToolAdapter.resolve(name: "move_reminder", input: .object([:]), now: now, quote: quote)
+        // Defensa en profundidad: aunque el 3B la llame, sin pedido del dueño no se toca.
+        for owner in ["gracias", "¿a qué hora era?"] {
+            guard case .invalid = LocalToolAdapter.resolve(name: "done_reminder", input: .object([:]), now: now,
+                                                           ownerText: owner, quote: quote)
+            else { Issue.record("\(owner) debió rechazar"); continue }
+        }
+        guard case .invalid = LocalToolAdapter.resolve(name: "move_reminder", input: .object([:]), now: now,
+                                                       ownerText: "pásalo", quote: quote)
         else { Issue.record("sin when debió rechazar"); return }
         guard case .invalid(_, let message) = LocalToolAdapter.resolve(
             name: "move_reminder", input: .object(["when": .string("2026-10-01 09:00")]), now: now,
-            calendar: F.calendar, quote: quote) else { Issue.record("pasada debió rechazar"); return }
+            ownerText: "pásalo", calendar: F.calendar, quote: quote) else { Issue.record("pasada debió rechazar"); return }
         #expect(message.contains("ya pasó"))
         #expect(LocalToolAdapter.verb(local: "move_reminder") == "mover el recordatorio")
     }
@@ -559,6 +622,23 @@ enum QuoteFixtures {
         }
     }
 
+    @Test func ownerIntentOnTheQuotedReminder() {
+        let move: Set<String> = ["move_reminder"], done: Set<String> = ["done_reminder"]
+        let cases: [(String, Set<String>)] = [
+            ("pásalo para el viernes 23", move), ("¿la puedes pasar al viernes?", move), ("muévelo a las 5", move),
+            ("posponlo una hora", move), ("mejor mañana", move), ("cámbialo para el lunes", move),
+            ("ya lo hice", done), ("ya lo pagué", done), ("listo", done), ("hecho", done), ("listo, ya lo mandé", done),
+            ("dalo por hecho", done), ("ya quedó", done),
+            (AudioTool.transcriptPrefix + " listo ya lo pagué", done),
+            // Controles negativos.
+            ("gracias", []), ("¿a qué hora era?", []), ("¿ya lo hice?", []), ("ok", []), ("¿qué dice?", []),
+            ("no sé si pueda", []), ("", []),
+        ]
+        for (owner, expected) in cases {
+            #expect(LocalToolAdapter.quotedReminderIntent(owner) == expected, "\(owner)")
+        }
+    }
+
     @Test func changeHintFollowsTheQuote() {
         #expect(LocalWhen.changeHint("bórralo", quoted: .reminder) == "Eso lo cambias en la tab Recordatorios.")
         #expect(LocalWhen.changeHint("cámbiala", quoted: .goal)?.contains("Metas") == true)
@@ -599,6 +679,38 @@ enum QuoteFixtures {
         await #expect(throws: AnimaReminderError.notActive) {
             try await w.reminders.reschedule(id: once.id, to: F.date(2026, 10, 9, 9))
         }
+    }
+
+    /// Review #43 (MEDIO 2): un único marcado hecho por error se puede deshacer (≤ 24 h).
+    @Test func reopenUndoesARecentDone() async throws {
+        let w = try F.world()
+        let tool = AnimaRemindersTool(store: w.reminders, timeZone: F.tz)
+        let later = try await w.reminders.create(text: "abonar", fireAt: F.date(2026, 10, 9, 18))
+        _ = try await w.reminders.complete(id: later.id)
+        let input: JSONValue = .object(["action": .string("reopen"), "id": .string(later.id)])
+        #expect(tool.kind(for: input) == .efferent)
+        #expect(tool.confirmationSummary(for: input).contains("Deshacer"))
+        let result = await tool.execute(input)
+        #expect(!result.isError && result.content.contains("vuelve a estar pendiente"))
+        let back = await w.reminders.reminder(id: later.id)
+        #expect(back?.status == .scheduled && back?.doneAt == nil)
+        // Si su hora ya pasó, vuelve como entregado pendiente.
+        let past = try await w.reminders.create(text: "pagar", fireAt: F.date(2026, 10, 5, 15))
+        w.advance(3600)
+        _ = await w.reminders.markFired(id: past.id)
+        _ = try await w.reminders.complete(id: past.id)
+        #expect(try await w.reminders.reopen(id: past.id).status == .fired)
+        // Controles negativos: fuera de la ventana, no hecho, inexistente, cancelado.
+        _ = try await w.reminders.complete(id: past.id)
+        w.advance(AnimaReminderStore.reopenWindow + 60)
+        await #expect(throws: AnimaReminderError.notReopenable) { try await w.reminders.reopen(id: past.id) }
+        await #expect(throws: AnimaReminderError.notReopenable) { try await w.reminders.reopen(id: later.id) }
+        await #expect(throws: AnimaReminderError.notFound) { try await w.reminders.reopen(id: "nada") }
+        _ = try await w.reminders.cancel(id: later.id)
+        #expect(await tool.execute(input).isError)
+        #expect(PermissionPolicy.internalReversible.contains(AllowlistEntry(tool: "anima_reminders", operation: "reopen")))
+        #expect(ToolFailureNotice.verb(tool: "anima_reminders", input: input) == "deshacer el recordatorio hecho")
+        #expect(ToolNames.operation("reopen") == "modificar")
     }
 
     @Test func theToolReschedulesById() async throws {
@@ -796,5 +908,103 @@ enum QuoteFixtures {
         await rig.chat.setOffline(false)
         let sent = QuoteFixtures.texts(rig.provider.captures.value.first?.messages.last { $0.role == .user })
         #expect(sent.first?.hasPrefix(ChatQuoteContext.marker) == true && sent.last == "pásalo")
+    }
+}
+
+/// Review #43 (menores): el bloque de la cita no es algo que el dueño dijo.
+@Suite struct ChatQuoteSideEffectsTests {
+    @Test func theQuoteBlockIsNotAnOwnerMention() throws {
+        let queue = try AnimaDatabase.temporary()
+        let store = SymbolicStore(queue: queue)
+        let sid = try store.startSession()
+        let index = MentionIndex(queue: queue)
+        let quote = ChatQuote(ref: .init(kind: .goal, id: "g1"), title: "Correr la maratón", excerpt: "")
+        try store.append(sessionId: sid, message: Message(role: .user, content: [
+            ChatQuoteContext.block(quote, compact: false), .text("¿cómo voy?")]), quote: quote)
+        #expect(index.daysSinceLastMention(topic: "maratón") == nil)
+        #expect(index.daysSinceLastMention(topic: "cómo voy") == 0)
+        // Control: si el dueño la nombra, sí cuenta (con o sin cita).
+        try store.append(sessionId: sid, message: Message(role: .user, content: [
+            ChatQuoteContext.block(quote, compact: false), .text("hoy corrí para la maratón")]), quote: quote)
+        #expect(index.daysSinceLastMention(topic: "maratón") == 0)
+        let other = try AnimaDatabase.temporary()
+        let otherStore = SymbolicStore(queue: other)
+        try otherStore.append(sessionId: try otherStore.startSession(), message: .user("la maratón"))
+        #expect(MentionIndex(queue: other).daysSinceLastMention(topic: "maratón") == 0)
+    }
+
+    @Test func theSummarizerSeesWhatWasQuotedNotTheInstructions() {
+        let quote = QuoteFixtures.reminderQuote(id: "R-77")
+        let transcript = ConversationCompactor.transcript([
+            Message(role: .user, content: [ChatQuoteContext.block(quote, compact: false), .text("pásalo al viernes")]),
+            .assistant([.text("Listo.")]),
+            .user("[El dueño responde a esto, ¿lo ves?]"),
+        ])
+        #expect(transcript.contains("Dueño: (respondió a tu recordatorio «Abonar 5M a la deuda») pásalo al viernes"))
+        #expect(!transcript.contains("R-77") && !transcript.contains("anima_reminders"))
+        // Control: el texto del dueño que se parece al bloque llega tal cual.
+        #expect(transcript.contains("Dueño: [El dueño responde a esto, ¿lo ves?]"))
+    }
+}
+
+/// Medido en el smoke real: con la cita en el prompt el 3B a veces la repetía
+/// como respuesta ("gracias" → "[El dueño responde a tu recordatorio …]").
+@Suite struct ChatQuoteOnDevicePromptTests {
+    @Test func theCurrentQuoteTravelsAndOldOnesAreSummarized() throws {
+        let old = ChatQuoteContext.block(QuoteFixtures.reminderQuote(), compact: true)
+        let goal = ChatQuote(ref: .init(kind: .goal, id: "g"), title: "Correr", excerpt: "", detail: "activa")
+        let now = ChatQuoteContext.block(goal, compact: true)
+        let ctx = AssembledContext(messages: [
+            Message(role: .user, content: [old, .text("pásalo")]),
+            .assistant([.text("Listo.")]),
+            Message(role: .system, content: [.text("self")]),
+            Message(role: .user, content: [now, .text("gracias")]),
+        ])
+        let request = OnDevicePromptBuilder.request(ctx: ctx, tools: [], opts: try OnDeviceTestConfig.opts())
+        #expect(request.prompt.contains(ChatQuoteContext.line(goal, compact: true)) && request.prompt.hasSuffix("gracias"))
+        let history = request.history.map { "\($0)" }.joined(separator: "\n")
+        #expect(history.contains("(sobre tu recordatorio «Abonar 5M a la deuda»)") && history.contains("pásalo"))
+        #expect(!history.contains(ChatQuoteContext.marker))
+        // Control: sin cita, nada cambia.
+        let plain = OnDevicePromptBuilder.request(ctx: AssembledContext(messages: [.user("gracias")]), tools: [],
+                                                  opts: try OnDeviceTestConfig.opts())
+        #expect(plain.prompt == "gracias")
+        // El eco del bloque en la respuesta se retira (medido con "gracias").
+        let line = ChatQuoteContext.line(goal, compact: true)
+        #expect(ChatQuoteContext.withoutEcho(line) == ChatQuoteContext.echoFallback)
+        #expect(ChatQuoteContext.withoutEcho(line + " ¡De nada!") == "¡De nada!")
+        #expect(ChatQuoteContext.withoutEcho("¡De nada!") == nil)
+        #expect(ChatQuoteContext.withoutEcho("Te cito: " + line) == nil)
+    }
+}
+
+@Suite struct ChatQuoteEchoLoopTests {
+    /// El 3B repite el bloque de la cita: el loop lo retira (y lo persistido no lo lleva).
+    @Test func theLocalEchoIsRetracted() async throws {
+        let w = try ProactiveFixtures.world()
+        let quote = QuoteFixtures.reminderQuote()
+        let echo = ChatQuoteContext.line(quote, compact: true)
+        let model = OnDeviceProvider.modelName
+        func text(_ s: String) -> [ProviderEvent] {
+            [.messageStart(id: "t", model: model), .textDelta(s), .blockStop(index: 0),
+             .messageDelta(stopReason: .endTurn, usage: Usage()), .messageStop]
+        }
+        let provider = QuoteCapturingProvider([text(echo), text("De nada.")])
+        let loop = AgentLoop(provider: provider, store: w.symbolic, telemetry: Telemetry(queue: w.queue),
+                             router: try OnDeviceTestConfig.router(), authMode: .apiKey, token: "",
+                             clientTools: [AnimaRemindersTool(store: w.reminders)], serverTools: [], sleep: { _ in })
+        let sid = try w.symbolic.startSession()
+        var events: [LoopEvent] = []
+        for await e in await loop.run(sessionId: sid, content: [.text("gracias")], surface: .phoneChat, quote: quote) {
+            events.append(e)
+        }
+        #expect(events.contains(.retracted))
+        let saved = try w.symbolic.visibleTurns(sessionId: sid).last
+        #expect(saved?.text == ChatQuoteContext.echoFallback)
+        // Control: sin eco no se retira nada.
+        for await e in await loop.run(sessionId: sid, content: [.text("gracias")], surface: .phoneChat, quote: quote) {
+            #expect(e != .retracted)
+        }
+        #expect(try w.symbolic.visibleTurns(sessionId: sid).last?.text == "De nada.")
     }
 }

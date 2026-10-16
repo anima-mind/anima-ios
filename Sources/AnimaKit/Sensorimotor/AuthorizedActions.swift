@@ -53,7 +53,7 @@ public enum ToolNames {
     public static func operation(_ op: String) -> String {
         switch op {
         case "create", "add", "declare": return "crear"
-        case "update", "edit", "set_checkin", "snooze", "reschedule": return "modificar"
+        case "update", "edit", "set_checkin", "snooze", "reschedule", "reopen": return "modificar"
         case "delete", "remove", "cancel", "clear_checkin": return "borrar"
         case "complete", "mark_achieved": return "marcar hecho"
         case "list", "read", "search": return "leer"

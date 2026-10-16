@@ -223,8 +223,12 @@ public final class SymbolicStore: Sendable {
         guard let roleRaw: String = row["role"], let role = Message.Role(rawValue: roleRaw),
               role == .user || role == .assistant, let json: String = row["content_json"] else { return nil }
         let surfaceRaw: String? = row["surface"]
-        var turn = VisibleTurn(role: role, blocks: try decodeBlocks(json),
-                               surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
+        // Solo un turno CON cita persistida puede llevar el bloque de la cita
+        // (y solo como primer bloque): el texto del dueño jamás se esconde.
+        var blocks = try decodeBlocks(json)
+        let hasQuote = (row["quote_json"] as String?) != nil
+        if role == .user, hasQuote { blocks = ChatQuoteContext.withoutBlock(blocks) }
+        var turn = VisibleTurn(role: role, blocks: blocks, surface: surfaceRaw.flatMap(SurfaceID.init(rawValue:)))
         if let raw: String = row["proactive_json"],
            let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
             turn?.proactive = tag
@@ -332,8 +336,6 @@ public struct VisibleTurn: Sendable, Equatable {
             case .text(let t):
                 if role == .user, ActionClaimGuard.isNudge(t) {
                     return nil   // turno sintético del harness: jamás se pinta
-                } else if role == .user, ChatQuoteContext.isBlock(t) {
-                    continue     // la cita como contexto del modelo: la burbuja la pinta aparte
                 } else if role == .user, IntentionAcceptance.isAcceptance(t) {
                     texts.append(IntentionAcceptance.shownText)
                 } else if role == .user, t == HUDPhoto.prompt {

@@ -23,11 +23,12 @@ public enum ToolProfile: Sendable, Equatable {
         apply(specs, quote: nil)
     }
 
-    /// Con un recordatorio citado, el local suma las tools que actúan sobre él.
-    public func apply(_ specs: [ToolSpec], quote: ChatQuote?) -> [ToolSpec] {
+    /// Con un recordatorio citado y el pedido del dueño, el local suma la tool
+    /// que actúa sobre él (mover o dar por hecho).
+    public func apply(_ specs: [ToolSpec], quote: ChatQuote?, ownerText: String = "") -> [ToolSpec] {
         switch self {
         case .full: return specs
-        case .onDevice: return LocalToolAdapter.specs(for: specs, quote: quote)
+        case .onDevice: return LocalToolAdapter.specs(for: specs, quote: quote, ownerText: ownerText)
         }
     }
 

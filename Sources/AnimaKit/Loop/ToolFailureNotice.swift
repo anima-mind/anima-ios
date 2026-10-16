@@ -24,6 +24,7 @@ public enum ToolFailureNotice {
         case ("anima_reminders", "cancel"): return "cancelar el recordatorio"
         case ("anima_reminders", "snooze"): return "posponer el recordatorio"
         case ("anima_reminders", "reschedule"): return "mover el recordatorio"
+        case ("anima_reminders", "reopen"): return "deshacer el recordatorio hecho"
         case ("anima_reminders", _): return "crear el recordatorio"
         case ("goals", "list"): return "consultar tus metas"
         case ("goals", "record_checkin"): return "anotar el seguimiento"

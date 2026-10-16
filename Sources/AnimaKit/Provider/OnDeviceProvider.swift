@@ -340,11 +340,32 @@ public enum OnDevicePromptBuilder {
                 entries.append(.prompt(text))
             }
         }
-        for message in ctx.messages where message.role != .system {
+        // "Responder citando": la cita del turno ACTUAL viaja tal cual en su
+        // prompt (medido: en prosa o en las instructions el 3B dejaba de usar
+        // move_reminder); en turnos viejos se resume a "(sobre …)" (sin ids ni
+        // instrucciones viejas que ya no aplican).
+        let ownerTurns = ctx.messages.indices.filter { i in
+            ctx.messages[i].role == .user && ctx.messages[i].content.contains { block in
+                switch block {
+                case .text, .image: return true
+                default: return false
+                }
+            }
+        }
+        let currentOwnerTurn = ownerTurns.last
+        for (index, message) in ctx.messages.enumerated() where message.role != .system {
             switch message.role {
             case .user:
                 var pending: [String] = []
-                for block in message.content {
+                let (quoteLine, blocks) = ChatQuoteContext.split(message.content)
+                if let quoteLine {
+                    if index == currentOwnerTurn {
+                        pending.append(quoteLine + "\n")
+                    } else if let about = ChatQuoteContext.summary(quoteLine) {
+                        pending.append("(sobre \(about))")
+                    }
+                }
+                for block in blocks {
                     switch block {
                     case .text(let t): pending.append(t)
                     case .image: pending.append(imagePlaceholder)

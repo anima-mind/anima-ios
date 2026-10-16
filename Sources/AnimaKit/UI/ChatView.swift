@@ -1169,7 +1169,7 @@ public struct ChatView: View {
     // MARK: Mensajes
 
     /// Cada mensaje citable: deslizar a la derecha (como WhatsApp) o mantener
-    /// presionado → "Responder" (VoiceOver lo ofrece como acción del menú). La envoltura es siempre la misma (solo cambia
+    /// presionado → "Responder" (VoiceOver: acción "Responder" de la burbuja). La envoltura es siempre la misma (solo cambia
     /// `enabled`): al terminar el stream la vista no cambia de identidad.
     private func replyable(_ message: ChatViewModel.DisplayMessage) -> some View {
         let enabled = !message.isSessionDivider && model.canQuote(message)
@@ -1181,6 +1181,13 @@ public struct ChatView: View {
             if enabled {
                 Button { _ = reply() } label: { Label("Responder", systemImage: "arrowshape.turn.up.left") }
                     .accessibilityIdentifier("chat.reply")
+            }
+        }
+        // VoiceOver: "Responder" en el rotor de acciones de la burbuja (el swipe
+        // no existe para VoiceOver y el menú queda a un doble toque sostenido).
+        .accessibilityActions {
+            if enabled {
+                Button("Responder") { _ = reply() }
             }
         }
     }

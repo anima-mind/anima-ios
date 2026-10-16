@@ -286,7 +286,7 @@ public actor AgentLoop {
             }
             let route = binding.router.route(turnClass)
             let toolProfile = ToolProfile.for(model: route.model)
-            allSpecs = toolProfile.apply(allSpecs, quote: quote)
+            allSpecs = toolProfile.apply(allSpecs, quote: quote, ownerText: Self.plainText(content))
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -308,8 +308,10 @@ public actor AgentLoop {
             // `userText` es SOLO lo que dijo el dueño (skills, inbox, reparaciones
             // locales); la cita entra como bloque propio al turno (`turnContent`).
             let userText = Self.plainText(content)
-            let turnContent = quote.map { [ChatQuoteContext.block($0, compact: toolProfile == .onDevice)] + content }
-                ?? content
+            let quotedTools = Set(allSpecs.map(\.name)).intersection(LocalToolAdapter.quotedReminderTools.map(\.name))
+            let turnContent = quote.map {
+                [ChatQuoteContext.block($0, compact: toolProfile == .onDevice, localTools: quotedTools)] + content
+            } ?? content
             var activatedIds: [MemoryID] = []
             if let brain {
                 let limit = min(memoryBudget, workingMemory.profile.maxActivatedMemories)
@@ -492,6 +494,14 @@ public actor AgentLoop {
                     }
                     content = ToolFailureNotice.prepend(ActionClaimGuard.notice, to: content)
                     emit(.toolFailure(ActionClaimGuard.notice))
+                }
+                // Modelo local: a veces repite el bloque de la cita como respuesta
+                // (medido con "gracias"): se retira y queda lo que dijo después.
+                if toolProfile == .onDevice, closes, quote != nil,
+                   let echoed = ChatQuoteContext.withoutEcho(Self.plainText(content)) {
+                    emit(.retracted)
+                    emit(.textDelta(echoed))
+                    content = [.text(echoed)]
                 }
                 // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
                 // el turno cerró sin tools ⇒ dónde se hace, determinista.

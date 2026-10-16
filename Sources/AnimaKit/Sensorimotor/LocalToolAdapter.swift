@@ -124,14 +124,36 @@ public enum LocalToolAdapter {
         return (tools + quoted).filter { real.contains($0.realTool) }.map(\.spec)
     }
 
-    /// El set local del turno: con un recordatorio citado (que existe) suman las
-    /// tools que actúan sobre él.
-    public static func specs(for available: [ToolSpec], quote: ChatQuote?) -> [ToolSpec] {
+    /// El set local del turno: con un recordatorio citado ACTIVO suman las tools
+    /// que actúan sobre él, y solo la que el dueño pidió (review #43: con
+    /// cualquier cita viva el 3B podía marcar hecho ante un "gracias", y un
+    /// recordatorio único hecho no se deshace).
+    public static func specs(for available: [ToolSpec], quote: ChatQuote?, ownerText: String = "") -> [ToolSpec] {
         let base = specs(for: available)
-        guard let quote, quote.kind == .reminder, !quote.missing,
+        guard let quote, quote.kind == .reminder, quote.isActionable,
               base.contains(where: { byName[$0.name]?.realTool == "anima_reminders" }) else { return base }
         let present = Set(base.map(\.name))
-        return base + quotedReminderTools.filter { !present.contains($0.name) }.map(\.spec)
+        let wanted = quotedReminderIntent(ownerText)
+        return base + quotedReminderTools.filter { !present.contains($0.name) && wanted.contains($0.name) }.map(\.spec)
+    }
+
+    /// Qué pide el dueño sobre el recordatorio citado: moverlo ("pásalo para el
+    /// viernes", "posponlo", "mejor a las 5") y/o darlo por hecho ("ya lo hice",
+    /// "listo", "hecho", "ya lo mandé"). Un agradecimiento o una pregunta
+    /// ("¿a qué hora era?") no pide nada: no viaja ninguna.
+    public static func quotedReminderIntent(_ ownerText: String) -> Set<String> {
+        let spoken = ownerText.hasPrefix(AudioTool.transcriptPrefix)
+            ? String(ownerText.dropFirst(AudioTool.transcriptPrefix.count)) : ownerText
+        let owner = LocalWhen.fold(spoken).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !owner.isEmpty else { return [] }
+        var out: Set<String> = []
+        let move = /\b(?:pas[ae](?:lo|la)?|pasar(?:lo|la)?|muev[ae](?:lo|la)?|mover(?:lo|la)?|cambia(?:lo|la|r)?|cambi[ae]|pospon(?:lo|la|er)?|posterg\w*|aplaz\w*|corr[ea](?:lo|la)?|correr(?:lo|la)?|reprogram\w*|atrasa\w*|adelanta\w*|(?:dejalo|dejala|ponlo|ponla|mejor) (?:para|el|la|a las|manana|en)|recuerdamelo (?:el|manana|en|a las|para))\b/
+        if owner.firstMatch(of: move) != nil { out.insert("move_reminder") }
+        // Hecho: afirmación (no pregunta) de que ya ocurrió.
+        let asks = spoken.contains("?") || spoken.contains("¿")
+        let done = /\b(?:ya (?:lo |la |le )?(?:hice|pague|mande|envie|abone|llame|compre|tome|termine|cumpli|deposite|transferi|hable|fui|quedo|esta hecho)|(?:dalo|marcalo|marcala|dala) (?:por|como) hech[oa]|ya esta|ya quedo)\b|^(?:listo|hecho|ya)\b/
+        if !asks, owner.firstMatch(of: done) != nil { out.insert("done_reminder") }
+        return out
     }
 
     // MARK: - Traducción
@@ -297,8 +319,12 @@ public enum LocalToolAdapter {
             ]))
 
         case "move_reminder", "done_reminder":
-            guard let quote, quote.kind == .reminder, !quote.missing else {
-                return invalid("No hay un recordatorio citado: usa list_reminders o remind_me.")
+            guard let quote, quote.kind == .reminder, quote.isActionable else {
+                return invalid("No hay un recordatorio citado activo: usa list_reminders o remind_me.")
+            }
+            // Defensa en profundidad: aunque la tool viajara, sin pedido del dueño no se toca.
+            guard quotedReminderIntent(ownerText).contains(name) else {
+                return invalid("El dueño no pidió cambiar ese recordatorio: respóndele sin tools.")
             }
             guard name == "move_reminder" else {
                 return .real(name: tool.realTool, input: .object(["action": .string("complete"), "id": .string(quote.ref.id)]))

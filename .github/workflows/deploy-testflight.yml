@@ -34,6 +34,37 @@ jobs:
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+      # Firma con los certificados del dueño guardados en secrets (un p12 con DOS
+      # identidades): con firma automática Xcode archiva con "Apple Development" y
+      # re-firma con "Apple Distribution" al exportar. Si el runner ya trae ambas,
+      # no crea certificados nuevos. Los perfiles los sigue manejando Xcode con la
+      # API key (-allowProvisioningUpdates): una capability nueva regenera el perfil.
+      - name: Certificados de firma (secrets) → keychain temporal
+        env:
+          DIST_CERT_P12_B64: ${{ secrets.DIST_CERT_P12_B64 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DIST_CERT_P12_B64:-}" ] || [ -z "${DIST_CERT_PASSWORD:-}" ]; then
+            echo "::error::Faltan los secrets DIST_CERT_P12_B64 / DIST_CERT_PASSWORD" >&2; exit 1
+          fi
+          KC="$RUNNER_TEMP/anima-signing.keychain-db"
+          KC_PW="$(openssl rand -hex 24)"
+          P12="$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          echo "$DIST_CERT_P12_B64" | base64 -d > "$P12"
+          security import "$P12" -P "$DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          rm -f "$P12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          IDS="$(security find-identity -v -p codesigning "$KC")"
+          echo "$IDS" | grep -q '"Apple Development:' \
+            || { echo "::error::El p12 no trae la identidad Apple Development (se usa para el archive)" >&2; exit 1; }
+          echo "$IDS" | grep -q '"Apple Distribution:' \
+            || { echo "::error::El p12 no trae la identidad Apple Distribution (se usa para el export)" >&2; exit 1; }
+          echo "SIGNING_KEYCHAIN=$KC" >> "$GITHUB_ENV"
       - name: Cache SPM (Xcode)
         uses: actions/cache@v4
         with:
@@ -85,12 +116,16 @@ jobs:
           -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           -authenticationKeyID "$ASC_KEY_ID"
           -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-      # Cada runner efímero crea su propio "Apple Development: Created via API"
-      # y Apple tiene tope por cuenta: al terminar (aunque falle o se cancele) se
-      # revoca el de ESTE runner, identificado por número de serie del keychain.
-      - name: Revocar el certificado de desarrollo de este runner
+      # Red de seguridad: con los certificados de secrets el runner ya no debería
+      # crear "Apple Development: Created via API"; si Xcode igual creara uno, se
+      # revoca el de ESTE runner (por número de serie).
+      - name: Revocar un certificado de desarrollo creado por este runner (si lo hubo)
         if: always()
         env:
           ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: ruby scripts/revoke-run-dev-cert.rb
+      - name: Borrar el keychain temporal
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$SIGNING_KEYCHAIN" || true; fi

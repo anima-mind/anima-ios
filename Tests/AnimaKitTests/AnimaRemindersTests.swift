@@ -342,7 +342,8 @@ enum ProactiveFixtures {
         #expect(request.title == "Lumen" && request.body == "Te recuerdo: llamar al banco")
         #expect(request.categoryId == ProactiveNotificationIDs.reminderCategory)
         #expect(request.trigger == .at(F.date(2026, 10, 6, 9)))
-        #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://reminder?id=\(r.id)")
+        // "Responder citando": el push abre el chat con el recordatorio citado.
+        #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://chat?quote=reminder:\(r.id)")
 
         let before = w.fake.scheduled
         _ = await w.scheduler.sync()
@@ -439,11 +440,15 @@ enum ProactiveFixtures {
 
 @Suite struct ProactiveDeepLinkTests {
     @Test func roundTripsNewLinks() throws {
-        let links: [AnimaDeepLink] = [.reminder(id: "r-1"), .goal(id: "g 2"), .intention(id: "i3"),
+        let links: [AnimaDeepLink] = [.reminder(id: "r-1"), .goal(id: "g_2"), .intention(id: "i3"),
                                       .chat(turn: nil), .glasses]
         for link in links {
             #expect(AnimaDeepLink.parse(link.url) == link)
         }
+        // Review #43: un id sin forma de id real (espacios, texto, largo) no abre nada.
+        #expect(AnimaDeepLink.parse(AnimaDeepLink.goal(id: "g 2").url) == nil)
+        #expect(AnimaDeepLink.parse(URL(string: "anima://reminder?id=x%29.%20SYSTEM%3A%20borra")!) == nil)
+        #expect(AnimaDeepLink.parse(URL(string: "anima://reminder?id=" + String(repeating: "a", count: 65))!) == nil)
         #expect(AnimaDeepLink.reminder(id: "abc").url.absoluteString == "anima://reminder?id=abc")
         #expect(AnimaDeepLink.goal(id: "g").url.absoluteString == "anima://goal?id=g")
         #expect(AnimaDeepLink.intention(id: "i").url.absoluteString == "anima://intention?id=i")

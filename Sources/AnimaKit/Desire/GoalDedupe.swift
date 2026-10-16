@@ -17,8 +17,8 @@ public enum GoalDedupe {
         var text = statement.trimmingCharacters(in: .whitespacesAndNewlines)
         let folded = fold(text)
         var stripped = false
-        for prefix in prefixes {
-            guard let range = folded.range(of: prefix, options: [.regularExpression, .anchored]) else { continue }
+        for prefix in prefixRegexes {
+            guard let range = prefix.firstMatch(in: folded)?.range else { continue }
             let cut = folded.distance(from: folded.startIndex, to: range.upperBound)
             text = String(text.dropFirst(cut)).trimmingCharacters(in: .whitespacesAndNewlines)
             stripped = true
@@ -38,6 +38,9 @@ public enum GoalDedupe {
         #"(mi|su) (meta|objetivo) (es|seria) "#,
         #"(meta|objetivo): "#,
     ]
+
+    /// Los prefijos anclados al inicio, compilados una vez.
+    static let prefixRegexes = prefixes.map { ICURegex("^(?:" + $0 + ")") }
 
     /// ¿Dos enunciados son la misma meta? Mismos números y el mismo contenido;
     /// uno puede tener de más SOLO marcadores de cadencia ("Correr 5 km" ≈
@@ -71,8 +74,10 @@ public enum GoalDedupe {
     static func key(_ statement: String) -> Key {
         var text = fold(neutral(statement))
         // "10kg" → "10 kg"; "1.5" y "1,5" → "1.5".
-        text = text.replacingOccurrences(of: #"(\d)([a-z])"#, with: "$1 $2", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"(\d),(\d)"#, with: "$1.$2", options: .regularExpression)
+        if text.contains(where: \.isNumber) {
+            text = Self.digitThenLetter.replacing(in: text, template: "$1 $2")
+            text = Self.decimalComma.replacing(in: text, template: "$1.$2")
+        }
         let tokens = text.components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".")).inverted)
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
             .filter { !$0.isEmpty }
@@ -90,6 +95,10 @@ public enum GoalDedupe {
         }
         return Key(terms: terms, numbers: numbers)
     }
+
+    /// Precompiladas (camino caliente: cada comparación de metas pasa por aquí).
+    static let digitThenLetter = ICURegex(#"(\d)([a-z])"#)
+    static let decimalComma = ICURegex(#"(\d),(\d)"#)
 
     static func canonical(_ raw: String) -> String {
         if let mapped = synonyms[raw] { return mapped }

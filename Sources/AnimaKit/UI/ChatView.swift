@@ -6,6 +6,9 @@
 
 #if canImport(SwiftUI)
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 public final class ChatViewModel: ObservableObject {
@@ -58,6 +61,10 @@ public final class ChatViewModel: ObservableObject {
         /// Una tool falló en el turno: el texto abre con "⚠️ No pude …" y la
         /// card lleva el ícono de alerta.
         public var toolFailure: Bool = false
+        /// Lo que el dueño citó en este turno (se pinta arriba del texto).
+        public var quote: ChatQuote?
+        /// Rowid del turno persistido (id de la cita de un mensaje del historial).
+        public var turnRowId: Int64?
 
         /// Tipo de card proactiva (nil si es un mensaje normal).
         public var proactiveKind: ProactiveMessage.Kind? {
@@ -137,12 +144,15 @@ public final class ChatViewModel: ObservableObject {
            let proactive = ProactiveMessage(tag: tag, text: turn.text) {
             var card = DisplayMessage.proactive(proactive)
             if let createdAt = turn.createdAt { card.sentAt = createdAt }
+            card.turnRowId = turn.rowId
             return card
         }
         var message = DisplayMessage(role: turn.role, text: turn.text, isVoice: turn.isVoice,
                                      imageData: turn.imageBase64.flatMap { Data(base64Encoded: $0) })
         message.toolFailure = turn.role == .assistant && ToolFailureNotice.isNotice(turn.text)
         message.surface = turn.role == .user ? turn.surface : nil
+        message.quote = turn.role == .user ? turn.quote : nil
+        message.turnRowId = turn.rowId
         if let createdAt = turn.createdAt { message.sentAt = createdAt }
         return message
     }
@@ -410,7 +420,86 @@ public final class ChatViewModel: ObservableObject {
     }
 
     /// Placeholder del campo: con adjunto, el hint de que falta el paso de enviar.
-    public var inputPlaceholder: String { pendingImage == nil ? "Mensaje" : "Agrega un mensaje…" }
+    public var inputPlaceholder: String {
+        if quote != nil { return "Responde…" }
+        return pendingImage == nil ? "Mensaje" : "Agrega un mensaje…"
+    }
+
+    // MARK: Responder citando (reply estilo WhatsApp)
+
+    /// Lo citado, arriba del campo del composer (X para quitarlo).
+    @Published public private(set) var quote: ChatQuote?
+    /// Una cita nueva pide el foco del composer: la vista lo da (al cambiar o al
+    /// aparecer, si llegó con el chat en otra tab) y lo consume.
+    @Published public var wantsComposerFocus = false
+    /// Arma la cita vigente desde la base (lo cablea el shell). nil ⇒ la cita va tal cual.
+    public var quoteResolver: ChatQuoteResolver?
+
+    /// Cita lista (tap en un recordatorio, "Hablar de esta meta"): al composer con el foco.
+    public func reply(with quote: ChatQuote) {
+        self.quote = quote
+        wantsComposerFocus = true
+    }
+
+    /// Deep link `anima://chat?quote=<tipo>:<id>`: resuelve y cita (o "ya no existe").
+    public func reply(to ref: ChatQuoteRef) async {
+        if let quoteResolver {
+            reply(with: await quoteResolver.resolve(ref))
+        } else if let message = messages.last(where: { quote(for: $0)?.ref == ref }), let quote = quote(for: message) {
+            reply(with: quote)
+        } else {
+            reply(with: .missing(ref))
+        }
+    }
+
+    /// Swipe o "Responder" sobre un mensaje: un recordatorio entregado se cita como
+    /// recordatorio (con su id, para que ella lo pueda mover o dar por hecho), un
+    /// check-in como seguimiento, lo demás como mensaje.
+    public func reply(to message: DisplayMessage) async {
+        guard let base = quote(for: message) else { return }
+        reply(with: base)
+        guard base.kind != .message, let quoteResolver else { return }
+        let resolved = await quoteResolver.resolve(base.ref, known: base)
+        // Si el dueño ya la cambió o quitó mientras resolvía, no se pisa.
+        if quote?.ref == base.ref { quote = resolved.missing ? ChatQuote.missing(base.ref) : resolved }
+    }
+
+    public func clearQuote() {
+        quote = nil
+    }
+
+    /// ¿Se puede citar? (no separadores, ni lo que aún fluye, ni errores sin contenido).
+    public func canQuote(_ message: DisplayMessage) -> Bool {
+        quote(for: message) != nil
+    }
+
+    /// La cita de un mensaje del chat (pura; la resolución afina título y detalle).
+    public func quote(for message: DisplayMessage) -> ChatQuote? {
+        guard !message.isSessionDivider, !message.isStreaming, !message.isError else { return nil }
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch message.proactiveKind {
+        case .reminder(let id)?:
+            return ChatQuote(ref: ChatQuoteRef(kind: .reminder, id: id), title: "Recordatorio", excerpt: text,
+                             detail: message.proactiveAt.map { "entregado \(dates.shortMoment($0))" })
+        case .checkIn(let goalId)?:
+            return ChatQuote(ref: ChatQuoteRef(kind: .checkIn, id: goalId),
+                             title: message.goalStatement ?? "Seguimiento", excerpt: text)
+        case .intention?, .nudge?, nil:
+            guard !text.isEmpty || message.imageData != nil else { return nil }
+            let id = message.turnRowId.map(String.init) ?? message.id.uuidString
+            let excerpt = text.isEmpty ? "Foto" : ChatQuote.plainExcerpt(fromMarkdown: text)
+            return ChatQuote(ref: ChatQuoteRef(kind: .message, id: id),
+                             title: message.role == .user ? ChatQuote.ownerTitle : selfName, excerpt: excerpt)
+        }
+    }
+
+    /// Al enviar: la cita vigente (por si lo citado cambió o se borró mientras escribía).
+    private func takeQuote() async -> ChatQuote? {
+        guard let quote else { return nil }
+        self.quote = nil
+        guard quote.kind != .message, let quoteResolver else { return quote }
+        return await quoteResolver.resolve(quote.ref, known: quote)
+    }
 
     public init(loop: AgentLoop, sessionId: SessionID, desireEngine: DesireEngine? = nil,
                 selfModel: SelfModel? = nil) {
@@ -524,6 +613,7 @@ public final class ChatViewModel: ObservableObject {
         guard !text.isEmpty || image != nil, !isStreaming, turnGate?.current == nil else { return }
         input = ""
         pendingImage = nil
+        let quote = await takeQuote()
         if !text.isEmpty { eventSink.yield(.userText(text)) }
         var content: [ContentBlock] = []
         var asText = false
@@ -537,8 +627,9 @@ public final class ChatViewModel: ObservableObject {
             }
         }
         if !text.isEmpty { content.append(.text(text)) }
-        await dispatch(DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText),
-                  content: content)
+        var bubble = DisplayMessage(role: .user, text: text, imageData: image?.thumb, photoSentAsText: asText)
+        bubble.quote = quote
+        await dispatch(bubble, content: content, quote: quote)
     }
 
     // MARK: Foto (cámara / galería → ImageDownscaler → thumb en el composer)
@@ -607,7 +698,10 @@ public final class ChatViewModel: ObservableObject {
         let text = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
         eventSink.yield(.voiceTranscript(text))
-        await dispatch(DisplayMessage(role: .user, text: text, isVoice: true), content: [AudioTool.transcriptBlock(text)])
+        let quote = await takeQuote()
+        var bubble = DisplayMessage(role: .user, text: text, isVoice: true)
+        bubble.quote = quote
+        await dispatch(bubble, content: [AudioTool.transcriptBlock(text)], quote: quote)
     }
 
     /// "Reintentar" del error card: reintenta el último turno sin duplicar la
@@ -621,7 +715,7 @@ public final class ChatViewModel: ObservableObject {
                 kind: .trim, fromSeq: 0, model: contextGauge?.model, createdAt: now()).dividerText,
                 isSessionDivider: true))
         }
-        await dispatch(nil, content: content)
+        await dispatch(nil, content: content, quote: lastUserQuote)
     }
 
     // MARK: Conexión (5b #7)
@@ -632,20 +726,24 @@ public final class ChatViewModel: ObservableObject {
     /// Hay modelo local para seguir sin red (Solo teléfono / Híbrido).
     public var localModelAvailable = false
     private var queuedContent: [ContentBlock]?
+    private var queuedQuote: ChatQuote?
+    private var lastUserQuote: ChatQuote?
     public static let offlineQueuedNote = "Sin conexión: te lo envío apenas vuelva la red."
     public static let busyQueuedNote = "Te lo envío apenas termine lo anterior."
 
     /// Turno del dueño: sin red y con modelo remoto, se muestra y se encola
     /// (con aviso claro) en vez de fallar y pedir "Reintentar".
-    private func dispatch(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
+    private func dispatch(_ bubble: DisplayMessage?, content: [ContentBlock], quote: ChatQuote? = nil) async {
         guard isOffline, usesRemoteConversation else {
-            await run(bubble, content: content)
+            await run(bubble, content: content, quote: quote)
             return
         }
         if let bubble { messages.append(bubble) }
         messages.append(DisplayMessage(role: .assistant, text: Self.offlineQueuedNote, isSessionDivider: true))
         lastUserContent = content
+        lastUserQuote = quote
         queuedContent = content
+        queuedQuote = quote
     }
 
     public var hasQueuedTurn: Bool { queuedContent != nil }
@@ -660,9 +758,11 @@ public final class ChatViewModel: ObservableObject {
     /// volvió a mitad de un turno, sale al terminarlo).
     private func sendQueuedIfOnline() async {
         guard !isOffline, let content = queuedContent, !isStreaming, canSendQueued() else { return }
+        let quote = queuedQuote
         queuedContent = nil
+        queuedQuote = nil
         // Si otra superficie toma la compuerta en el medio, run() lo re-encola.
-        await run(nil, content: content)
+        await run(nil, content: content, quote: quote)
     }
 
     // MARK: Contexto (medidor, compactar, nueva conversación)
@@ -704,7 +804,7 @@ public final class ChatViewModel: ObservableObject {
         messages.append(Self.divider(Self.newConversationText))
     }
 
-    private func run(_ bubble: DisplayMessage?, content: [ContentBlock]) async {
+    private func run(_ bubble: DisplayMessage?, content: [ContentBlock], quote: ChatQuote? = nil) async {
         let token = turnGate?.begin(.phoneChat)
         if turnGate != nil, token == nil {
             // Otra superficie tiene el turno: el mensaje no se pierde, queda
@@ -714,7 +814,9 @@ public final class ChatViewModel: ObservableObject {
                 messages.append(DisplayMessage(role: .assistant, text: Self.busyQueuedNote, isSessionDivider: true))
             }
             lastUserContent = content
+            lastUserQuote = quote
             queuedContent = content
+            queuedQuote = quote
             refreshBusy()
             return
         }
@@ -723,6 +825,7 @@ public final class ChatViewModel: ObservableObject {
         ownTurn = true
         errorText = nil
         lastUserContent = content
+        lastUserQuote = quote
         if let bubble {
             messages.append(bubble)
         }
@@ -733,7 +836,7 @@ public final class ChatViewModel: ObservableObject {
         var index = messages.count - 1
         refreshBusy()
 
-        for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat) {
+        for await event in await loop.run(sessionId: sessionId, content: content, surface: .phoneChat, quote: quote) {
             switch event {
             case .textDelta(let d):
                 assistant.text += d
@@ -913,7 +1016,7 @@ public struct ChatView: View {
                                     if let header = headers[message.id] {
                                         DaySeparator(text: header)
                                     }
-                                    bubble(message)
+                                    replyable(message)
                                 }
                                 .id(message.id)
                             }
@@ -951,6 +1054,7 @@ public struct ChatView: View {
                     .onChange(of: model.focusedMessageId) { _, id in
                         if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
                     }
+
                     // Review #34: con 50 turnos el LazyVStack estima alturas y el
                     // ancla inicial no quedaba al fondo. Tras el layout (y un par
                     // de pasadas mientras se asientan las alturas) → al último.
@@ -1064,6 +1168,30 @@ public struct ChatView: View {
 
     // MARK: Mensajes
 
+    /// Cada mensaje citable: deslizar a la derecha (como WhatsApp) o mantener
+    /// presionado → "Responder" (VoiceOver: acción "Responder" de la burbuja). La envoltura es siempre la misma (solo cambia
+    /// `enabled`): al terminar el stream la vista no cambia de identidad.
+    private func replyable(_ message: ChatViewModel.DisplayMessage) -> some View {
+        let enabled = !message.isSessionDivider && model.canQuote(message)
+        let reply = { Task { await model.reply(to: message) } }
+        return SwipeToReply(enabled: enabled, onReply: { _ = reply() }) {
+            bubble(message)
+        }
+        .contextMenu {
+            if enabled {
+                Button { _ = reply() } label: { Label("Responder", systemImage: "arrowshape.turn.up.left") }
+                    .accessibilityIdentifier("chat.reply")
+            }
+        }
+        // VoiceOver: "Responder" en el rotor de acciones de la burbuja (el swipe
+        // no existe para VoiceOver y el menú queda a un doble toque sostenido).
+        .accessibilityActions {
+            if enabled {
+                Button("Responder") { _ = reply() }
+            }
+        }
+    }
+
     @ViewBuilder
     private func bubble(_ message: ChatViewModel.DisplayMessage) -> some View {
         if message.isSessionDivider {
@@ -1087,6 +1215,10 @@ public struct ChatView: View {
         HStack {
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 4) {
+                if let quote = message.quote {
+                    QuoteSnippet(quote: quote)
+                        .accessibilityIdentifier("chat.userMessage.quote")
+                }
                 if let data = message.imageData {
                     Button { viewerImage = ViewerImage(data: data) } label: {
                         PhotoThumb(data: data, width: 160, height: 110)
@@ -1559,8 +1691,12 @@ public struct ChatView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("chat.camera")
 
-            // Contenedor único que crece: adjunto (si hay) + campo.
+            // Contenedor único que crece: cita (si hay) + adjunto (si hay) + campo.
             VStack(alignment: .leading, spacing: 0) {
+                if let quote = model.quote {
+                    ComposerQuoteBar(quote: quote) { model.clearQuote() }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 pendingAttachment
                 TextField(model.inputPlaceholder, text: $model.input, axis: .vertical)
                     .font(Theme.Type_.body)
@@ -1570,6 +1706,20 @@ public struct ChatView: View {
                     .padding(.vertical, 10)
                     .frame(minHeight: 40)
                     .focused($inputFocused)
+                    // Cita nueva (tap en un recordatorio, swipe, deep link): foco al
+                    // campo para responder; corre también al aparecer (la cita llegó
+                    // con el chat en otra tab).
+                    .task(id: model.wantsComposerFocus) {
+                        guard model.wantsComposerFocus else { return }
+                        // Tras un salto de tab el primer intento se pierde: se
+                        // reintenta acotado hasta que el campo tenga el foco.
+                        for _ in 0..<12 where !inputFocused {
+                            try? await Task.sleep(for: .milliseconds(150))
+                            guard !Task.isCancelled else { return }
+                            inputFocused = true
+                        }
+                        model.wantsComposerFocus = false
+                    }
                     .onSubmit { inputFocused = false; Task { await model.send() } }
                     .accessibilityIdentifier("chat.input")
             }
@@ -1578,9 +1728,10 @@ public struct ChatView: View {
                     .fill(Theme.Colors.surface))
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.control)
-                    .strokeBorder(model.pendingImage == nil ? Theme.Colors.border : Theme.Colors.accent,
-                                  lineWidth: Theme.Stroke.hairline))
+                    .strokeBorder(model.pendingImage == nil && model.quote == nil ? Theme.Colors.border
+                                  : Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
             .animation(.easeOut(duration: 0.2), value: model.pendingImage != nil)
+            .animation(.easeOut(duration: 0.2), value: model.quote?.id)
 
             Button {
                 inputFocused = false
@@ -1672,6 +1823,177 @@ struct BottomFollower: ViewModifier {
             }
     }
 }
+
+// MARK: - Responder citando
+
+/// La cita sobre el campo del composer (como el reply de WhatsApp): barra de
+/// acento, de qué se trata, el extracto en una línea y la X para quitarla.
+struct ComposerQuoteBar: View {
+    let quote: ChatQuote
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Theme.Space.unit * 2) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Theme.Colors.accent)
+                .frame(width: 3)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(quote.label)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .lineLimit(1)
+                Text(quote.excerpt)
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(quote.missing ? Theme.Colors.textFaint : Theme.Colors.textMuted)
+                    .italic(quote.missing)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(quote.accessibilityLabel)
+            .accessibilityIdentifier("chat.quote.text")
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(Theme.Type_.meta.weight(.semibold))
+                    .foregroundStyle(Theme.Colors.textMuted)
+                    .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Quitar cita")
+            .accessibilityIdentifier("nav.close.quote")
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.leading, Theme.Space.cardPad)
+        .padding(.top, Theme.Space.unit * 1.5)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.quote.composer")
+    }
+}
+
+/// La cita dentro de la burbuja del dueño, arriba de su texto.
+struct QuoteSnippet: View {
+    let quote: ChatQuote
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.Space.unit * 2) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(Theme.Colors.accent)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(quote.label)
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .lineLimit(2)
+                Text(quote.excerpt)
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.textMuted)
+                    .italic(quote.missing)
+                    .lineLimit(3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(Theme.Space.unit * 2)
+        .background(RoundedRectangle(cornerRadius: Theme.Radius.control).fill(Theme.Colors.bg.opacity(0.6)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Cita: \(quote.label). \(quote.excerpt)")
+    }
+}
+
+/// Deslizar a la derecha para citar (como WhatsApp): el mensaje acompaña el
+/// dedo con resistencia, aparece la flecha y al pasar el umbral vibra; al
+/// soltar pasado el umbral, cita. Solo arranca con un gesto claramente
+/// horizontal hacia la derecha: el scroll vertical del chat no se entera.
+struct SwipeToReply<Content: View>: View {
+    let enabled: Bool
+    let onReply: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var offset: CGFloat = 0
+    @State private var armed = false
+    static var threshold: CGFloat { 56 }
+    static var maxOffset: CGFloat { 84 }
+
+    var body: some View {
+        content()
+            .offset(x: offset)
+            .background(alignment: .leading) {
+                Image(systemName: "arrowshape.turn.up.left.fill")
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accent)
+                    .opacity(Double(min(1, offset / Self.threshold)))
+                    .scaleEffect(armed ? 1.15 : 0.85)
+                    .padding(.leading, Theme.Space.unit)
+                    .accessibilityHidden(true)
+            }
+            #if os(iOS)
+            .gesture(SwipeToReplyRecognizer(enabled: enabled, onChange: track, onEnd: release))
+            #endif
+            .sensoryFeedback(.impact(weight: .light), trigger: armed) { _, now in now }
+    }
+
+    private func track(_ x: CGFloat) {
+        let pulled = max(0, x)
+        // Resistencia: 1:1 hasta el umbral, luego cada vez menos.
+        offset = pulled <= Self.threshold ? pulled
+            : min(Self.maxOffset, Self.threshold + (pulled - Self.threshold) * 0.35)
+        armed = pulled >= Self.threshold
+    }
+
+    private func release(_ x: CGFloat) {
+        let fire = x >= Self.threshold
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { offset = 0 }
+        armed = false
+        if fire { onReply() }
+    }
+}
+
+#if os(iOS)
+/// Pan de UIKit que solo empieza si el gesto es horizontal hacia la derecha
+/// (velocidad x > 0 y dominante): un `DragGesture` de SwiftUI dentro del
+/// ScrollView le peleaba el scroll vertical.
+struct SwipeToReplyRecognizer: UIGestureRecognizerRepresentable {
+    let enabled: Bool
+    let onChange: (CGFloat) -> Void
+    let onEnd: (CGFloat) -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var enabled = true
+
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard enabled, let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return velocity.x > 0 && abs(velocity.x) > abs(velocity.y) * 1.5
+        }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        context.coordinator.enabled = enabled
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.enabled = enabled
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let x = recognizer.translation(in: recognizer.view).x
+        switch recognizer.state {
+        case .began, .changed: onChange(x)
+        case .ended: onEnd(x)
+        case .cancelled, .failed: onEnd(0)
+        default: break
+        }
+    }
+}
+#endif
 
 /// "Sin conexión" centrado sobre el composer (5b #7).
 struct OfflinePill: View {

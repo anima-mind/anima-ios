@@ -103,8 +103,10 @@ public enum SiriTurn {
         }
         let words = String(kept).split(whereSeparator: \.isWhitespace).joined(separator: " ")
         // Lo que quedó suelto al quitar un emoji: " ." → ".".
-        return words.replacingOccurrences(of: #" +([.,;:!?…])"#, with: "$1", options: .regularExpression)
+        return looseSpaceBeforePunctuation.replacing(in: words, template: "$1")
     }
+
+    static let looseSpaceBeforePunctuation = ICURegex(#" +([.,;:!?…])"#)
 
     /// Emoji y pictogramas (con sus selectores, tonos y uniones). No toca
     /// letras, dígitos, "#", "*", ni símbolos de texto como ™ o ©.

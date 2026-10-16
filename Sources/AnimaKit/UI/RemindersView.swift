@@ -1,7 +1,9 @@
 // RemindersView.swift — la tab Recordatorios: lo que Anima tiene programado
-// para decirte (qué, qué te dirá, cuándo, si se repite) con Hecho / Cancelar por
-// swipe o context menu, y los check-ins activos de tus metas (→ la meta). Es el
-// destino de "N programados" en Ajustes → Notificaciones.
+// para decirte (qué, qué te dirá, cuándo, si se repite). Tap → el chat con el
+// recordatorio citado para responderle ("responder citando"); Hecho / Cancelar
+// por swipe y Posponer / Marcar hecho / Borrar en el context menu. Los
+// check-ins activos de tus metas llevan a la meta (o al chat, desde el menú).
+// Es el destino de "N programados" en Ajustes → Notificaciones.
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -31,6 +33,10 @@ public final class RemindersViewModel: ObservableObject {
     public var onChange: (@Sendable () async -> Void)?
     /// Check-in → su meta (el shell salta a la tab Metas).
     public var onOpenGoal: ((String) -> Void)?
+    /// "Responder citando": el chat con lo citado en el composer (lo cablea el shell).
+    public var onTalk: ((ChatQuote) -> Void)?
+    /// Arma la cita desde la base (título, lo que dirá, cuándo).
+    public var quoteResolver: ChatQuoteResolver?
     public var now: @Sendable () -> Date = { Date() }
     public var dates = AnimaDateText()
 
@@ -54,6 +60,28 @@ public final class RemindersViewModel: ObservableObject {
     public func complete(_ item: Item) async {
         guard item.kind == .reminder else { return }
         _ = try? await store.complete(id: item.id)
+        await changed()
+    }
+
+    /// Tap en un recordatorio programado (o "Hablar en el chat" de un check-in).
+    public func talk(about item: Item) async {
+        let ref = Self.quoteRef(item)
+        let quote = await quoteResolver?.resolve(ref)
+            ?? ChatQuote(ref: ref, title: item.title, excerpt: item.spoken ?? item.schedule, detail: item.schedule)
+        onTalk?(quote)
+    }
+
+    static func quoteRef(_ item: Item) -> ChatQuoteRef {
+        switch item.kind {
+        case .reminder: return ChatQuoteRef(kind: .reminder, id: item.id)
+        case .checkIn(let goalId): return ChatQuoteRef(kind: .checkIn, id: goalId)
+        }
+    }
+
+    /// "Posponer 1 hora" (el mismo tramo que la acción de la notificación).
+    public func snooze(_ item: Item) async {
+        guard item.kind == .reminder else { return }
+        _ = try? await store.snooze(id: item.id, minutes: ProactiveNotificationIDs.snoozeMinutes)
         await changed()
     }
 
@@ -177,6 +205,38 @@ public struct RemindersView: View {
     }
 
     private func reminderRow(_ item: RemindersViewModel.Item) -> some View {
+        Button { Task { await model.talk(about: item) } } label: {
+            reminderLabel(item)
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Theme.Colors.surface)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) { Task { await model.cancel(item) } } label: {
+                Label("Cancelar", systemImage: "xmark")
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button { Task { await model.complete(item) } } label: {
+                Label("Hecho", systemImage: "checkmark")
+            }
+            .tint(Theme.Colors.accent)
+        }
+        .contextMenu {
+            Button { Task { await model.talk(about: item) } } label: {
+                Label("Hablar en el chat", systemImage: "bubble.left")
+            }
+            Button { Task { await model.snooze(item) } } label: { Label("Posponer 1 hora", systemImage: "clock") }
+            Button { Task { await model.complete(item) } } label: { Label("Marcar hecho", systemImage: "checkmark") }
+            Button(role: .destructive) { Task { await model.cancel(item) } } label: {
+                Label("Borrar", systemImage: "trash")
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Abre el chat para responderle a este recordatorio")
+        .accessibilityIdentifier("reminders.item")
+    }
+
+    private func reminderLabel(_ item: RemindersViewModel.Item) -> some View {
         HStack(alignment: .top, spacing: Theme.Space.stack) {
             Image(systemName: "bell")
                 .font(Theme.Type_.body.weight(.light))
@@ -199,28 +259,14 @@ public struct RemindersView: View {
                     .foregroundStyle(Theme.Colors.accentText)
             }
             Spacer(minLength: 0)
+            Image(systemName: "bubble.left")
+                .font(Theme.Type_.meta.weight(.light))
+                .foregroundStyle(Theme.Colors.textFaint)
+                .padding(.top, Theme.Space.unit)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, Theme.Space.unit)
-        .listRowBackground(Theme.Colors.surface)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) { Task { await model.cancel(item) } } label: {
-                Label("Cancelar", systemImage: "xmark")
-            }
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button { Task { await model.complete(item) } } label: {
-                Label("Hecho", systemImage: "checkmark")
-            }
-            .tint(Theme.Colors.accent)
-        }
-        .contextMenu {
-            Button { Task { await model.complete(item) } } label: { Label("Hecho", systemImage: "checkmark") }
-            Button(role: .destructive) { Task { await model.cancel(item) } } label: {
-                Label("Cancelar", systemImage: "xmark")
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("reminders.item")
+        .contentShape(Rectangle())
     }
 
     private func checkInRow(_ item: RemindersViewModel.Item) -> some View {
@@ -253,6 +299,14 @@ public struct RemindersView: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(Theme.Colors.surface)
+        .contextMenu {
+            Button { Task { await model.talk(about: item) } } label: {
+                Label("Hablar en el chat", systemImage: "bubble.left")
+            }
+            Button {
+                if case .checkIn(let goalId) = item.kind { model.onOpenGoal?(goalId) }
+            } label: { Label("Ver la meta", systemImage: "target") }
+        }
         .accessibilityIdentifier("reminders.checkin")
     }
 }

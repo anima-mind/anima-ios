@@ -176,8 +176,15 @@ public actor AgentLoop {
 
     /// Turno multimodal: los content blocks (texto + image blocks de una foto, o
     /// texto de un transcript de audio) forman el mensaje user del turno.
+    /// `quote`: lo que el dueño citó ("responder citando"): entra como bloque de
+    /// contexto estructurado antes de su mensaje y se persiste con el turno.
     public func run(sessionId: SessionID, content: [ContentBlock],
                     surface: SurfaceID = .phoneChat) -> AsyncStream<LoopEvent> {
+        run(sessionId: sessionId, content: content, surface: surface, quote: nil)
+    }
+
+    public func run(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID,
+                    quote: ChatQuote?) -> AsyncStream<LoopEvent> {
         let id = UUID()
         // Serializado POR SESIÓN: el turno espera a que termine el anterior de
         // la misma sesión (aunque su consumidor ya cortó), así jamás se
@@ -197,7 +204,7 @@ public actor AgentLoop {
                     self.untrack(id, sessionId: sessionId)
                     return
                 }
-                await self.runTurn(sessionId: sessionId, content: content, surface: surface,
+                await self.runTurn(sessionId: sessionId, content: content, surface: surface, quote: quote,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
                 self.untrack(id, sessionId: sessionId)
@@ -262,16 +269,16 @@ public actor AgentLoop {
         }
     }
 
-    private func runTurn(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID,
+    private func runTurn(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID, quote: ChatQuote?,
                          emit: @escaping @Sendable (LoopEvent) -> Void) async {
         let skillTurn = SkillTurn()
-        let end = await runTurnBody(sessionId: sessionId, content: content, surface: surface,
+        let end = await runTurnBody(sessionId: sessionId, content: content, surface: surface, quote: quote,
                                     emit: emit, skillTurn: skillTurn)
         await concludeSkill(skillTurn, end: end, sessionId: sessionId)
     }
 
     /// El cuerpo del turno; cada salida devuelve CÓMO terminó (para practice).
-    private func runTurnBody(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID,
+    private func runTurnBody(sessionId: SessionID, content: [ContentBlock], surface: SurfaceID, quote: ChatQuote?,
                              emit: @escaping @Sendable (LoopEvent) -> Void,
                              skillTurn: SkillTurn) async -> TurnEnd {
         let turnStart = Date()
@@ -299,7 +306,8 @@ public actor AgentLoop {
             }
             let route = binding.router.route(turnClass)
             let toolProfile = ToolProfile.for(model: route.model)
-            allSpecs = toolProfile.apply(allSpecs)
+            allSpecs = toolProfile.apply(allSpecs, quote: quote, ownerText: Self.plainText(content),
+                                         now: clock?() ?? Date())
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -318,12 +326,19 @@ public actor AgentLoop {
 
             // Contexto activado (§5.1 posición 6): el Brain recupera para ESTE turno
             // y las memorias entran como bloque etiquetado antes del turn input.
+            // `userText` es SOLO lo que dijo el dueño (skills, inbox, reparaciones
+            // locales); la cita entra como bloque propio al turno (`turnContent`).
             let userText = Self.plainText(content)
+            let quotedTools = Set(allSpecs.map(\.name)).intersection(LocalToolAdapter.quotedReminderTools.map(\.name))
+            let turnContent = quote.map {
+                [ChatQuoteContext.block($0, compact: toolProfile == .onDevice, localTools: quotedTools)] + content
+            } ?? content
             var activatedIds: [MemoryID] = []
             if let brain {
                 let limit = min(memoryBudget, workingMemory.profile.maxActivatedMemories)
+                let query = quote.map { userText + " " + $0.title } ?? userText
                 let activated = (try? await brain.retrieve(
-                    MemoryQuery(text: userText, turnRef: sessionId, limit: limit))) ?? []
+                    MemoryQuery(text: query, turnRef: sessionId, limit: limit))) ?? []
                 activatedIds = activated.map(\.id)
                 await workingMemory.setActivatedMemories(activated)
             }
@@ -348,7 +363,7 @@ public actor AgentLoop {
 
             // Assemble con orden estable (§5.1). El turno del usuario se persiste
             // aparte; los bloques ephemeral (system, activado) no van al transcript.
-            let turn = TurnInput(sessionId: sessionId, content: content)
+            let turn = TurnInput(sessionId: sessionId, content: turnContent)
             var messages = try await workingMemory.assemble(turn)
             let systemBase = AppGuide.systemBase(binding.router.systemPromptBase,
                                                  contextBudget: workingMemory.profile.contextBudgetTokens)
@@ -363,7 +378,8 @@ public actor AgentLoop {
                                         turnSeq: turnSeq, model: fit.modelName, emit: emit)
             }
             emit(.context(fit.gauge(messages)))
-            try store.append(sessionId: sessionId, message: Message(role: .user, content: content), surface: surface)
+            try store.append(sessionId: sessionId, message: Message(role: .user, content: turnContent), surface: surface,
+                             quote: quote)
             // No se escribe al brain en caliente: se encola para el Consolidator (§5.4 a).
             // La instrucción de "Hagámoslo" no es algo que el dueño dijo: no va al sueño.
             if !IntentionAcceptance.isAcceptance(userText) {
@@ -479,6 +495,16 @@ public actor AgentLoop {
                 var content = response.content
                 let closes = response.stopReason != .toolUse && response.stopReason != .pauseTurn
                 var noticed = false
+                // Modelo local: a veces repite el bloque de la cita (o una variante
+                // entre corchetes: "[El recordatorio «…» se marca como hecho.]") como
+                // respuesta. Si el turno no escribió nada, se retira ANTES de las
+                // guardas (que ven lo que queda) y queda lo que dijo después.
+                if toolProfile == .onDevice, closes, let quote, !wroteSuccessfully,
+                   let echoed = ChatQuoteContext.withoutEcho(Self.plainText(content), quote: quote) {
+                    emit(.retracted)
+                    emit(.textDelta(echoed))
+                    content = [.text(echoed)]
+                }
                 if closes, let notice = ToolFailureNotice.notice(failures: failures.entries,
                                                                  finalText: Self.plainText(response.content)) {
                     content = ToolFailureNotice.prepend(notice, to: content)
@@ -503,7 +529,7 @@ public actor AgentLoop {
                 // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
                 // el turno cerró sin tools ⇒ dónde se hace, determinista.
                 if toolProfile == .onDevice, !localWrote, response.stopReason != .toolUse,
-                   response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText),
+                   response.stopReason != .pauseTurn, let hint = LocalWhen.changeHint(userText, quoted: quote?.kind),
                    !Self.plainText(content).contains(hint), !Self.plainText(content).lowercased().contains("tab ") {
                     let body = Self.plainText(content).trimmingCharacters(in: .whitespacesAndNewlines)
                     let addition = body.isEmpty ? hint : (Self.plainText(content).hasSuffix("\n") ? "" : "\n") + hint
@@ -536,7 +562,7 @@ public actor AgentLoop {
                         // (mismo Sensorimotor); el transcript conserva lo que dijo el modelo.
                         let resolution: LocalToolAdapter.Resolution = toolProfile == .onDevice
                             ? LocalToolAdapter.resolve(name: call.name, input: call.input, now: clock?() ?? Date(),
-                                                      ownerText: userText)
+                                                      ownerText: userText, quote: quote)
                             : .real(name: call.name, input: call.input)
                         let realName: String
                         let realInput: JSONValue
@@ -749,7 +775,11 @@ public actor AgentLoop {
     /// "¿Qué tengo pendiente?" con el modelo local: recordatorios + metas activas
     /// + agenda de hoy en un solo listado (las tools que no estén, se omiten).
     private func pendingSummary(now: Date, ownerText: String) async -> ToolResult {
-        let range = LocalWhen(now: now, calendar: .current, ownerText: ownerText).requestedRange
+        let when = LocalWhen(now: now, calendar: .current, ownerText: ownerText)
+        // "¿qué tengo el viernes 22?" con el 22 en jueves: se pregunta, no se
+        // contesta con el resumen de hoy.
+        if let question = when.ambiguousDayQuestion { return ToolResult(content: question) }
+        let range = when.requestedRange
         func read(_ tool: String, _ input: JSONValue) async -> String? {
             guard await sensorimotor.has(tool) else { return nil }
             let result = await sensorimotor.execute(name: tool, input: input)

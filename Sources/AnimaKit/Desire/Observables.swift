@@ -182,6 +182,8 @@ public struct MockObservableEnvironment: ObservableEnvironment {
 
 /// "Días desde la última mención" (§5.8) sobre el transcript: el turno del dueño
 /// más reciente cuyo texto contiene el topic (LIKE, sin mayúsculas para ASCII).
+/// El bloque de una cita (primer bloque de un turno con quote_json) no es algo
+/// que el dueño dijo: no cuenta como mención.
 public struct MentionIndex: Sendable {
     private let queue: DatabaseQueue
     private let now: @Sendable () -> Date
@@ -199,7 +201,9 @@ public struct MentionIndex: Sendable {
         let last = (try? queue.read { db in
             try Double.fetchOne(db, sql: """
                 SELECT created_at FROM turn_event
-                WHERE role='user' AND content_json LIKE ? ESCAPE '\\'
+                WHERE role='user'
+                  AND (CASE WHEN quote_json IS NULL THEN content_json
+                            ELSE json_remove(content_json, '$[0]') END) LIKE ? ESCAPE '\\'
                 ORDER BY created_at DESC LIMIT 1
                 """, arguments: ["%\(escaped)%"])
         }).flatMap { $0 }

@@ -77,6 +77,28 @@ public enum LocalToolAdapter {
             example: "{name:'libros'}"),
     ]
 
+    /// Solo viajan cuando el dueño cita un recordatorio ("responder citando"):
+    /// actúan sobre EL citado y el id lo pone el adapter (el 3B no copia ids).
+    public static let quotedReminderTools: [LocalTool] = [
+        LocalTool(
+            name: "move_reminder", realTool: "anima_reminders", realAction: "reschedule",
+            spec: spec("move_reminder", "Mueve el recordatorio citado a otra fecha y hora. Ej: {when:'2026-10-09 18:00'}",
+                       [("when", .date)]),
+            example: "{when:'2026-10-09 18:00'}"),
+        LocalTool(
+            name: "done_reminder", realTool: "anima_reminders", realAction: "complete",
+            spec: spec("done_reminder", "Marca como hecho el recordatorio citado.", []),
+            example: "{}"),
+        LocalTool(
+            name: "undo_done", realTool: "anima_reminders", realAction: "reopen",
+            spec: spec("undo_done", "Deshace el hecho del recordatorio citado: vuelve a estar pendiente.", []),
+            example: "{}"),
+    ]
+
+    /// Las de la cita sin parámetros: si viajan (pedido estricto del dueño) se
+    /// ejecutan aunque el 3B no las llame.
+    public static let forcedQuotedTools: Set<String> = ["done_reminder", "undo_done"]
+
     /// "crear el recordatorio": la intención de una tool local.
     public static func verb(local name: String) -> String {
         guard let tool = byName[name] else { return "usar \(name)" }
@@ -89,7 +111,8 @@ public enum LocalToolAdapter {
 
     public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "list_events", "read_note"]
 
-    static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
+    static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: (tools + quotedReminderTools)
+        .map { ($0.name, $0) })
 
     /// Las tools reales que tienen forma local.
     public static var realTools: Set<String> { Set(tools.map(\.realTool)) }
@@ -99,12 +122,157 @@ public enum LocalToolAdapter {
     /// Las specs locales para las tools reales disponibles (orden estable).
     /// Idempotente: acepta specs reales o ya locales.
     public static func specs(for available: [ToolSpec]) -> [ToolSpec] {
+        // Ya es un set local (el provider re-aplica el perfil): se respeta tal
+        // cual — re-expandirlo devolvía tools que el turno quitó a propósito
+        // (medido: remind_me volvía en un turno con cita y el 3B duplicaba).
+        if !available.isEmpty, available.allSatisfy({ byName[$0.name] != nil }) { return available }
         var real = Set<String>()
         for spec in available {
             guard case .client(let name, _, _) = spec else { continue }
             if let local = byName[name] { real.insert(local.realTool) } else { real.insert(name) }
         }
-        return tools.filter { real.contains($0.realTool) }.map(\.spec)
+        // Las de la cita se conservan si ya venían (el provider re-aplica el perfil);
+        // si SOLO vienen ellas (turno con pedido sobre lo citado), quedan solas.
+        let quoted = quotedReminderTools.filter { tool in available.contains { $0.name == tool.name } }
+        if !quoted.isEmpty, available.allSatisfy({ spec in quoted.contains { $0.name == spec.name } }) {
+            return quoted.map(\.spec)
+        }
+        return (tools + quoted).filter { real.contains($0.realTool) }.map(\.spec)
+    }
+
+    /// El set local del turno: con un recordatorio citado ACTIVO suman las tools
+    /// que actúan sobre él, y solo la que el dueño pidió (review #43: con
+    /// cualquier cita viva el 3B podía marcar hecho ante un "gracias", y un
+    /// recordatorio único hecho no se deshace).
+    public static func specs(for available: [ToolSpec], quote: ChatQuote?, ownerText: String = "",
+                             now: Date = Date()) -> [ToolSpec] {
+        var base = specs(for: available)
+        guard let quote, quote.kind == .reminder,
+              base.contains(where: { byName[$0.name]?.realTool == "anima_reminders" }) else { return base }
+        // Respondiendo a un recordatorio, crear OTRO solo si lo pide ("recuérdame…"):
+        // medido, el 3B duplicaba el citado ante "ya no me lo recuerdes" o
+        // "¿qué pasa si lo paso al lunes?" (3/3, uno con repetición diaria).
+        if !LocalWhen.opensWithCreation(ownerText) { base.removeAll { $0.name == "remind_me" } }
+        let wanted = quotedReminderIntent(ownerText).filter { applies($0, to: quote, now: now) }
+        let quoted = quotedReminderTools.filter { wanted.contains($0.name) }.map(\.spec)
+        // Con un pedido claro sobre lo citado viaja SOLO esa tool: el set base
+        // ya ocupa ~870 tokens (techo 900) y con otras a mano el 3B listaba o
+        // creaba uno nuevo en vez de mover.
+        return quoted.isEmpty ? base : quoted
+    }
+
+    /// Mover/hecho: sobre un recordatorio activo. Deshacer: sobre uno hecho en
+    /// las últimas 24 h.
+    static func applies(_ tool: String, to quote: ChatQuote, now: Date) -> Bool {
+        guard quote.kind == .reminder, !quote.missing else { return false }
+        if tool == "undo_done" {
+            guard quote.closed, let doneAt = quote.doneAt else { return false }
+            return now.timeIntervalSince(doneAt) <= AnimaReminderStore.reopenWindow
+        }
+        return quote.isActionable
+    }
+
+    /// Qué pide el dueño sobre el recordatorio citado. Criterio (review #43):
+    /// ante la duda NO se actúa — un "no entendí" es aceptable, marcar hecho o
+    /// mover mal no. Listas blancas estrictas, nunca con pregunta:
+    /// - mover: un imperativo ("pásalo", "muévelo", "posponlo", "cámbialo para…")
+    ///   o una respuesta que es SOLO una fecha u hora ("mañana a las 5", "para
+    ///   el viernes", "mejor a las 5", "en una hora", "más tarde");
+    /// - hecho: pasado explícito de completar ("ya lo hice", "ya lo pagué", "ya
+    ///   pagué la luz", "lo hice", "ya está hecho", "listo, ya lo mandé") o
+    ///   "listo"/"hecho"/"ok listo"/"cumplido"/"dale por hecho" SOLOS;
+    /// - deshacer: "no lo he hecho", "deshaz", "desmárcalo"… (solo sobre un
+    ///   recordatorio ya hecho).
+    public static func quotedReminderIntent(_ ownerText: String) -> Set<String> {
+        let spoken = ownerText.hasPrefix(AudioTool.transcriptPrefix)
+            ? String(ownerText.dropFirst(AudioTool.transcriptPrefix.count)) : ownerText
+        guard !spoken.contains("?"), !spoken.contains("¿") else { return [] }
+        let owner = normalizedOwner(spoken)
+        guard !owner.isEmpty else { return [] }
+        var out: Set<String> = []
+        if asksToUndo(owner) { out.insert("undo_done"); return out }
+        if saysDone(owner) { out.insert("done_reminder") }
+        if asksToMove(owner) { out.insert("move_reminder") }
+        // Las dos a la vez es contradictorio ("listo, pásalo mañana"): nada.
+        return out.count > 1 ? [] : out
+    }
+
+    /// Plegado, sin puntuación (salvo ":" de las horas) y con espacios simples.
+    static func normalizedOwner(_ text: String) -> String {
+        let folded = LocalWhen.fold(text)
+        let kept = folded.unicodeScalars.map { scalar -> Character in
+            CharacterSet.letters.contains(scalar) || CharacterSet.decimalDigits.contains(scalar) || scalar == ":"
+                ? Character(scalar) : " "
+        }
+        return String(kept).split(separator: " ").joined(separator: " ")
+    }
+
+    static let completedVerbs = "hice|pague|mande|envie|abone|llame|compre|tome|termine|cumpli|deposite|transferi|entregue|complete"
+
+    /// Pasado explícito de completar, o "listo/hecho" solos. Futuros, negaciones,
+    /// "pero", "ya veo/sé/casi/voy" y "hecho de/un" nunca.
+    static func saysDone(_ owner: String) -> Bool {
+        let words = Set(owner.split(separator: " ").map(String.init))
+        let blocked: Set<String> = ["no", "pero", "voy", "vamos", "hago", "hare", "ahorita", "ahora", "luego", "despues",
+                                    "manana", "casi", "pronto", "mismo", "rato", "veo", "se", "falta", "faltan",
+                                    "todavia", "aun", "gracias", "para", "menos", "lio"]
+        guard words.isDisjoint(with: blocked), words.count <= 8 else { return false }
+        if Rx.doneAlone.contains(owner) || Rx.giveAsDone.contains(owner) { return true }
+        // "(listo,) (ya) lo hice" / "ya pagué la luz": sin nada más que un objeto directo corto.
+        guard Rx.completedPast.contains(owner) else { return false }
+        // "lo hice" sin "ya" solo con "lo" ("hice" a secas es ambiguo).
+        return owner.contains("ya ") || owner.hasPrefix("lo ") || owner.hasPrefix("listo lo ")
+            || owner.contains(" lo ") || owner.contains(" la ")
+    }
+
+    /// Imperativo de mover, o una respuesta que es solo fecha/hora.
+    static func asksToMove(_ owner: String) -> Bool {
+        var words = owner.split(separator: " ").map(String.init)
+        guard !words.contains("no") else { return false }
+        let lead: Set<String> = ["mejor", "porfa", "por", "favor", "ok", "bueno", "listo", "entonces"]
+        while let first = words.first, lead.contains(first) { words.removeFirst() }
+        guard let verb = words.first else { return false }
+        let rest = words.dropFirst().joined(separator: " ")
+        let strong: Set<String> = ["pasalo", "pasala", "pasamelo", "pasamela", "muevelo", "muevela", "cambialo",
+                                   "cambiala", "posponlo", "posponla", "pospon", "aplazalo", "aplazala", "correlo",
+                                   "correla", "reprogramalo", "reprogramala", "atrasalo", "atrasala", "adelantalo",
+                                   "adelantala"]
+        if strong.contains(verb) { return true }
+        // "déjalo/ponlo/recuérdamelo" solo con una fecha u hora detrás.
+        let weak: Set<String> = ["dejalo", "dejala", "ponlo", "ponla", "recuerdamelo", "recuerdamela"]
+        if weak.contains(verb) { return !rest.isEmpty && onlyWhen(rest) }
+        return onlyWhen(owner)
+    }
+
+    /// ¿El texto es SOLO una fecha u hora (con "mejor/para" delante)? "mañana a
+    /// las 5", "para el viernes", "a las 5", "en una hora", "más tarde".
+    static func onlyWhen(_ text: String) -> Bool {
+        let filler: Set<String> = ["mejor", "para", "pa", "el", "la", "las", "los", "a", "en", "de", "del", "y", "al",
+                                   "este", "esta", "proximo", "proxima", "que", "viene", "otra", "vez", "misma", "mismo",
+                                   "por", "porfa", "favor", "ok", "bueno", "mas"]
+        let timeWords: Set<String> = ["hoy", "manana", "pasado", "tarde", "temprano", "noche", "mediodia", "medianoche",
+                                      "hora", "horas", "minutos", "media", "cuarto", "am", "pm", "semana", "dia", "dias",
+                                      "una", "un", "dos", "tres", "lunes", "martes", "miercoles", "jueves", "viernes",
+                                      "sabado", "domingo", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+                                      "agosto", "septiembre", "octubre", "noviembre", "diciembre", "madrugada", "rato"]
+        let words = text.split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return false }
+        var anchored = false
+        for word in words {
+            if filler.contains(word) { continue }
+            if timeWords.contains(word) || word.allSatisfy({ $0.isNumber || $0 == ":" }) {
+                if !["una", "un", "dos", "tres", "media", "cuarto"].contains(word) { anchored = true }
+                continue
+            }
+            return false
+        }
+        // "más tarde", "un rato" sí; "la una" sola no ancla (es hora ambigua sin "a las").
+        return anchored || text.contains("a la una")
+    }
+
+    /// "no lo he hecho", "todavía no lo hago", "deshaz", "desmárcalo", "me equivoqué".
+    static func asksToUndo(_ owner: String) -> Bool {
+        Rx.undoCues.contains(where: owner.contains) && Rx.undoDone.contains(owner)
     }
 
     // MARK: - Traducción
@@ -115,7 +283,7 @@ public enum LocalToolAdapter {
     /// los dijo sin ambigüedad ("el jueves a las 3 pm"): el 3B se equivoca
     /// convirtiendo "3 pm" o contando días; lo dicho por el dueño gana.
     public static func resolve(name: String, input: JSONValue, now: Date, ownerText: String = "",
-                               calendar: Calendar = .current) -> Resolution {
+                               calendar: Calendar = .current, quote: ChatQuote? = nil) -> Resolution {
         guard let tool = byName[name] else {
             return .invalid(tool: name, message: "No existe la herramienta '\(name)'. Usa: "
                             + tools.map(\.name).joined(separator: ", ") + ".")
@@ -134,6 +302,10 @@ public enum LocalToolAdapter {
 
         switch name {
         case "remind_me":
+            // Respondiendo a un recordatorio, crear otro exige "recuérdame…".
+            if let quote, quote.kind == .reminder, !LocalWhen.opensWithCreation(ownerText) {
+                return invalid("El dueño responde al recordatorio citado; no crees otro. Respóndele sin tools.")
+            }
             guard let modelText = args.text("text") else { return invalid(missing("text", "qué recordar")) }
             let text = reminderText(model: modelText, ownerText: ownerText)
             guard let parsedWhen = args.raw("when").flatMap({ when.parse($0) }) else {
@@ -269,6 +441,35 @@ public enum LocalToolAdapter {
                 "action": .string("append"), "name": .string(noteName), "content": .string(content),
             ]))
 
+        case "move_reminder", "done_reminder", "undo_done":
+            guard let quote, applies(name, to: quote, now: now) else {
+                return invalid("No hay un recordatorio citado sobre el que se pueda hacer eso.")
+            }
+            // Defensa en profundidad: aunque la tool viajara, sin pedido del dueño no se toca.
+            guard quotedReminderIntent(ownerText).contains(name) else {
+                return invalid("El dueño no pidió cambiar ese recordatorio: respóndele sin tools.")
+            }
+            if name == "done_reminder" {
+                return .real(name: tool.realTool, input: .object(["action": .string("complete"), "id": .string(quote.ref.id)]))
+            }
+            if name == "undo_done" {
+                return .real(name: tool.realTool, input: .object(["action": .string("reopen"), "id": .string(quote.ref.id)]))
+            }
+            // La hora del modelo (vio la del recordatorio) salvo que el dueño diga otra.
+            guard var target = args.raw("when").flatMap({ when.parse($0) }) else {
+                return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
+            }
+            // "a la misma hora": la del recordatorio citado, no la que adivinó el 3B.
+            if LocalWhen.fold(ownerText).contains("misma hora"), let at = quote.at {
+                let clock = calendar.dateComponents([.hour, .minute], from: at)
+                target = calendar.date(bySettingHour: clock.hour ?? 0, minute: clock.minute ?? 0, second: 0, of: target)
+                    ?? target
+            }
+            guard target > now else { return invalid("Esa fecha ya pasó: usa una futura en formato 'YYYY-MM-DD HH:MM'.") }
+            return .real(name: tool.realTool, input: .object([
+                "action": .string("reschedule"), "id": .string(quote.ref.id), "fire_at": .string(when.isoLocal(target)),
+            ]))
+
         case "read_note":
             guard let noteName = args.text("name") else {
                 return .real(name: tool.realTool, input: .object(["action": .string("list")]))
@@ -360,8 +561,8 @@ public enum LocalToolAdapter {
         let owner = LocalWhen.fold(ownerText)
             .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         guard !LocalWhen.opensWithCreation(ownerText), !LocalWhen.asksToChange(ownerText) else { return false }
-        if owner.firstMatch(of: /\bpendientes?\b/) != nil { return true }
-        return owner.firstMatch(of: /\b(?:que tengo|que hay)(?: (?:para )?hoy)?$/) != nil
+        if Rx.pendingWord.contains(owner) { return true }
+        return Rx.whatDoIHave.contains(owner)
     }
 
     /// La tool de consulta que responde una pregunta sobre lo suyo ("¿qué hay
@@ -376,9 +577,8 @@ public enum LocalToolAdapter {
         if ["tengo que", "hay que", "que es", "que son", "que opinas", "que significa", "que piensas"]
             .contains(where: owner.contains) { return nil }
         // Categoría explícita: "mis metas", "qué recordatorios tengo", "qué citas hay el viernes".
-        let category = /\b(?:mis|tus) (recordatorios|metas|eventos|citas|reuniones|pendientes|agenda)\b|\bmi (agenda|calendario)\b|\b(?:que|cuales|cuantos|cuantas) (recordatorios|metas|eventos|citas|reuniones|pendientes) (?:tengo|hay)\b|\b(?:que tengo|que hay) en (?:mi|la) (agenda|calendario)\b/
-        if let m = owner.firstMatch(of: category) {
-            let word = String(m.1 ?? m.2 ?? m.3 ?? m.4 ?? "")
+        if let m = Rx.queryCategory.firstMatch(in: owner) {
+            let word = String(m[1] ?? m[2] ?? m[3] ?? m[4] ?? "")
             switch word {
             case "metas": return "list_goals"
             case "recordatorios", "pendientes": return "list_reminders"
@@ -410,7 +610,7 @@ public enum LocalToolAdapter {
         let window = range ?? LocalWhen.Range.today(now, calendar: dates.calendar)
         func items(_ text: String?) -> [String] {
             (text ?? "").split(separator: "\n").filter { $0.hasPrefix("- ") }
-                .map { String($0).replacing(/^- \[[^\]]*\]\s*/, with: "- ") }
+                .map { Rx.listItemId.replacing(in: String($0), with: "- ") }
         }
         let inRange = (events ?? "").split(separator: "\n").filter { line in
             guard let at = line.range(of: " @ ", options: .backwards),
@@ -432,9 +632,9 @@ public enum LocalToolAdapter {
 
     /// "- llamar al banco — miércoles 7 de octubre a las 09:00" ⇒ esa fecha.
     static func readableReminderDate(_ line: String, now: Date, dates: AnimaDateText) -> Date? {
-        guard let m = LocalWhen.fold(line).firstMatch(of: /(\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
-              let day = Int(m.1), let month = LocalWhen.months.firstIndex(of: String(m.2)).map({ $0 + 1 }),
-              let hour = Int(m.3), let minute = Int(m.4) else { return nil }
+        guard let m = Rx.dayMonthAtTime.firstMatch(in: LocalWhen.fold(line)),
+              let day = m[1].flatMap({ Int($0) }), let month = m[2].flatMap({ LocalWhen.months.firstIndex(of: String($0)) }).map({ $0 + 1 }),
+              let hour = m[3].flatMap({ Int($0) }), let minute = m[4].flatMap({ Int($0) }) else { return nil }
         let year = dates.calendar.component(.year, from: now)
         var parts = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
         guard var date = dates.calendar.date(from: parts) else { return nil }
@@ -465,7 +665,7 @@ public enum LocalToolAdapter {
         let iso = ISO8601DateFormatter()
         return text.split(separator: "\n").map { line -> String in
             guard line.hasPrefix("- ") else { return String(line) }
-            let body = String(line.dropFirst(2)).replacing(/^\[[^\]]*\]\s*/, with: "")
+            let body = Rx.leadingId.replacing(in: String(line.dropFirst(2)), with: "")
             guard let at = body.range(of: " @ ", options: .backwards),
                   let date = iso.date(from: String(body[at.upperBound...])) else { return "- " + body }
             return "- \(body[..<at.lowerBound]) — \(df.string(from: date))"
@@ -479,7 +679,7 @@ public enum LocalToolAdapter {
         return text.split(separator: "\n").map { line -> String in
             guard line.hasPrefix("- ") else { return String(line) }
             var parts = line.dropFirst(2).components(separatedBy: "; ")
-            var head = parts.removeFirst().replacing(/^\[[^\]]*\]\s*/, with: "")
+            var head = Rx.leadingId.replacing(in: parts.removeFirst(), with: "")
             if let paren = head.range(of: " (", options: .backwards), head.hasSuffix(")") {
                 head = String(head[..<paren.lowerBound])
             }
@@ -514,7 +714,7 @@ public enum LocalToolAdapter {
         if let target = targets.first(where: { $0.1.contains(where: owner.contains) }) { return target.0 }
         // "quiero" solo es meta con un verbo de meta detrás ("quiero bajar 5 kilos").
         let consults = ["ver ", "saber", "revisar", "consultar", "mirar", "mis "].contains(where: owner.contains)
-        if !consults, let match = owner.firstMatch(of: /\bquiero (\w+)/), Self.goalVerbs.contains(String(match.1)) {
+        if !consults, let match = Rx.quieroVerb.firstMatch(in: owner), let verb = match[1], Self.goalVerbs.contains(String(verb)) {
             return "declare_goal"
         }
         return name
@@ -583,12 +783,7 @@ public enum LocalToolAdapter {
         // "de/por la mañana" sueltos son franja, no el día: se protegen.
         var out = text.replacingOccurrences(of: "de la mañana", with: "\u{1}")
             .replacingOccurrences(of: "por la mañana", with: "\u{2}")
-        let weekday = "(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?)"
-        let expression = try? Regex("(?i)\\s+(?:(?:para|de) )?(?:hoy|pasado mañana|mañana|el (?:próximo |proximo )?\(weekday)"
-            + "|el \\d{1,2} de [a-záéíóú]+|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: \u{1}| de la (?:tarde|noche))?"
-            + "|(?:en|dentro de) \\d+ (?:horas?|minutos?)|todos los (?:días|\(weekday))|cada (?:día|semana|mes|\(weekday))"
-            + "|la (?:próxima|proxima) semana)(?=[\\s,.;:!?]|$)")
-        while let expression, let match = out.firstMatch(of: expression), !match.range.isEmpty {
+        while let match = Rx.scheduleExpression.firstMatch(in: out), !match.range.isEmpty {
             out.replaceSubrange(match.range, with: "")
         }
         out = out.replacingOccurrences(of: "\u{1}", with: "de la mañana").replacingOccurrences(of: "\u{2}", with: "por la mañana")
@@ -611,12 +806,9 @@ public enum LocalToolAdapter {
 
     static func dictatedEvent(_ ownerText: String) -> String? {
         // Se corta sobre el texto original (con sus mayúsculas: "con Pedro").
-        guard let key = ownerText.firstMatch(of: /(?i)ag[eé]nd(?:a|ame)\s+(?:una?\s+|la\s+|el\s+)?/) else { return nil }
+        guard let key = Rx.agendaKey.firstMatch(in: ownerText) else { return nil }
         var rest = String(ownerText[key.range.upperBound...])
-        let cut = try? Regex("(?i)\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
-            + "|la (?:próxima|proxima) semana|el (?:próximo|proximo) mes|este |esta |a las? \\d|de \\d{1,2} a"
-            + "|en \\S+ (?:horas?|minutos?)|para el|para mañana|para la (?:próxima|proxima) semana).*$")
-        if let cut, let match = rest.firstMatch(of: cut) { rest = String(rest[..<match.range.lowerBound]) }
+        if let match = Rx.eventScheduleTail.firstMatch(in: rest) { rest = String(rest[..<match.range.lowerBound]) }
         let text = rest.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return text.isEmpty ? nil : text
     }
@@ -624,16 +816,9 @@ public enum LocalToolAdapter {
     /// "recuérdame hoy a las 6 de la tarde que mañana es el examen" → "mañana es el examen".
     static func dictatedReminder(_ ownerText: String) -> String? {
         let lower = ownerText.lowercased()
-        guard let key = lower.firstMatch(of: /recu[eé]rd(?:a|e)me|recordarme/) else { return nil }
+        guard let key = Rx.reminderKey.firstMatch(in: lower) else { return nil }
         var rest = String(lower[key.range.upperBound...])
-        let weekday = "(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?)"
-        let leading = try? Regex("^[\\s,:]*(?:hoy|pasado mañana|mañana|esta (?:tarde|noche)"
-            + "|todos los días(?: laborales| laborables)?|cada \\S+ (?:días|semanas|meses)|cada (?:día|semana|mes)"
-            + "|todos los \(weekday)|cada \(weekday)|los \(weekday)|el \(weekday)|el \\d{1,2} de \\w+(?: de \\d{4})?"
-            + "|(?:en|dentro de) \\S+ (?:horas?|minutos?|min)(?: y media)?"
-            + "|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: de la (?:mañana|tarde|noche))?"
-            + "|de \\d{1,2} a \\d{1,2}(?: de la (?:mañana|tarde|noche))?|que|para)(?=[\\s,.:]|$)")
-        while let leading, let match = rest.firstMatch(of: leading), !match.range.isEmpty {
+        while let match = Rx.reminderLeading.firstMatch(in: rest), !match.range.isEmpty {
             let token = rest[match.range].trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
             rest = String(rest[match.range.upperBound...])
             if token == "que" { break }   // lo que sigue a "que" es lo dictado
@@ -644,10 +829,8 @@ public enum LocalToolAdapter {
 
     /// "anota: comprar leche y pan" → "comprar leche y pan" (nil si el dueño no dictó).
     static func dictatedNote(_ ownerText: String) -> String? {
-        let pattern = /^\s*(?:por favor,?\s*)?(?:an[oó]ta(?:me)?|apunta(?:me)?|toma nota(?: de)?|guarda(?: una nota)?)(?:\s+que)?\s*:?\s*(.+)$/
-            .ignoresCase()
-        guard let match = ownerText.firstMatch(of: pattern) else { return nil }
-        let text = String(match.1).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard let match = Rx.dictatedNote.firstMatch(in: ownerText), let body = match[1] else { return nil }
+        let text = String(body).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         return text.isEmpty ? nil : text
     }
 
@@ -813,8 +996,9 @@ struct LocalWhen {
     /// Sin am/pm se lee horario de oficina (1-6 ⇒ tarde, 12 ⇒ mediodía).
     var ownerRange: (start: (hour: Int, minute: Int), end: (hour: Int, minute: Int))? {
         let owner = scheduleText
-        guard let m = owner.firstMatch(of: /\bde (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)? a (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))/),
-              let h1 = Int(m.1), let h2 = Int(m.4), (0...23).contains(h1), (0...23).contains(h2) else { return nil }
+        guard let m = Rx.ownerRange.firstMatch(in: owner),
+              let h1 = m[1].flatMap({ Int($0) }), let h2 = m[4].flatMap({ Int($0) }),
+              (0...23).contains(h1), (0...23).contains(h2) else { return nil }
         let afternoon = owner.contains("de la tarde") || owner.contains("de la noche")
         func hour(_ raw: Int, _ meridiem: Substring?) -> Int {
             if let meridiem { return meridiem.hasPrefix("p") ? (raw < 12 ? raw + 12 : raw) : (raw == 12 ? 0 : raw) }
@@ -822,10 +1006,10 @@ struct LocalWhen {
             if afternoon { return raw < 12 ? raw + 12 : raw }
             return (1...6).contains(raw) ? raw + 12 : raw
         }
-        var start = hour(h1, m.3 ?? m.6), end = hour(h2, m.6)
+        var start = hour(h1, m[3] ?? m[6]), end = hour(h2, m[6])
         if end <= start, end < 12 { end += 12 }
         if start > end, start >= 12, start - 12 < end { start -= 12 }
-        return ((start, m.2.flatMap { Int($0) } ?? 0), (end, m.5.flatMap { Int($0) } ?? 0))
+        return ((start, m[2].flatMap { Int($0) } ?? 0), (end, m[5].flatMap { Int($0) } ?? 0))
     }
 
     /// Inicio de un evento: el rango del dueño gana; si no, `repaired`.
@@ -883,11 +1067,11 @@ struct LocalWhen {
         let owner = Self.fold(ownerText)
         let numbers: [String: Int] = ["dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "diez": 10, "quince": 15,
                                       "veinte": 20, "treinta": 30]
-        if let m = owner.firstMatch(of: /cada (\d{1,3}|dos|tres|cuatro|cinco|diez|quince|veinte|treinta) (dias|semanas|meses)/) {
-            let n = Int(m.1) ?? numbers[String(m.1)] ?? 0
+        if let m = Rx.everyN.firstMatch(in: owner), let count = m[1], let unit = m[2] {
+            let n = Int(count) ?? numbers[String(count)] ?? 0
             guard n > 0 else { return nil }
-            let phrase = Self.original(ownerText, matching: String(m.0)) ?? String(m.0)
-            switch m.2 {
+            let phrase = Self.original(ownerText, matching: String(m.whole)) ?? String(m.whole)
+            switch unit {
             case "dias": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: n, months: 0)
             case "semanas": return n == 1 ? nil : UnsupportedCadence(phrase: phrase, days: 7 * n, months: 0)
             default: return UnsupportedCadence(phrase: phrase, days: 0, months: n)
@@ -1020,29 +1204,46 @@ struct LocalWhen {
     /// ("recuérdame el viernes cambiar el aceite" es un recordatorio).
     static func asksToChange(_ ownerText: String) -> Bool {
         let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        // Primero la negación: "ya no quiero que me recuerdes…", "deja de recordarme…".
-        if owner.firstMatch(of: /\b(?:no (?:quiero que )?me recuerdes|deja de recordarme|ya no me recuerdes|no me recuerdes)\b/) != nil {
-            return true
+        func matches(_ regex: NSRegularExpression) -> Bool {
+            regex.firstMatch(in: owner, range: NSRange(owner.startIndex..., in: owner)) != nil
         }
+        // Primero la negación: "ya no quiero que me recuerdes…", "deja de recordarme…".
+        if matches(Self.stopReminding) { return true }
         // Un imperativo de creación como palabra, al inicio: es una creación.
         if opensWithCreation(ownerText) { return false }
-        let verb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
-        let opening = try? Regex("^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(verb))")
-        let object = try? Regex("\(verb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
-        return (opening.map { owner.firstMatch(of: $0) != nil } ?? false)
-            || (object.map { owner.firstMatch(of: $0) != nil } ?? false)
+        return matches(Self.changeOpening) || matches(Self.changeObject)
     }
+
+    // Compiladas UNA vez (ICU): las `Regex` de Swift se reconstruían en cada
+    // llamada (~1 ms aquí; en el runner de CI de 3 núcleos, sincrónicas en el
+    // pool cooperativo, dejaban sin hilos al resto de la suite).
+    private static let changeVerb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
+    private static let stopReminding = try! NSRegularExpression(
+        pattern: #"\b(?:no (?:quiero que )?me recuerdes|deja de recordarme|ya no me recuerdes|no me recuerdes)\b"#)
+    private static let changeOpening = try! NSRegularExpression(
+        pattern: "^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(changeVerb))")
+    private static let changeObject = try! NSRegularExpression(
+        pattern: "\(changeVerb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
 
     /// La frase abre con un imperativo de creación ("recuérdame…", "anota…").
     static func opensWithCreation(_ ownerText: String) -> Bool {
         let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        return owner.firstMatch(of: /^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b/) != nil
+        return Self.creationOpening.firstMatch(in: owner, range: NSRange(owner.startIndex..., in: owner)) != nil
     }
+
+    private static let creationOpening = try! NSRegularExpression(
+        pattern: #"^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b"#)
 
     /// La nota cuando el dueño pidió cambiar algo y el turno terminó sin tool
     /// (medido: "ya cumplí mi meta" ⇒ felicitaba y la meta seguía activa).
-    static func changeHint(_ ownerText: String) -> String? {
+    static func changeHint(_ ownerText: String, quoted: ChatQuoteKind? = nil) -> String? {
         guard asksToChange(ownerText) else { return nil }
+        // Lo citado dice de qué se habla aunque el dueño no lo nombre ("bórralo").
+        switch quoted {
+        case .reminder?: return "Eso lo cambias en la tab Recordatorios."
+        case .goal?, .checkIn?: return "Para cambiarla o borrarla, hazlo en la tab Metas."
+        case .message?, nil: break
+        }
         let owner = fold(ownerText)
         if owner.contains("recordatorio") || owner.contains("recuerd") || owner.contains("recordarme") {
             return "Eso lo borras en la tab Recordatorios."
@@ -1056,7 +1257,7 @@ struct LocalWhen {
 
     /// "qué tengo / qué hay / tengo algo" + (fin | hoy | un rango), plegado.
     static func isShortAgendaQuestion(_ folded: String) -> Bool {
-        folded.firstMatch(of: /^(?:y )?(?:que tengo|que hay|tengo algo)(?: pendientes?)?(?: (?:para )?(?:hoy|manana|pasado manana|esta semana|la proxima semana|el (?:proximo )?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)|el \d{1,2} de [a-z]+))?$/) != nil
+        Rx.shortAgendaQuestion.contains(folded)
     }
 
     /// "recuérdame…" sin hablar de una meta.
@@ -1066,7 +1267,12 @@ struct LocalWhen {
             && !Self.asksToChange(ownerText)
     }
 
-    var ownerMentionsTime: Bool { times(scheduleText).contains { $0.explicit || $0.afterLas } }
+    /// Una hora, o una franja ("en la tarde", "por la noche"): con franja se
+    /// respeta la hora que eligió el modelo (vio la misma frase) en vez de las 9.
+    var ownerMentionsTime: Bool {
+        times(scheduleText).contains { $0.explicit || $0.afterLas }
+            || ((scheduleText.contains(" la ") || scheduleText.contains("mediodia")) && Rx.dayBand.contains(scheduleText))
+    }
     var ownerExplicitTime: (hour: Int, minute: Int)? { explicitTimes(scheduleText).first }
     var ownerDay: Date? { day(scheduleText) }
 
@@ -1094,12 +1300,12 @@ struct LocalWhen {
     // MARK: Piezas
 
     private func absolute(_ text: String) -> Date? {
-        let regex = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ t]+(\d{1,2}):(\d{2}))?/
-        guard let match = text.firstMatch(of: regex) else { return nil }
-        guard let hour = match.4.flatMap({ Int($0) }), let minute = match.5.flatMap({ Int($0) }) else {
+        guard let match = Rx.isoLikeDate.firstMatch(in: text) else { return nil }
+        guard let hour = match[4].flatMap({ Int($0) }), let minute = match[5].flatMap({ Int($0) }) else {
             return nil
         }
-        return make(year: Int(match.1), month: Int(match.2), day: Int(match.3), hour: hour, minute: minute)
+        return make(year: match[1].flatMap { Int($0) }, month: match[2].flatMap { Int($0) },
+                    day: match[3].flatMap { Int($0) }, hour: hour, minute: minute)
     }
 
     private func relative(_ text: String) -> Date? {
@@ -1113,17 +1319,16 @@ struct LocalWhen {
     /// "en 2 horas", "dentro de 30 minutos", "en una hora y media", "en media
     /// hora" ⇒ segundos.
     func offset(_ folded: String) -> TimeInterval? {
-        let regex = /\b(?:en|dentro de) (\d{1,3}|un|una|media) (hora|horas|minuto|minutos|min)\b( y media)?/
-        guard let match = folded.firstMatch(of: regex) else { return nil }
+        guard let match = Rx.offset.firstMatch(in: folded), let quantity = match[1], let unit = match[2] else { return nil }
         var amount: Double
-        switch match.1 {
+        switch quantity {
         case "un", "una": amount = 1
         case "media": amount = 0.5
-        default: amount = Double(match.1) ?? 0
+        default: amount = Double(quantity) ?? 0
         }
         guard amount > 0 else { return nil }
-        let hours = match.2.hasPrefix("hora")
-        if match.3 != nil, hours { amount += 0.5 }
+        let hours = unit.hasPrefix("hora")
+        if match[3] != nil, hours { amount += 0.5 }
         return hours ? amount * 3600 : amount * 60
     }
 
@@ -1133,12 +1338,12 @@ struct LocalWhen {
     /// "15 de octubre [de 2027]" o "15/10[/2027]"; sin año ⇒ la próxima vez que llega.
     func explicitDate(_ folded: String) -> Date? {
         var day: Int?, month: Int?, year: Int?
-        if let m = folded.firstMatch(of: /\b(\d{1,2}) de ([a-z]+)(?: de (\d{4}))?/),
-           let index = Self.months.firstIndex(of: String(m.2).replacingOccurrences(of: "setiembre", with: "septiembre")) {
-            day = Int(m.1); month = index + 1; year = m.3.flatMap { Int($0) }
-        } else if let m = folded.firstMatch(of: /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/) {
-            day = Int(m.1); month = Int(m.2)
-            year = m.3.flatMap { Int($0) }.map { $0 < 100 ? 2000 + $0 : $0 }
+        if let m = Rx.dayOfMonth.firstMatch(in: folded), let monthName = m[2],
+           let index = Self.months.firstIndex(of: String(monthName).replacingOccurrences(of: "setiembre", with: "septiembre")) {
+            day = m[1].flatMap { Int($0) }; month = index + 1; year = m[3].flatMap { Int($0) }
+        } else if let m = Rx.slashDate.firstMatch(in: folded) {
+            day = m[1].flatMap { Int($0) }; month = m[2].flatMap { Int($0) }
+            year = m[3].flatMap { Int($0) }.map { $0 < 100 ? 2000 + $0 : $0 }
         }
         guard let day, let month else { return nil }
         let today = calendar.startOfDay(for: now)
@@ -1148,11 +1353,107 @@ struct LocalWhen {
         return date
     }
 
+    /// "<día de la semana> <N>" sin mes.
+    enum WeekdayWithDay: Equatable {
+        /// El N que cae en ese día de la semana, dentro de la ventana.
+        case date(Date)
+        /// Nombró un N que no cae en ese día dentro de la ventana ("el viernes
+        /// 22" con el 22 en jueves): contradictorio ⇒ no se repara nada.
+        case mismatch
+    }
+
+    /// Ventana de "el viernes 23": ~5 semanas. Más allá, un "viernes N" casi
+    /// nunca es lo que el dueño quiso (antes saltaba a enero del año siguiente).
+    static let weekdayWithDayWindow = 35
+
+    /// "el viernes 23" (sin mes): el 23 que cae en viernes dentro de ~5
+    /// semanas (medido con el modelo real: "pásalo para el viernes 23" quedaba
+    /// en el viernes más cercano). El número es el DÍA solo si no es una hora:
+    /// "viernes 3 pm", "lunes 8:30", "viernes 3 en la tarde", "lunes 8 por la
+    /// mañana", "domingo 7 horas" no cuentan (nil: rige el día de la semana).
+    /// Si día y número no coinciden en la ventana ⇒ `.mismatch`: lo más
+    /// conservador es NO reparar (queda la fecha del modelo, que vio la misma
+    /// frase y la semana del contexto) en vez de inventar un mes lejano o
+    /// elegir por el dueño entre "el viernes" y "el 22".
+    func weekdayWithDay(_ folded: String) -> WeekdayWithDay? {
+        guard Rx.mayNameWeekdayAndNumber(folded), let m = Rx.weekdayWithNumber.firstMatch(in: folded),
+              let name = m[1], let digits = m[2],
+              let weekday = Self.weekday(String(name)), let number = Int(digits), (1...31).contains(number) else { return nil }
+        let tail = m[3].map(String.init) ?? ""
+        // Siempre hora: "8:30", "3 pm", "8 y 30", "7 horas", "8 y media"…
+        if Rx.alwaysHourTail.contains(tail) { return nil }
+        let match = matchingDate(weekday: weekday, day: number)
+        // Con franja detrás ("en la tarde"): N > 12 no puede ser hora ⇒ día
+        // ("el viernes 23 en la tarde"). N ≤ 12 es hora, salvo que ese N caiga
+        // en ese día de la semana dentro de la ventana: ahí hay duda ⇒ no se
+        // repara (queda la fecha del modelo).
+        if number <= 12, Rx.bandTail.contains(tail) {
+            return match == nil ? nil : .mismatch
+        }
+        return match.map(WeekdayWithDay.date) ?? .mismatch
+    }
+
+    /// El día `day` que cae en `weekday` dentro de la ventana, o nil.
+    func matchingDate(weekday: Int, day: Int) -> Date? {
+        let today = calendar.startOfDay(for: now)
+        for offset in 0...Self.weekdayWithDayWindow {
+            guard let candidate = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+            if calendar.component(.day, from: candidate) == day,
+               calendar.component(.weekday, from: candidate) == weekday { return candidate }
+        }
+        return nil
+    }
+
+    /// ¿El dueño nombró un día contradictorio ("el viernes 22" con el 22 en
+    /// jueves, "el viernes 3 de noviembre" en martes)? Ahí no se repara nada.
+    var dayIsAmbiguous: Bool {
+        let owner = scheduleText
+        if case .mismatch? = weekdayWithDay(owner) { return true }
+        return explicitWeekdayMismatch(owner)
+    }
+
+    /// Con un día contradictorio, la pregunta para el dueño ("¿el viernes 16
+    /// o el jueves 22?"). nil si no hay duda.
+    var ambiguousDayQuestion: String? {
+        let owner = scheduleText
+        guard dayIsAmbiguous,
+              let m = Rx.weekdayCommaNumber.firstMatch(in: owner), let name = m[1], let digits = m[2],
+              let weekday = Self.weekday(String(name)), let number = Int(digits) else { return nil }
+        let dates = AnimaDateText(calendar: calendar)
+        let today = calendar.startOfDay(for: now)
+        var ahead = (weekday - calendar.component(.weekday, from: today) + 7) % 7
+        if ahead == 0 { ahead = 7 }
+        let byWeekday = calendar.date(byAdding: .day, value: ahead, to: today) ?? today
+        let byNumber = (0...62).lazy.compactMap { self.calendar.date(byAdding: .day, value: $0, to: today) }
+            .first { self.calendar.component(.day, from: $0) == number }
+        let a = dates.fullDate(byWeekday, now: now)
+        guard let byNumber else { return "No me queda claro el día. ¿Te refieres al \(a)?" }
+        return "No me queda claro el día: el \(number) no cae en \(Self.weekdays[weekday - 1]). "
+            + "¿Te refieres al \(a) o al \(dates.fullDate(byNumber, now: now))?"
+    }
+
+    /// "el viernes 3 de noviembre" cuando el 3 de noviembre no es viernes.
+    func explicitWeekdayMismatch(_ folded: String) -> Bool {
+        guard folded.contains(" de "), Rx.mayNameWeekdayAndNumber(folded),
+              let m = Rx.weekdayExplicitDate.firstMatch(in: folded), let name = m[1],
+              let weekday = Self.weekday(String(name)), let date = explicitDate(folded) else { return false }
+        return calendar.component(.weekday, from: date) != weekday
+    }
+
     /// El día que nombra el texto (ya plegado), o nil. La fecha explícita gana
     /// al día de la semana; "hoy" gana a "mañana"; "de/por la mañana" es la
     /// franja, no el día siguiente.
     func day(_ folded: String) -> Date? {
-        if let explicit = explicitDate(folded) { return explicit }
+        if let explicit = explicitDate(folded) {
+            // Fecha explícita con un día de la semana que no coincide: misma
+            // regla que "el viernes 22": no se repara.
+            return explicitWeekdayMismatch(folded) ? nil : explicit
+        }
+        switch weekdayWithDay(folded) {
+        case .date(let date)?: return date
+        case .mismatch?: return nil
+        case nil: break
+        }
         let text = folded.replacingOccurrences(of: "de la manana", with: " ")
             .replacingOccurrences(of: "por la manana", with: " ")
         let words = Self.words(text)
@@ -1197,17 +1498,16 @@ struct LocalWhen {
     /// tarde/noche/mañana", o 13-23 con minutos o tras "a las" (no "el 20 de octubre").
     func times(_ text: String) -> [TimeMention] {
         // \b: "15 de octubre" no puede partirse en un "1" con hora.
-        let regex = /\b(\d{1,2})(?!\d)(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?!\s*\/)(?!\s*(?:hora|horas|minuto|minutos|min)\b)/
         var out: [TimeMention] = []
-        for match in text.matches(of: regex) {
+        for match in Rx.timeMention.matches(in: text) {
             let before = text[..<match.range.lowerBound]
             if before.hasSuffix("/") || before.hasSuffix("en ") || before.hasSuffix("dentro de ") { continue }
-            guard var hour = Int(match.1) else { continue }
-            let minute = match.2.flatMap { Int($0) } ?? 0
+            guard var hour = match[1].flatMap({ Int($0) }) else { continue }
+            let minute = match[2].flatMap { Int($0) } ?? 0
             let raw = hour
             let afterLas = before.hasSuffix("las ") || before.hasSuffix("la ")
             var explicit = false
-            if let meridiem = match.3 {
+            if let meridiem = match[3] {
                 explicit = true
                 if meridiem.hasPrefix("p") && hour < 12 { hour += 12 }
                 if meridiem.hasPrefix("a") && hour == 12 { hour = 0 }
@@ -1216,11 +1516,11 @@ struct LocalWhen {
                 hour += 12
             } else if text.contains("de la manana") {
                 explicit = true
-            } else if raw >= 13, match.2 != nil || afterLas {
+            } else if raw >= 13, match[2] != nil || afterLas {
                 explicit = true
             }
             guard (0...23).contains(hour), (0...59).contains(minute) else { continue }
-            out.append(TimeMention(clock: (hour, minute), explicit: explicit, afterLas: afterLas || match.2 != nil))
+            out.append(TimeMention(clock: (hour, minute), explicit: explicit, afterLas: afterLas || match[2] != nil))
         }
         return out
     }
@@ -1245,4 +1545,45 @@ struct LocalWhen {
         return String(format: "%04d-%02d-%02dT%02d:%02d:00", p.year ?? 0, p.month ?? 0, p.day ?? 0,
                       p.hour ?? 0, p.minute ?? 0)
     }
+}
+
+
+// MARK: - Regex precompiladas (ICU)
+
+/// Las regex del adapter y de LocalWhen, compiladas UNA vez (ver ICURegex: en el
+/// runner de CI la `Regex` de Swift, reconstruida en cada llamada, dejaba sin
+/// hilos al pool cooperativo). Mismos patrones que antes.
+enum Rx {
+    static let weekday = "(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bados?|domingos?)"
+    static let pendingWord = ICURegex(#"\bpendientes?\b"#)
+    static let whatDoIHave = ICURegex(#"\b(?:que tengo|que hay)(?: (?:para )?hoy)?$"#)
+    static let queryCategory = ICURegex(#"\b(?:mis|tus) (recordatorios|metas|eventos|citas|reuniones|pendientes|agenda)\b|\bmi (agenda|calendario)\b|\b(?:que|cuales|cuantos|cuantas) (recordatorios|metas|eventos|citas|reuniones|pendientes) (?:tengo|hay)\b|\b(?:que tengo|que hay) en (?:mi|la) (agenda|calendario)\b"#)
+    static let listItemId = ICURegex(#"^- \[[^\]]*\]\s*"#)
+    static let leadingId = ICURegex(#"^\[[^\]]*\]\s*"#)
+    static let dayMonthAtTime = ICURegex(#"(\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})"#)
+    static let quieroVerb = ICURegex(#"\bquiero (\w+)"#)
+    static let scheduleExpression = ICURegex("\\s+(?:(?:para|de) )?(?:hoy|pasado mañana|mañana|el (?:próximo |proximo )?\(weekday)"
+        + "|el \\d{1,2} de [a-záéíóú]+|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: \u{1}| de la (?:tarde|noche))?"
+        + "|(?:en|dentro de) \\d+ (?:horas?|minutos?)|todos los (?:días|\(weekday))|cada (?:día|semana|mes|\(weekday))"
+        + "|la (?:próxima|proxima) semana)(?=[\\s,.;:!?]|$)", caseInsensitive: true)
+    static let agendaKey = ICURegex(#"ag[eé]nd(?:a|ame)\s+(?:una?\s+|la\s+|el\s+)?"#, caseInsensitive: true)
+    static let eventScheduleTail = ICURegex("\\s+(?:hoy|mañana|pasado mañana|el (?:próximo |proximo )?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\\d)"
+        + "|la (?:próxima|proxima) semana|el (?:próximo|proximo) mes|este |esta |a las? \\d|de \\d{1,2} a"
+        + "|en \\S+ (?:horas?|minutos?)|para el|para mañana|para la (?:próxima|proxima) semana).*$", caseInsensitive: true)
+    static let reminderKey = ICURegex(#"recu[eé]rd(?:a|e)me|recordarme"#)
+    static let reminderLeading = ICURegex("^[\\s,:]*(?:hoy|pasado mañana|mañana|esta (?:tarde|noche)"
+        + "|todos los días(?: laborales| laborables)?|cada \\S+ (?:días|semanas|meses)|cada (?:día|semana|mes)"
+        + "|todos los \(weekday)|cada \(weekday)|los \(weekday)|el \(weekday)|el \\d{1,2} de \\w+(?: de \\d{4})?"
+        + "|(?:en|dentro de) \\S+ (?:horas?|minutos?|min)(?: y media)?"
+        + "|a las? \\d{1,2}(?::\\d{2})?(?: ?[ap]\\.? ?m\\.?)?(?: de la (?:mañana|tarde|noche))?"
+        + "|de \\d{1,2} a \\d{1,2}(?: de la (?:mañana|tarde|noche))?|que|para)(?=[\\s,.:]|$)")
+    static let dictatedNote = ICURegex(#"^\s*(?:por favor,?\s*)?(?:an[oó]ta(?:me)?|apunta(?:me)?|toma nota(?: de)?|guarda(?: una nota)?)(?:\s+que)?\s*:?\s*(.+)$"#, caseInsensitive: true)
+    static let ownerRange = ICURegex(#"\bde (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)? a (\d{1,2})\b(?::(\d{2}))?\s*(am|pm|a\.\s?m\.|p\.\s?m\.)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre))"#)
+    static let everyN = ICURegex(#"cada (\d{1,3}|dos|tres|cuatro|cinco|diez|quince|veinte|treinta) (dias|semanas|meses)"#)
+    static let shortAgendaQuestion = ICURegex(#"^(?:y )?(?:que tengo|que hay|tengo algo)(?: pendientes?)?(?: (?:para )?(?:hoy|manana|pasado manana|esta semana|la proxima semana|el (?:proximo )?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)|el \d{1,2} de [a-z]+))?$"#)
+    static let isoLikeDate = ICURegex(#"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ t]+(\d{1,2}):(\d{2}))?"#)
+    static let offset = ICURegex(#"\b(?:en|dentro de) (\d{1,3}|un|una|media) (hora|horas|minuto|minutos|min)\b( y media)?"#)
+    static let dayOfMonth = ICURegex(#"\b(\d{1,2}) de ([a-z]+)(?: de (\d{4}))?"#)
+    static let slashDate = ICURegex(#"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b"#)
+    static let timeMention = ICURegex(#"\b(\d{1,2})(?!\d)(?::(\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?!\s*de (?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))(?!\s*/)(?!\s*(?:hora|horas|minuto|minutos|min)\b)"#)
 }

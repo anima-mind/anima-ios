@@ -58,7 +58,15 @@ el argumento nada de esto se activa:
 
 `NotificationUITests` siembra un recordatorio a +20 s, acepta el permiso en
 SpringBoard y toca el push con la app terminada (cold launch), en background y
-al frente: la app debe abrir el Chat con la card `chat.proactive.reminder`.
+al frente: la app debe abrir el Chat con la card `chat.proactive.reminder` y el
+recordatorio citado en el composer (`chat.quote.text`); en frío, la respuesta
+sale con la cita en su burbuja (`chat.userMessage.quote`).
+
+`ReplyQuoteUITests` ("responder citando"): tap en un recordatorio programado →
+chat con la cita y el foco → enviar → la burbuja la muestra (y sobrevive al
+relanzar); "Hablar de esta meta" → chat con la meta citada; deslizar a la
+derecha sobre un mensaje (o mantener → "Responder") lo cita y la X
+(`nav.close.quote`) la quita.
 
 `NudgeUITests` adelanta el aviso por inactividad a +20 s con la pregunta
 sembrada y lo toca con la app terminada y en background: el Chat abre con la

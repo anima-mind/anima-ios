@@ -127,6 +127,8 @@ final class AppModel: ObservableObject {
     private var reconciler: ProactiveReconciler?
     /// Avisos por inactividad: las preguntas que deja el sueño (el Consolidator las escribe).
     private var nudgeQuestions: ReengagementQuestionStore?
+    /// "Responder citando": arma la cita vigente (recordatorio, meta, mensaje).
+    private var quoteResolver: ChatQuoteResolver?
     /// Deep link que llegó antes de que el chat estuviera cableado (cold launch
     /// desde una notificación): se abre al terminar el cableado.
     private var pendingLink: AnimaDeepLink?
@@ -328,6 +330,12 @@ final class AppModel: ObservableObject {
                 self?.selectedTab = .goals
                 self?.goalsModel?.focus(goalId: goalId)
             }
+            let resolver = ChatQuoteResolver(reminders: reminderStore, otherModel: otherModel, store: store,
+                                             selfName: { await selfModel.name() })
+            self.quoteResolver = resolver
+            remindersList.quoteResolver = resolver
+            remindersList.onTalk = { [weak self] quote in self?.talk(quote) }
+            goalsModel?.onTalk = { [weak self] quote in self?.talk(quote) }
             notificationsModel.openList = { [weak self] in self?.selectedTab = .reminders }
             self.remindersModel = remindersList
             if UITestMode.seedsGoal { await UITestMode.seedGoal(otherModel) }
@@ -618,6 +626,7 @@ final class AppModel: ObservableObject {
         chat.localModelAvailable = mode == .onDeviceOnly
         await chat.setOffline(offline)
         chat.onOpenApprovals = { [weak self] in self?.openApprovals() }
+        chat.quoteResolver = quoteResolver
         // Solo-teléfono (FoundationModels) no ve imágenes: el menú de foto lo dice.
         chat.photosAvailable = mode != .onDeviceOnly
         if UITestMode.isActive { chat.injectedPhoto = { UITestMode.fixturePhoto() } }
@@ -1121,8 +1130,32 @@ final class AppModel: ObservableObject {
         open(link)
     }
 
+    /// Tap en un recordatorio programado, "Hablar de esta meta", "Hablar en el
+    /// chat": al Chat con la cita en el composer y el foco listo.
+    func talk(_ quote: ChatQuote) {
+        guard let chatModel else { return }
+        selectedTab = .chat
+        chatModel.reply(with: quote)
+    }
+
+    /// Deep link de una cita: un recordatorio entregado primero se reconcilia
+    /// (su card entra al chat) y el chat baja hasta ella; la cita va al composer.
+    private func openQuote(_ ref: ChatQuoteRef) {
+        selectedTab = .chat
+        Task {
+            if ref.kind == .reminder {
+                await reconcileProactive()
+                chatModel?.focus(.reminder(id: ref.id))
+            }
+            await chatModel?.reply(to: ref)
+        }
+    }
+
     private func open(_ link: AnimaDeepLink) {
         switch link {
+        case .chatQuote(let ref):
+            guard deferUntilReady(link) else { return }
+            openQuote(ref)
         case .chat(let turn):
             guard deferUntilReady(link) else { return }
             selectedTab = .chat
@@ -1131,12 +1164,9 @@ final class AppModel: ObservableObject {
             guard let glassesActivation else { return }
             Task { await glassesActivation.userRequested() }
         case .reminder(let id):
+            // Notificaciones programadas antes de "responder citando": mismo destino.
             guard deferUntilReady(link) else { return }
-            selectedTab = .chat
-            Task {
-                await reconcileProactive()
-                chatModel?.focus(.reminder(id: id))
-            }
+            openQuote(ChatQuoteRef(kind: .reminder, id: id))
         case .goal(let id):
             guard deferUntilReady(link) else { return }
             selectedTab = .chat
@@ -1144,6 +1174,9 @@ final class AppModel: ObservableObject {
                 if let prompt = await reconciler?.checkInPrompt(goalId: id, sessionId: activeSessionId) {
                     chatModel?.appendProactive([prompt])
                 }
+                // Review #43: el push del seguimiento abre su card de respuesta
+                // rápida, SIN cita ni teclado encima (como antes). Citarlo es de
+                // "Hablar en el chat" (tab Recordatorios) o del swipe sobre la card.
                 chatModel?.focus(.checkIn(goalId: id))
             }
         case .intention(let id):
@@ -1289,6 +1322,8 @@ struct RootView: View {
             hasOnboarded: app.onboarded) == .landing
     }
 
+    /// Orden de la tab bar = `ShellTab.allCases` (Chat, Metas, Recordatorios,
+    /// Memoria, Ajustes): lo más usado primero. La selección es por caso.
     private var shellTabs: some View {
         TabView(selection: $app.selectedTab) {
             if let chat = app.chatModel {
@@ -1296,11 +1331,6 @@ struct RootView: View {
                     .confirmationOverlay(app.confirmation)
                     .tabItem { Label(AppTab.chat.title, systemImage: "bubble.left").accessibilityIdentifier("tab.chat") }
                     .tag(AppTab.chat)
-            }
-            if let memory = app.memoryModel {
-                MemoryBrowserView(model: memory)
-                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
-                    .tag(AppTab.memory)
             }
             if let goals = app.goalsModel {
                 GoalsView(model: goals)
@@ -1311,6 +1341,11 @@ struct RootView: View {
                 RemindersView(model: reminders)
                     .tabItem { Label(AppTab.reminders.title, systemImage: "bell").accessibilityIdentifier("tab.reminders") }
                     .tag(AppTab.reminders)
+            }
+            if let memory = app.memoryModel {
+                MemoryBrowserView(model: memory)
+                    .tabItem { Label(AppTab.memory.title, systemImage: "brain").accessibilityIdentifier("tab.memory") }
+                    .tag(AppTab.memory)
             }
             if let settings = app.settingsModel {
                 SettingsView(model: settings)

@@ -113,6 +113,11 @@ public enum AnimaDatabase {
         IntentionTurnRepair.register(&m)
         // Avisos por inactividad: las preguntas que deja el sueño.
         ReengagementSchema.register(&m)
+        // "Responder citando": la cita del turno del dueño ({kind,id,title,excerpt…}).
+        // NULL en el historial viejo (y en todo turno sin cita).
+        m.registerMigration("v20-turn-quote") { db in
+            try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN quote_json TEXT NULL")
+        }
 
         return m
     }

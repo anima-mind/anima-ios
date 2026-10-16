@@ -56,9 +56,13 @@ public struct ConversationCompactor: Sendable {
     /// "Dueño: …" / "Anima: …" con solo el texto (sin tools ni razonamiento).
     static func transcript(_ messages: [Message]) -> String {
         messages.compactMap { message -> String? in
-            let text = message.content.compactMap { block -> String? in
+            // La cita (con ids e instrucciones para el modelo) no va al resumidor:
+            // se resume como "(respondió a …)".
+            let (line, blocks) = message.role == .user ? ChatQuoteContext.split(message.content) : (nil, message.content)
+            var text = blocks.compactMap { block -> String? in
                 if case .text(let t) = block { return t } else { return nil }
             }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let line, let about = ChatQuoteContext.summary(line) { text = "(respondió a \(about)) " + text }
             guard !text.isEmpty, !text.hasPrefix(ContextBoundary.summaryHeader) else { return nil }
             switch message.role {
             case .user: return "Dueño: \(text)"

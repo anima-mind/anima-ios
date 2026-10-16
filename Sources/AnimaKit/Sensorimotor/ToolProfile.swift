@@ -20,9 +20,15 @@ public enum ToolProfile: Sendable, Equatable {
     /// Aplica el perfil. Idempotente: el loop y el provider pueden aplicarlo ambos.
     /// En local solo viajan las tools del adapter cuya tool real está registrada.
     public func apply(_ specs: [ToolSpec]) -> [ToolSpec] {
+        apply(specs, quote: nil)
+    }
+
+    /// Con un recordatorio citado y el pedido del dueño, el local suma la tool
+    /// que actúa sobre él (mover o dar por hecho).
+    public func apply(_ specs: [ToolSpec], quote: ChatQuote?, ownerText: String = "", now: Date = Date()) -> [ToolSpec] {
         switch self {
         case .full: return specs
-        case .onDevice: return LocalToolAdapter.specs(for: specs)
+        case .onDevice: return LocalToolAdapter.specs(for: specs, quote: quote, ownerText: ownerText, now: now)
         }
     }
 

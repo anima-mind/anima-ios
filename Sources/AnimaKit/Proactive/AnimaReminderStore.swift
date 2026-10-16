@@ -40,6 +40,8 @@ public enum AnimaReminderError: Error, Equatable, LocalizedError {
     case notActive
     case unknownGoal
     case invalidMinutes
+    case notReopenable
+    case repeatingStillScheduled
 
     public var errorDescription: String? {
         switch self {
@@ -49,6 +51,9 @@ public enum AnimaReminderError: Error, Equatable, LocalizedError {
         case .notActive: return "el recordatorio ya está cerrado (hecho o cancelado)"
         case .unknownGoal: return "no existe una meta con ese goal_id"
         case .invalidMinutes: return "los minutos deben ser mayores que 0"
+        case .notReopenable: return "solo se puede deshacer un 'hecho' de las últimas 24 horas"
+        case .repeatingStillScheduled:
+            return "ese recordatorio se repite: marcar hecho no lo cerró, sigue programado; no hay nada que deshacer"
         }
     }
 }
@@ -211,6 +216,40 @@ public actor AnimaReminderStore {
         }
         update(id: id, sql: "UPDATE anima_reminder SET status='scheduled', fire_at=? WHERE id=?",
                arguments: [target.timeIntervalSince1970, id])
+        return try found(id)
+    }
+
+    /// Mueve a `fireAt` ("pásalo para el viernes"). Un entregado vuelve a
+    /// `scheduled`. En uno que se repite NO mueve la serie: como `snooze`, crea
+    /// uno-a-uno con el mismo texto y lo devuelve.
+    @discardableResult
+    public func reschedule(id: String, to fireAt: Date) throws -> AnimaReminder {
+        let current = try active(id)
+        guard fireAt > now() else { throw AnimaReminderError.pastFireAt }
+        if current.repeatCadence != .none {
+            return try create(text: current.text, message: current.message, fireAt: fireAt, goalId: current.goalId,
+                              originSessionId: current.originSessionId)
+        }
+        update(id: id, sql: "UPDATE anima_reminder SET status='scheduled', fire_at=?, fired_at=NULL WHERE id=?",
+               arguments: [fireAt.timeIntervalSince1970, id])
+        return try found(id)
+    }
+
+    /// Ventana para deshacer un "hecho" (un único marcado hecho por error).
+    public static let reopenWindow: TimeInterval = 24 * 3600
+
+    /// Deshace un "hecho" reciente (≤ 24 h): vuelve a `scheduled` si su hora
+    /// aún no llega, o a `fired` (entregado, pendiente) si ya pasó. Solo
+    /// recordatorios únicos: en uno que se repite "hecho" no cierra la serie.
+    @discardableResult
+    public func reopen(id: String) throws -> AnimaReminder {
+        let current = try found(id)
+        // En uno que se repite "hecho" marca la ocurrencia y la serie sigue programada.
+        if current.repeatCadence != .none { throw AnimaReminderError.repeatingStillScheduled }
+        guard current.status == .done, let doneAt = current.doneAt,
+              now().timeIntervalSince(doneAt) <= Self.reopenWindow else { throw AnimaReminderError.notReopenable }
+        let status = current.fireAt > now() ? "scheduled" : "fired"
+        update(id: id, sql: "UPDATE anima_reminder SET status=?, done_at=NULL WHERE id=?", arguments: [status, id])
         return try found(id)
     }
 

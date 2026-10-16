@@ -340,11 +340,35 @@ public enum OnDevicePromptBuilder {
                 entries.append(.prompt(text))
             }
         }
-        for message in ctx.messages where message.role != .system {
+        // "Responder citando": la cita del turno ACTUAL viaja tal cual en su
+        // prompt (medido: en prosa o en las instructions el 3B dejaba de usar
+        // move_reminder); en turnos viejos se resume a "(sobre …)" (sin ids ni
+        // instrucciones viejas que ya no aplican).
+        // El reintento de la guarda (nudge del harness) no es un turno del dueño:
+        // la cita completa sigue siendo la del turno real.
+        let ownerTurns = ctx.messages.indices.filter { i in
+            ctx.messages[i].role == .user && ctx.messages[i].content.contains { block in
+                switch block {
+                case .text(let t): return !ActionClaimGuard.isNudge(t)
+                case .image: return true
+                default: return false
+                }
+            }
+        }
+        let currentOwnerTurn = ownerTurns.last
+        for (index, message) in ctx.messages.enumerated() where message.role != .system {
             switch message.role {
             case .user:
                 var pending: [String] = []
-                for block in message.content {
+                let (quoteLine, blocks) = ChatQuoteContext.split(message.content)
+                if let quoteLine {
+                    if index == currentOwnerTurn {
+                        pending.append(quoteLine + "\n")
+                    } else if let about = ChatQuoteContext.summary(quoteLine) {
+                        pending.append("(sobre \(about))")
+                    }
+                }
+                for block in blocks {
                     switch block {
                     case .text(let t): pending.append(t)
                     case .image: pending.append(imagePlaceholder)
@@ -468,6 +492,13 @@ public enum OnDevicePromptBuilder {
             let ownerTurn = last.components(separatedBy: "\n\n").last ?? last
             requiredQueryTool = LocalToolAdapter.queryTool(ownerTurn)
                 .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
+            // Recordatorio citado + pedido estricto de "hecho"/"deshacer" (lista
+            // blanca del adapter): la tool sin parámetros viaja SOLA y se ejecuta
+            // aunque el 3B no la llame (medido: 0/3 la llamaba por su cuenta).
+            let offered = ToolProfile.onDevice.apply(tools).map(\.name)
+            if offered.count == 1, let only = offered.first, LocalToolAdapter.forcedQuotedTools.contains(only) {
+                requiredQueryTool = only
+            }
         } else {
             prompt = endsInToolError(ctx.messages) ? errorCue : continuationCue
         }
@@ -492,7 +523,7 @@ public enum OnDevicePromptBuilder {
 
     /// "- [9F2C…] llamar al banco — …" → "- llamar al banco — …": el 3B leía los ids.
     static func withoutListIds(_ text: String) -> String {
-        text.replacing(/\[[^\]\n]{6,}\]\s*/, with: "")
+        Self.listIds.replacing(in: text, with: "")
     }
 
     /// La confirmación tras tools es una frase: tope corto (y más rápido).
@@ -528,12 +559,12 @@ public enum OnDevicePromptBuilder {
     public static func agreesWithTheResult(_ text: String, fallback: String, now: Date,
                                            calendar: Calendar = .current) -> Bool {
         let result = fold(fallback)
-        guard let m = result.firstMatch(of: /(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})/),
-              let day = Int(m.2), let month = LocalWhen.months.firstIndex(of: String(m.3)).map({ $0 + 1 }),
-              let hour = Int(m.4) else { return true }
+        guard let m = Self.savedMoment.firstMatch(in: result), let weekdaySaved = m[1],
+              let day = m[2].flatMap({ Int($0) }), let month = m[3].flatMap({ LocalWhen.months.firstIndex(of: String($0)) }).map({ $0 + 1 }),
+              let hour = m[4].flatMap({ Int($0) }) else { return true }
         let said = fold(text)
         let words = LocalWhen.words(said)
-        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(m.1) { return false }
+        if let weekday = words.first(where: { LocalWhen.weekday($0) != nil }), weekday != String(weekdaySaved) { return false }
         let today = calendar.startOfDay(for: now)
         var parts = calendar.dateComponents([.year], from: today)
         parts.month = month; parts.day = day
@@ -561,6 +592,9 @@ public enum OnDevicePromptBuilder {
         "declare_goal": ["meta", "regist", "pregunt", "segui", "recuerd"],
         "add_calendar_event": ["agend", "event", "calend", "cita", "reuni"],
         "write_note": ["anot", "nota", "guard", "apunt"],
+        "move_reminder": ["mov", "pas", "qued", "cambi", "program", "recuerd"],
+        "done_reminder": ["hech", "marc", "list", "complet"],
+        "undo_done": ["pendient", "deshic", "desmarc", "vuelv", "reactiv"],
     ]
 
     /// Pretérito en 1ª persona que no es de Anima ("saqué", "llamé") o en 2ª
@@ -618,10 +652,14 @@ public enum OnDevicePromptBuilder {
 
     /// "Listo: <resultado>" sin ids internos: lo que el dueño lee si el modelo
     /// no redacta la confirmación.
+    static let listIds = ICURegex(#"\[[^\]\n]{6,}\]\s*"#)
+    static let savedMoment = ICURegex(#"(lunes|martes|miercoles|jueves|viernes|sabado|domingo) (\d{1,2}) de ([a-z]+) a las (\d{1,2}):(\d{2})"#)
+    static let idParenthesis = ICURegex(#"\s*\(id [^)]*\)"#)
+    static let idSuffix = ICURegex(#"\s*Id [A-Za-z0-9-]+\.?"#)
+
     public static func confirmation(results: [String]) -> String {
         let cleaned = results.map { result in
-            result.replacing(/\s*\(id [^)]*\)/, with: "")
-                .replacing(/\s*Id [A-Za-z0-9-]+\.?/, with: "")
+            Self.idSuffix.replacing(in: Self.idParenthesis.replacing(in: result, with: ""), with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")

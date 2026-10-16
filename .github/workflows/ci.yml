@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Primero (barato, sin compilar): la Regex de Swift en Sources/ deja sin
+      # hilos al pool cooperativo en este runner (#45). Ver el script.
+      - name: Sin Regex de Swift en Sources/
+        run: ./scripts/check-no-swift-regex.sh
       - name: Cache SPM
         uses: actions/cache@v4
         with:

@@ -54,7 +54,7 @@ public struct PermissionPolicy: Sendable {
     /// (agenda, Recordatorios del iPhone, cámara…) sigue pidiendo ok.
     public static let internalReversible: Set<AllowlistEntry> = Set(
         ["declare", "set_checkin", "clear_checkin", "mark_achieved"].map { AllowlistEntry(tool: "goals", operation: $0) }
-        + ["create", "complete", "cancel", "snooze"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
+        + ["create", "complete", "cancel", "snooze", "reschedule", "reopen"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
 
     /// Operaciones que destruyen algo FUERA del estado reversible de Anima
     /// (borrar un evento del calendario…). Jamás se autorizan "siempre": piden

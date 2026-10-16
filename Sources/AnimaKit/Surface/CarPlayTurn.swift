@@ -83,7 +83,7 @@ public enum CarPlayTurn {
         [AllowlistEntry(tool: "calendar", operation: "create"),
          AllowlistEntry(tool: "reminders", operation: "create"),
          AllowlistEntry(tool: "reminders", operation: "complete")]
-        + PermissionPolicy.internalReversible)
+        + PermissionPolicy.internalReversible.subtracting(PermissionPolicy.phoneOnly))
 
     public static func isVoiceConfirmable(_ request: ConfirmationRequest) -> Bool {
         voiceConfirmable.contains(AllowlistEntry(tool: request.tool, operation: request.operation))

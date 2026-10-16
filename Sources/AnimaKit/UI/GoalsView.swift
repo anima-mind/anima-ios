@@ -60,6 +60,31 @@ public final class GoalsViewModel: ObservableObject {
         await changed()
     }
 
+    /// Historial → Reactivar: vuelve a motivar con su seguimiento y los
+    /// recordatorios cancelados que sigan en el futuro.
+    public func reactivate(_ goal: Goal) async {
+        await otherModel.reactivate(id: goal.id)
+        await changed()
+    }
+
+    /// "reemplazada por «Abonar 5M a la deuda»", "abandonada", "lograda".
+    public func pastLabel(_ goal: Goal) -> String {
+        switch goal.status {
+        case .achieved: return "lograda"
+        case .abandoned:
+            if let next = goal.supersededBy.flatMap({ id in goals.first { $0.id == id } }) {
+                return "reemplazada por «\(next.statement)»"
+            }
+            return goal.supersededBy == nil ? "abandonada" : "reemplazada"
+        default: return ""
+        }
+    }
+
+    /// Solo lo que el dueño dejó (no lo logrado ni las duplicadas fusionadas) se reactiva.
+    public static func canReactivate(_ goal: Goal) -> Bool {
+        goal.status == .abandoned && goal.statusReason != GoalMerge.reason
+    }
+
     public func markAchieved(_ goal: Goal) async {
         await otherModel.markAchieved(id: goal.id)
         await changed()
@@ -214,7 +239,7 @@ public struct GoalsView: View {
             Button("Eliminar", role: .destructive) { Task { await model.delete(goal) } }
             Button("Cancelar", role: .cancel) {}
         } message: { _ in
-            Text("Deja de motivarte y se cancelan sus avisos. Queda en el historial.")
+            Text("Deja de motivarte y se cancelan su seguimiento y sus recordatorios. Queda en el historial: si la reactivas, vuelven.")
         }
     }
 
@@ -297,12 +322,28 @@ public struct GoalsView: View {
                 .font(Theme.Type_.secondary)
                 .foregroundStyle(Theme.Colors.textMuted)
             Spacer()
-            Text(statusLabel(goal.status))
+            Text(model.pastLabel(goal))
                 .font(Theme.Type_.meta)
                 .foregroundStyle(Theme.Colors.textFaint)
+                .multilineTextAlignment(.trailing)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("goals.history.item")
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if GoalsViewModel.canReactivate(goal) {
+                Button { Task { await model.reactivate(goal) } } label: {
+                    Label("Reactivar", systemImage: "arrow.uturn.backward")
+                }
+                .tint(Theme.Colors.accent)
+            }
+        }
+        .contextMenu {
+            if GoalsViewModel.canReactivate(goal) {
+                Button { Task { await model.reactivate(goal) } } label: {
+                    Label("Reactivar", systemImage: "arrow.uturn.backward")
+                }
+            }
+        }
     }
 
     private func card(_ goal: Goal) -> some View {

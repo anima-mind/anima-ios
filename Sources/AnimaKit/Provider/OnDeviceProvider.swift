@@ -450,6 +450,11 @@ public enum OnDevicePromptBuilder {
             if round.contains(where: { if case .toolCall(let id, "add_calendar_event", _) = $0 { !failedIds.contains(id) } else { false } }) {
                 listIsDeterministic = true
             }
+            // Dejar o cambiar una meta se cuenta con lo que de verdad se canceló
+            // (medido: el 3B resumía "la meta se cambió" sin el seguimiento cancelado).
+            if round.contains(where: { if case .toolCall(let id, "drop_goal", _) = $0 { !failedIds.contains(id) } else { false } }) {
+                listIsDeterministic = true
+            }
             if onlyReads {
                 // Solo si el dueño preguntó por lo suyo: si el 3B listó para otra
                 // pregunta ("¿qué tengo que hacer para…?"), el modelo responde.
@@ -473,6 +478,10 @@ public enum OnDevicePromptBuilder {
             if results.contains(where: { $0.contains("no lo puedo cambiar desde aquí") }) {
                 salient = [SalientGroup(["tab"])]
             }
+            // Dejar una meta se pide con la frase explícita: se dice siempre.
+            if results.contains(where: { $0.contains("deja mi meta de") }) {
+                salient = [SalientGroup(["deja mi meta"])]
+            }
             if results.contains(where: { $0.contains("ya pasó, así que te lo puse para mañana") }) {
                 salient.append(SalientGroup(["pas"]))
             }
@@ -490,7 +499,10 @@ public enum OnDevicePromptBuilder {
             prompt = last
             entries.removeLast()
             let ownerTurn = last.components(separatedBy: "\n\n").last ?? last
-            requiredQueryTool = LocalToolAdapter.queryTool(ownerTurn)
+            // "ya no quiero ahorrar…": dejar la meta se hace siempre (el adapter
+            // repara la llamada desde lo que dijo el dueño si el 3B no la hace).
+            requiredQueryTool = (LocalToolAdapter.queryTool(ownerTurn)
+                ?? (GoalDrop.isClearDrop(ownerTurn) ? "drop_goal" : nil))
                 .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
             // Recordatorio citado + pedido estricto de "hecho"/"deshacer" (lista
             // blanca del adapter): la tool sin parámetros viaja SOLA y se ejecuta
@@ -590,6 +602,7 @@ public enum OnDevicePromptBuilder {
     static let actionStems: [String: [String]] = [
         "remind_me": ["recuerd", "record", "avis", "program"],
         "declare_goal": ["meta", "regist", "pregunt", "segui", "recuerd"],
+        "drop_goal": ["dej", "cambi", "meta", "archiv", "cancel", "reemplaz"],
         "add_calendar_event": ["agend", "event", "calend", "cita", "reuni"],
         "write_note": ["anot", "nota", "guard", "apunt"],
         "move_reminder": ["mov", "pas", "qued", "cambi", "program", "recuerd"],
@@ -663,6 +676,8 @@ public enum OnDevicePromptBuilder {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let body = cleaned.joined(separator: " ").replacingOccurrences(of: ".».", with: "».")
+        // Lo que NO se hizo ("No la dejé…", "¿Quieres que…?") no abre con "Listo".
+        if body.hasPrefix("No ") || body.hasPrefix("¿") { return body }
         let trimmed = body.hasPrefix("Listo: ") ? String(body.dropFirst(7)) : body
         return (trimmed.first?.isLowercase == true ? "Listo, " : "Listo: ") + trimmed
     }

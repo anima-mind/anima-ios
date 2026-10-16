@@ -33,11 +33,14 @@ public actor NightSimulator {
     }
 
     public static func summary(_ report: Consolidator.CycleReport, newGoals: Int) -> String {
-        guard report.distilled > 0 || report.added > 0 || report.updated > 0 || newGoals > 0 else {
+        guard report.distilled > 0 || report.added > 0 || report.updated > 0 || newGoals > 0
+                || report.goalsLeft > 0 else {
             return "ciclo #\(report.cycle) — \(nothingNew)"
         }
         let memories = report.added == 1 ? "1 memoria nueva" : "\(report.added) memorias nuevas"
         let goals = newGoals == 1 ? "1 meta" : "\(newGoals) metas"
-        return "ciclo #\(report.cycle) — \(memories), \(goals)"
+        let left = report.goalsLeft == 0 ? ""
+            : report.goalsLeft == 1 ? ", 1 meta archivada" : ", \(report.goalsLeft) metas archivadas"
+        return "ciclo #\(report.cycle) — \(memories), \(goals)\(left)"
     }
 }

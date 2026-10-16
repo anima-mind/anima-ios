@@ -118,6 +118,8 @@ public enum AnimaDatabase {
         m.registerMigration("v20-turn-quote") { db in
             try db.execute(sql: "ALTER TABLE turn_event ADD COLUMN quote_json TEXT NULL")
         }
+        // Metas que se dejan o se reemplazan (superseded_by, abandoned_at, declared_at).
+        GoalLifecycleV21.register(&m)
 
         return m
     }
@@ -145,9 +147,21 @@ public enum AnimaDatabase {
     }
 
     /// Base efímera en un archivo temporal único — para tests y previews.
+    ///
+    /// Sin fsync (synchronous=OFF, journal en memoria): la base se tira al terminar
+    /// y la durabilidad no aplica. Medido en el CI de #45 (runner de 3 núcleos):
+    /// cada test crea su base y corre todas las migraciones; con fsync, ese IO
+    /// síncrono al arrancar la suite dejaba sin hilos al pool cooperativo.
     public static func temporary() throws -> DatabaseQueue {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".sqlite")
-        return try makeQueue(path: url.path)
+        var configuration = configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA synchronous = OFF")
+            try db.execute(sql: "PRAGMA journal_mode = MEMORY")
+        }
+        let queue = try DatabaseQueue(path: url.path, configuration: configuration)
+        try migrator().migrate(queue)
+        return queue
     }
 }

@@ -53,6 +53,10 @@ public enum WakeNotice {
         if report.goalsUpdated > 0 {
             parts.append(report.goalsUpdated == 1 ? "1 meta al día" : "\(report.goalsUpdated) metas al día")
         }
+        if report.goalsLeft > 0 {
+            parts.append(report.goalsLeft == 1 ? "1 meta que ya no querías, archivada con su seguimiento"
+                         : "\(report.goalsLeft) metas que ya no querías, archivadas con su seguimiento")
+        }
         // Ciclo diurno: no "dormí". De mañana ordena lo de ayer; de tarde, lo de hoy.
         guard morningDelivery, slept else {
             let span = morningDelivery ? "ayer" : "hoy"

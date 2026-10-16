@@ -539,7 +539,10 @@ final class AppModel: ObservableObject {
                                             nudgeQuestions: nudgeQuestions)
             self.consolidator = consolidator
             let wake = wakeNotifier
+            let proactiveAfterSleep = proactiveScheduler
             Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night in
+                // El sueño pudo dejar o cambiar metas: sus seguimientos se cancelan ya.
+                await proactiveAfterSleep?.sync()
                 await wake?.cycleCompleted(report, night: night)
             })
             // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
@@ -564,6 +567,7 @@ final class AppModel: ObservableObject {
                     if let self, !UITestMode.isActive {
                         await self.sleepActivity.finish(completed: true, night: await self.selfModel?.cycles() ?? 0)
                     }
+                    await self?.proactiveScheduler?.sync()
                     await self?.publishWidgets()
                     await self?.memoryModel?.load()
                     await self?.goalsModel?.refresh()

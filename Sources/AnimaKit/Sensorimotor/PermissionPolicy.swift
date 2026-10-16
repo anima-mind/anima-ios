@@ -53,7 +53,8 @@ public struct PermissionPolicy: Sendable {
     /// desde la app (Metas, Recordatorios) → sin sheet. Lo que toca el mundo
     /// (agenda, Recordatorios del iPhone, cámara…) sigue pidiendo ok.
     public static let internalReversible: Set<AllowlistEntry> = Set(
-        ["declare", "set_checkin", "clear_checkin", "mark_achieved"].map { AllowlistEntry(tool: "goals", operation: $0) }
+        ["declare", "set_checkin", "clear_checkin", "mark_achieved", "abandon", "replace"]
+            .map { AllowlistEntry(tool: "goals", operation: $0) }
         + ["create", "complete", "cancel", "snooze", "reschedule", "reopen"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
 
     /// Operaciones que destruyen algo FUERA del estado reversible de Anima
@@ -67,6 +68,12 @@ public struct PermissionPolicy: Sendable {
         let entry = AllowlistEntry(tool: tool, operation: operation)
         return !internalReversible.contains(entry) && destructiveOperations.contains(operation)
     }
+
+    /// Internas reversibles que igual se hacen SOLO desde el teléfono: dejar o
+    /// cambiar una meta no se ejecuta desde CarPlay ni Siri (se niega y queda
+    /// pendiente en el teléfono, como lo riesgoso).
+    public static let phoneOnly: Set<AllowlistEntry> = Set(
+        ["abandon", "replace"].map { AllowlistEntry(tool: "goals", operation: $0) })
 
     /// La política de la app: internas reversibles + lo autorizado siempre.
     public static func app(ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry>) -> PermissionPolicy {

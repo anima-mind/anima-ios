@@ -384,9 +384,10 @@ import Testing
                                                evidence: "test")
             let t = await Self.turn(world, "elimina mi meta de correr")
             let goals = await world.other.allGoals()
-            let folded = LocalWhen.fold(t.text)
-            let lies = ["elimine", "eliminad", "borre", "borrad", "quitad", "ya no esta", "listo"].contains(where: folded.contains)
-            let ok = goals.count == 1 && !t.calls.contains { $0.hasPrefix("declare_goal") } && !lies
+            // Desde #45 dejar una meta tiene tool local: "elimina mi meta de X" la deja
+            // (y lo dice); nunca crea otra.
+            let ok = goals.count == 1 && goals.first?.status == .abandoned
+                && !t.calls.contains { $0.hasPrefix("declare_goal") } && t.text.contains("dejé la meta") && t.notice == nil
             Self.row("21 elimina mi meta", run, t, ok)
             #expect(ok, "corrida \(run): \(goals.map(\.statement))")
         }
@@ -689,6 +690,112 @@ import Testing
                     && !folded.contains("no tienes recordatorios") && t.text.count > 20 && t.notice == nil
                 Self.row("\(49 + index) \(prompt.prefix(30))", run, t, ok)
                 #expect(ok, "\(prompt) corrida \(run)")
+            }
+        }
+    }
+
+    // MARK: - Campo 2026-10-15: dejar o cambiar una meta
+
+    static func seedSaving(_ world: World) async -> String {
+        let id = await world.other.ingestStated(statement: "Ahorrar 30 millones de pesos para diciembre de 2026",
+                                                desiredState: .progressCheckIn(everyDays: 8), evidence: "smoke")
+        await world.other.setCheckIn(id: id, CheckInCadence(cadence: .weekly, hour: 18, minute: 33, weekday: 4))
+        return id
+    }
+
+    @Test func replaceSavingWithDebt() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let old = await Self.seedSaving(world)
+            let t = await Self.turn(world, "ya no quiero ahorrar, mejor quiero abonar a la deuda 5M cada quincena")
+            let open = await world.other.allGoals().filter(\.isOpen)
+            let left = await world.other.goal(id: old)
+            let newGoal = open.count == 1 ? open[0] : nil
+            let replaced = newGoal?.statement.lowercased().contains("deuda") == true
+            let superseded = left?.status == .abandoned && left?.supersededBy == newGoal?.id
+            let followUpGone = left?.checkIn.isActive == false
+            let said = t.notice == nil && LocalWhen.fold(t.text).contains("deuda")
+            let ok = replaced && superseded && followUpGone && said
+            Self.row("52 cambiar meta", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    @Test func dropAGoal() async throws {
+        guard Self.enabled else { return }
+        for run in 1...Self.runs {
+            let world = try await World()
+            let old = await Self.seedSaving(world)
+            let t = await Self.turn(world, "olvida mi meta de ahorrar")
+            let none = await world.other.allGoals().filter(\.isOpen).isEmpty
+            let left = await world.other.goal(id: old)?.status == .abandoned
+            let ok = none && left && t.notice == nil
+            Self.row("53 dejar meta", run, t, ok)
+            #expect(ok, "corrida \(run)")
+        }
+    }
+
+    // MARK: - Review #45: ante la duda no se deja ninguna meta
+
+    static func seedThree(_ world: World) async -> [String] {
+        var ids = [await Self.seedSaving(world)]
+        for statement in ["Ir al gym 3 veces por semana", "Correr el maratón de Medellín"] {
+            let id = await world.other.ingestStated(statement: statement, desiredState: .progressCheckIn(everyDays: 7),
+                                                    evidence: "smoke")
+            await world.other.setCheckIn(id: id, CheckInCadence(cadence: .daily, hour: 19))
+            ids.append(id)
+        }
+        return ids
+    }
+
+    @Test func negativesNeverDropAGoal() async throws {
+        guard Self.enabled else { return }
+        var dropped = 0
+        for (index, text) in goalDropNegatives.enumerated() {
+            for run in 1...Self.runs {
+                let world = try await World()
+                let ids = await Self.seedThree(world)
+                let t = await Self.turn(world, text)
+                var intact = true
+                for id in ids {
+                    let goal = await world.other.goal(id: id)
+                    if goal?.status != .active || goal?.checkIn.isActive != true { intact = false }
+                }
+                if !intact { dropped += 1 }
+                Self.row("N\(index + 1) \(text.prefix(28))", run, t, intact)
+                #expect(intact, "\(text) corrida \(run)")
+            }
+        }
+        print("[fm-e2e] negativos: \(dropped) metas dejadas en \(goalDropNegatives.count * Self.runs) turnos")
+    }
+
+    @Test func positivesStillDrop() async throws {
+        guard Self.enabled else { return }
+        let cases: [(String, Int, String?)] = [
+            ("ya no quiero ahorrar, mejor quiero abonar a la deuda 5M cada quincena", 0, "deuda"),
+            ("olvida mi meta de ahorrar", 0, nil),
+            ("cambia mi meta de correr por nadar", 2, "nadar"),
+            ("abandono la meta de correr", 2, nil),
+            ("ya no quiero ir al gym", 1, nil),
+        ]
+        for (index, (text, target, new)) in cases.enumerated() {
+            for run in 1...Self.runs {
+                let world = try await World()
+                let ids = await Self.seedThree(world)
+                let t = await Self.turn(world, text)
+                let left = await world.other.goal(id: ids[target])?.status == .abandoned
+                var othersIntact = true
+                for (i, id) in ids.enumerated() where i != target {
+                    if await world.other.goal(id: id)?.status != .active { othersIntact = false }
+                }
+                var replaced = true
+                if let new {
+                    replaced = await world.other.allGoals().contains { $0.isOpen && LocalWhen.fold($0.statement).contains(new) }
+                }
+                let ok = left && othersIntact && replaced && t.notice == nil
+                Self.row("P\(index + 1) \(text.prefix(28))", run, t, ok)
+                #expect(ok, "\(text) corrida \(run)")
             }
         }
     }

@@ -8,7 +8,13 @@ import Testing
 
 @Suite struct ToolProfileTests {
     static let measuredFullRegistryTokens = 3797
-    static let onDeviceToolCeiling = 900
+    /// 900 → 960 con `drop_goal` (dejar/cambiar una meta, campo): medido con el
+    /// tokenizer real, set local 949 (antes 872); system + tools 1326 ≤ 1500 y
+    /// quedan 2770 ≥ 2000 libres para la conversación. Margen: 11 tokens (review
+    /// #45). Recortar descripciones ganaba ~4 (quitar "calendario"/"programados")
+    /// a costa de precisión del 3B: no se recortó; la próxima tool local exige
+    /// re-medir y decidir el techo, no subirlo a ciegas.
+    static let onDeviceToolCeiling = 960
     static let onDeviceSystemCeiling = 1500
     static let onDeviceRoomFloor = 2000
 
@@ -30,7 +36,7 @@ import Testing
         #expect(ToolProfile.full.apply(tools + [server]) == tools + [server])
 
         let local = ToolProfile.onDevice.apply(tools + [server])
-        #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals",
+        #expect(local.map(\.name) == ["remind_me", "list_reminders", "declare_goal", "list_goals", "drop_goal",
                                       "add_calendar_event", "list_events", "write_note", "read_note"])
         #expect(ToolProfile.onDevice.apply(local) == local)
         for name in ToolProfile.excludedOnDevice { #expect(!local.contains { $0.name == name }) }
@@ -82,6 +88,10 @@ import Testing
         }
     }
 
+    /// Las cotas estimadas corren siempre; las del tokenizer real solo con el modelo
+    /// de Apple disponible (RealToolSet.modelIsAvailable(): en el runner de CI sin
+    /// modelo, `tokenCount` retenía un hilo del pool ~12–13 s y la disponibilidad
+    /// misma unos 5 s por consulta; se pregunta una vez, fuera del pool).
     @Test func onDeviceProfileFitsTheMeasuredBudget() async throws {
         let tools = try RealToolSet.specs()
         let local = ToolProfile.onDevice.apply(tools)

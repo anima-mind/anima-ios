@@ -29,11 +29,17 @@ import Testing
         #expect(event["end"] == .string("2026-10-15T15:00:00"))
     }
 
-    @Test(arguments: ["elimina mi meta de correr", "borra mi meta", "ya cumplí mi meta de leer 12 libros",
-                      "quiero cambiar mi meta", "cancela mi meta de ahorrar"])
+    @Test(arguments: ["ya cumplí mi meta de leer 12 libros", "quiero cambiar mi meta"])
     func changingAGoalIsNeverDeclaringOne(owner: String) {
         #expect(LocalToolAdapter.intended(name: "list_goals", ownerText: owner) == "list_goals")
         #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) == "list_reminders")
+    }
+
+    /// Dejar una meta sí tiene tool local (campo: "ya no quiero ahorrar…" dejaba las dos).
+    @Test(arguments: ["elimina mi meta de correr", "borra mi meta", "cancela mi meta de ahorrar"])
+    func droppingAGoalGoesToDropGoal(owner: String) {
+        #expect(LocalToolAdapter.intended(name: "list_goals", ownerText: owner) == "drop_goal")
+        #expect(LocalToolAdapter.intended(name: "list_reminders", ownerText: owner) == "drop_goal")
     }
 
     @Test func onlyCreationPhrasingRedirectsToAGoal() {
@@ -212,7 +218,7 @@ import Testing
     @Test func aChangeRequestSaysWhereItIsDone() async throws {
         let shown = LocalToolAdapter.present(ToolResult(content: "- [G1] correr 10 km (stated, x)"), local: "list_goals",
                                              input: .object([:]), ownerText: "elimina mi meta de correr")
-        #expect(shown.content == "Eso no lo puedo cambiar desde aquí: hazlo en la tab Metas. Lo que hay:\n- correr 10 km")
+        #expect(shown.content == "No cambié nada. Para dejar o cambiar una meta, dímelo así: «deja mi meta de …». Lo que hay:\n- correr 10 km")
         let ctx = AssembledContext(messages: [
             .user("elimina mi meta de correr"),
             .assistant([.toolUse(id: "t1", name: "list_goals", input: .object([:]))]),

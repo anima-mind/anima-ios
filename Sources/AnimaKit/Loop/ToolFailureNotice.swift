@@ -29,6 +29,8 @@ public enum ToolFailureNotice {
         case ("goals", "list"): return "consultar tus metas"
         case ("goals", "record_checkin"): return "anotar el seguimiento"
         case ("goals", "mark_achieved"): return "marcar la meta como lograda"
+        case ("goals", "abandon"): return "dejar la meta"
+        case ("goals", "replace"): return "cambiar la meta"
         case ("goals", _): return "registrar la meta"
         case ("calendar", "list"), ("calendar", "search"): return "consultar tu agenda"
         case ("calendar", "delete"): return "borrar el evento"

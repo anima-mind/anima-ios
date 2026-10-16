@@ -214,7 +214,9 @@ public struct SurfaceConfirmationRouter: ConfirmationProvider {
     /// solo se confirma por voz lo de bajo riesgo (CarPlayTurn.voiceConfirmable).
     /// Se evalúa ANTES de la política: ni "Autorizar siempre" lo salta. nil = sigue.
     public static func refusal(for request: ConfirmationRequest) -> String? {
-        switch request.surface {
+        // Dejar o cambiar una meta: solo desde el teléfono (#45), aunque allí no pida sheet.
+        if let phoneOnly = phoneOnlyRefusal(for: request) { return phoneOnly }
+        return switch request.surface {
         case .siri where request.tool == GlassesCameraTool.name: siriCameraRefusal
         case .siri where PermissionPolicy.isDestructive(tool: request.tool, operation: request.operation):
             CarPlayTurn.siriDestructiveRefusal
@@ -224,6 +226,19 @@ public struct SurfaceConfirmationRouter: ConfirmationProvider {
     }
 
     public static let siriCameraRefusal = "Para usar la cámara de las gafas, pídemelo desde las gafas."
+
+    /// Dejar o cambiar una meta (PermissionPolicy.phoneOnly) desde CarPlay o Siri:
+    /// se niega sin ejecutar, aunque en el teléfono no pida sheet. nil = sigue.
+    public static func phoneOnlyRefusal(for request: ConfirmationRequest) -> String? {
+        guard PermissionPolicy.phoneOnly.contains(AllowlistEntry(tool: request.tool, operation: request.operation))
+        else { return nil }
+        switch request.surface {
+        case .carplay: return CarPlayTurn.pendingRefusal(request.summary)
+        case .siri:
+            return "No lo hice: desde Siri no hago eso (\(request.summary)). Dile al dueño que se lo dejas pendiente en el teléfono."
+        default: return nil
+        }
+    }
 
     public func confirm(_ request: ConfirmationRequest) async -> Bool {
         if Self.refusal(for: request) != nil { return false }

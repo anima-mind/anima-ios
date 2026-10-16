@@ -332,10 +332,38 @@ enum RealToolSet {
         return tools.map(\.spec)
     }
 
+    /// El tokenizer real solo con el modelo disponible. Medido en el CI (#43/#45):
+    /// en el runner sin modelo, `tokenCount` retiene un hilo del pool cooperativo
+    /// ~12–13 s y devuelve nil. Sin modelo, los tests usan las cotas estimadas.
+    ///
+    /// La disponibilidad misma (`SystemLanguageModel.default.availability`) también
+    /// bloquea varios segundos en ese runner (#45: el test tardó 20 s con 4 consultas;
+    /// 11 s en main con 1). Se consulta UNA vez por proceso y FUERA del pool
+    /// cooperativo: en una cola serial de GCD; el hilo del test solo se suspende.
+    static func modelIsAvailable() async -> Bool {
+        // En CI (GitHub pone CI=true) el runner nunca tiene el modelo y la sola
+        // consulta tarda ~13 s (run 38940151116: el test pasó a 13,9 s con UNA
+        // consulta fuera del pool) y toma recursos de FoundationModels que otros
+        // tests usan: ni se pregunta. Los smokes opt-in siguen su propia guarda.
+        if ProcessInfo.processInfo.environment["CI"] == "true" { return false }
+        return await withCheckedContinuation { continuation in
+            availabilityQueue.async {
+                let available = cachedAvailability ?? OnDeviceAvailability.current().isAvailable
+                cachedAvailability = available
+                continuation.resume(returning: available)
+            }
+        }
+    }
+
+    private static let availabilityQueue = DispatchQueue(label: "anima.tests.on-device-availability")
+    /// Solo se toca dentro de `availabilityQueue` (serial).
+    nonisolated(unsafe) private static var cachedAvailability: Bool?
+
     /// `SystemLanguageModel.tokenCount(for: [Tool])` cuando el SDK/OS lo tienen
     /// (macOS 26.4+); nil si no se puede medir aquí.
     static func frameworkTokenCount(_ specs: [ToolSpec]) async -> Int? {
         #if canImport(FoundationModels)
+        guard await modelIsAvailable() else { return nil }
         if #available(macOS 26.4, iOS 26.4, *) {
             let tools: [InterceptingTool] = specs.compactMap { spec in
                 guard case .client(let name, let description, let schema) = spec,
@@ -352,6 +380,7 @@ enum RealToolSet {
     /// Tokens reales de un texto como `Instructions`; nil si no se puede medir aquí.
     static func frameworkInstructionTokens(_ text: String) async -> Int? {
         #if canImport(FoundationModels)
+        guard await modelIsAvailable() else { return nil }
         if #available(macOS 26.4, iOS 26.4, *) {
             return try? await SystemLanguageModel.default.tokenCount(for: Instructions(text))
         }

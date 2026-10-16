@@ -16,16 +16,17 @@ public enum ActionClaimGuard {
     /// Abre el turno sintético del reintento (no se persiste ni se pinta).
     public static let nudgeMarker = "[Verificación del harness]"
     public static let nudge = nudgeMarker + """
-     Tu respuesta afirma que agendaste, programaste, registraste o creaste algo, pero en este turno \
+     Tu respuesta afirma que agendaste, programaste, registraste, creaste, cambiaste o dejaste algo, pero en este turno \
     NO se ejecutó ninguna herramienta de escritura: nada quedó guardado. Si el dueño lo pidió o lo \
     aceptó, EJECUTA ahora la herramienta que corresponde (anima_reminders create con su goal_id, goals \
-    set_checkin o declare, calendar create, notes…) y después confírmalo en una frase. Si no corresponde \
+    set_checkin o declare, goals replace o abandon si dejó o cambió una meta, calendar create, notes…) y \
+    después confírmalo en una frase. Si no corresponde \
     hacer nada o ya existía de antes, dilo sin afirmar que lo hiciste ahora.
     """
 
     /// Tools que escriben en el mundo del dueño (las de lectura no cuentan).
     static let writeTools: Set<String> = ["anima_reminders", "goals", "calendar", "notes", "reminders"]
-    static let readActions: Set<String> = ["list", "search", "read", "get"]
+    static let readActions: Set<String> = ["list", "search", "read", "get", "ask_drop"]
 
     /// ¿Esta llamada (real, ya traducida) es una escritura?
     public static func isWrite(tool: String, input: JSONValue) -> Bool {
@@ -41,11 +42,12 @@ public enum ActionClaimGuard {
     }
 
     // Afirmaciones de escritura en primera persona, CON tildes: "programé"
+    // ("cambié", "cancelé", "archivé"… también: dejar o cambiar una meta es escritura)
     // (pretérito, afirma) ≠ "programe" (subjuntivo, "¿quieres que te lo
     // programe?"). Los participios sueltos ("está programado") describen, no
     // afirman: solo cuentan tras "quedó"/"dejé".
     private static let claimPatterns = [
-        #"\b(agendé|programé|registré|creé|anoté|apunté|guardé|dejé|fijé)\b"#,
+        #"\b(agendé|programé|registré|creé|anoté|apunté|guardé|dejé|fijé|cambié|eliminé|archivé|cancelé|reemplacé|borré)\b"#,
         #"\bte (lo |la )?programo\b"#,
         #"\b(ya )?quedó (agendad|programad|registrad|cread|guardad|anotad|fijad|apuntad)[a-z]*"#,
         #"\blisto,? (ya )?quedó\b"#,

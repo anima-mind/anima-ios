@@ -178,7 +178,7 @@ enum QuoteFixtures {
         for worstLine in worstLines {
             #expect(worstLine.count <= 230, "\(worstLine.count): \(worstLine)")
             #expect(Double(worstLine.count) / 3.6 < 80)
-            if let real = await RealToolSet.frameworkInstructionTokens(worstLine) {
+            if let real = await QuoteTokenizer.instructionTokens(worstLine) {
                 print("[quote-tokens] tokenizer real: \(real) tokens (\(worstLine.count) chars)")
                 #expect(real < 80, "real \(real)")
             }
@@ -1126,7 +1126,7 @@ enum QuoteFixtures {
             #expect(ToolProfile.onDevice.apply(set) == set)     // el provider re-aplica: idempotente
             let estimate = ContextBudget.onDevice.toolTokens(set)
             #expect(estimate <= ToolProfileTests.onDeviceToolCeiling)
-            if let real = await RealToolSet.frameworkTokenCount(set) {
+            if let real = await QuoteTokenizer.toolTokens(set) {
                 print("[quote-tools] tokenizer real: \(tool) solo = \(real) tokens")
                 #expect(real <= ToolProfileTests.onDeviceToolCeiling)
             }
@@ -1267,5 +1267,25 @@ enum QuoteFixtures {
         }
         // Control: un id con texto sí se rechaza.
         #expect(AnimaDeepLink.parse(AnimaDeepLink.nudge(id: "x y").url) == nil)
+    }
+}
+
+/// El tokenizer real del modelo de Apple, SOLO si el modelo está disponible.
+/// CI de eea36bf: en el runner (sin Apple Intelligence) cada llamada a
+/// `SystemLanguageModel.tokenCount` retiene un hilo del pool cooperativo
+/// ~13 s y devuelve nil (en #45 onDeviceProfileFitsTheMeasuredBudget tarda
+/// 12,5 s). Con estas dos más, los 3 hilos del runner quedaban tomados y la
+/// suite entera se congelaba ~13,5 s. Sin modelo, las cotas estimadas bastan.
+enum QuoteTokenizer {
+    static let available: Bool = OnDeviceAvailability.current().isAvailable
+
+    static func instructionTokens(_ text: String) async -> Int? {
+        guard available else { return nil }
+        return await RealToolSet.frameworkInstructionTokens(text)
+    }
+
+    static func toolTokens(_ specs: [ToolSpec]) async -> Int? {
+        guard available else { return nil }
+        return await RealToolSet.frameworkTokenCount(specs)
     }
 }

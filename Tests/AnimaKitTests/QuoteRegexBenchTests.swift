@@ -40,8 +40,9 @@ import Testing
         return hits
     }
 
-    @Test func concurrentHeuristics() async {
-        guard ProcessInfo.processInfo.environment["ANIMA_REGEX_BENCH"] == "1" else { return }
+    // Opt-in como trait: sin el env var ni se agenda (no ocupa el pool).
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ANIMA_REGEX_BENCH"] == "1"))
+    func concurrentHeuristics() async {
         let rounds = Int(ProcessInfo.processInfo.environment["ANIMA_REGEX_ROUNDS"] ?? "") ?? 40
         let start = Date()
         let total = await withTaskGroup(of: Int.self) { group in

@@ -197,6 +197,7 @@ public actor AgentLoop {
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
+                await self.ownerTurnFinished(surface)
                 self.untrack(id, sessionId: sessionId)
             }
             inFlight[id] = task
@@ -218,6 +219,18 @@ public actor AgentLoop {
     }
 
     public var turnsInFlight: Int { inFlight.count }
+
+    /// Tras cada turno del dueño que corrió (chat, voz, gafas, Siri — también en
+    /// background): la capa proactiva reprograma los avisos por inactividad.
+    private var onOwnerTurn: (@Sendable (SurfaceID) async -> Void)?
+
+    public func setOnOwnerTurn(_ hook: (@Sendable (SurfaceID) async -> Void)?) {
+        onOwnerTurn = hook
+    }
+
+    private func ownerTurnFinished(_ surface: SurfaceID) async {
+        await onOwnerTurn?(surface)
+    }
 
     /// Vuelve cuando ningún turno sigue produciendo (escrituras incluidas).
     public func waitUntilIdle() async {

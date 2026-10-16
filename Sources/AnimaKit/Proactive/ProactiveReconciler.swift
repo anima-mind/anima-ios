@@ -12,19 +12,23 @@ public struct ProactiveMessage: Sendable, Equatable {
         case reminder(id: String)
         case checkIn(goalId: String)
         case intention(id: String)
+        /// Aviso por inactividad: la pregunta de Anima (ref = id de la pregunta).
+        case nudge(id: String)
 
-        /// "reminder" | "checkin" | "intention" (accessibility id y tag persistido).
+        /// "reminder" | "checkin" | "intention" | "nudge" (accessibility id y tag
+        /// persistido; un build viejo no reconoce "nudge" y lo pinta como texto).
         public var slug: String {
             switch self {
             case .reminder: return "reminder"
             case .checkIn: return "checkin"
             case .intention: return "intention"
+            case .nudge: return "nudge"
             }
         }
 
         public var ref: String {
             switch self {
-            case .reminder(let id), .checkIn(let id), .intention(let id): return id
+            case .reminder(let id), .checkIn(let id), .intention(let id), .nudge(let id): return id
             }
         }
 
@@ -33,6 +37,7 @@ public struct ProactiveMessage: Sendable, Equatable {
             case "reminder": self = .reminder(id: ref)
             case "checkin": self = .checkIn(goalId: ref)
             case "intention": self = .intention(id: ref)
+            case "nudge": self = .nudge(id: ref)
             default: return nil
             }
         }
@@ -85,14 +90,17 @@ public actor ProactiveReconciler {
     private let store: SymbolicStore?
     private let calendar: Calendar
     private let now: @Sendable () -> Date
+    private let reengagement: ReengagementEngine?
 
     public init(reminders: AnimaReminderStore, otherModel: OtherModel? = nil, store: SymbolicStore? = nil,
-                calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }) {
+                calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() },
+                reengagement: ReengagementEngine? = nil) {
         self.reminders = reminders
         self.otherModel = otherModel
         self.store = store
         self.calendar = calendar
         self.now = now
+        self.reengagement = reengagement
     }
 
     /// Vencidos → entregados → mensajes en su voz en la sesión dada.
@@ -128,6 +136,27 @@ public actor ProactiveReconciler {
                                        goalStatement: goal.statement)
         persist(message, sessionId: sessionId)
         return message
+    }
+
+    /// Tap a un aviso por inactividad: la pregunta entra al chat como mensaje de
+    /// Anima (turno persistido: el modelo la ve y la respuesta sigue la charla).
+    /// Un segundo tap no la duplica. nil si la referencia no resuelve.
+    public func nudgePrompt(ref: String, sessionId: SessionID?) async -> ProactiveMessage? {
+        guard let reengagement, let opened = await reengagement.open(ref: ref) else { return nil }
+        let message = ProactiveMessage(kind: .nudge(id: ref), text: opened.delivery.text, at: opened.delivery.at)
+        if !opened.alreadyShown { persist(message, sessionId: sessionId) }
+        return message
+    }
+
+    /// Al abrir la app sin tocar el aviso: los entregados hace poco y sin
+    /// respuesta también quedan en el chat, listos para responder.
+    public func reconcileNudges(sessionId: SessionID?) async -> [ProactiveMessage] {
+        guard let reengagement else { return [] }
+        return await reengagement.unseenRecent().map { item in
+            let message = ProactiveMessage(kind: .nudge(id: item.ref), text: item.text, at: item.at)
+            persist(message, sessionId: sessionId)
+            return message
+        }
     }
 
     /// Turno assistant con su marca proactiva (el modelo ve el texto; el chat, la card).

@@ -52,6 +52,13 @@ public enum ActionClaimGuard {
         #"\bte (lo |la )?recuerdo\b(?! que)"#,
         #"\bte voy a recordar\b"#,
         #"\bte aviso (el|la|los|las|mañana|hoy|a las|en|cada|cuando|apenas|en cuanto|tan pronto)\b"#,
+        // Recordatorio citado (review #43): "lo marqué", "quedó marcado como
+        // hecho", "se marca como hecho", "lo moví/pasé al viernes".
+        #"\b(lo |la )?(marqué|moví|pospuse|reprogramé)\b"#,
+        #"\blo pasé (al|para|a)\b"#,
+        #"\b(quedó|queda|fue|ha sido|está|esta) (marcad|movid|pospuest|reprogramad)[a-z]*"#,
+        #"\bse (marca|marcó|marcará|moverá|movió|mueve) (como hech|para|al|a las)"#,
+        #"\bmarcad[oa] como hech[oa]\b"#,
     ]
     private static let claimRegexes = claimPatterns.compactMap { try? NSRegularExpression(pattern: $0) }
     private static let exemptions = ["ya existía", "ya existia", "ya estaba", "ya lo tenías", "ya la tenías", "ya tenías"]

@@ -344,10 +344,13 @@ public enum OnDevicePromptBuilder {
         // prompt (medido: en prosa o en las instructions el 3B dejaba de usar
         // move_reminder); en turnos viejos se resume a "(sobre …)" (sin ids ni
         // instrucciones viejas que ya no aplican).
+        // El reintento de la guarda (nudge del harness) no es un turno del dueño:
+        // la cita completa sigue siendo la del turno real.
         let ownerTurns = ctx.messages.indices.filter { i in
             ctx.messages[i].role == .user && ctx.messages[i].content.contains { block in
                 switch block {
-                case .text, .image: return true
+                case .text(let t): return !ActionClaimGuard.isNudge(t)
+                case .image: return true
                 default: return false
                 }
             }
@@ -489,6 +492,13 @@ public enum OnDevicePromptBuilder {
             let ownerTurn = last.components(separatedBy: "\n\n").last ?? last
             requiredQueryTool = LocalToolAdapter.queryTool(ownerTurn)
                 .flatMap { name in ToolProfile.onDevice.apply(tools).contains { $0.name == name } ? name : nil }
+            // Recordatorio citado + pedido estricto de "hecho"/"deshacer" (lista
+            // blanca del adapter): la tool sin parámetros viaja SOLA y se ejecuta
+            // aunque el 3B no la llame (medido: 0/3 la llamaba por su cuenta).
+            let offered = ToolProfile.onDevice.apply(tools).map(\.name)
+            if offered.count == 1, let only = offered.first, LocalToolAdapter.forcedQuotedTools.contains(only) {
+                requiredQueryTool = only
+            }
         } else {
             prompt = endsInToolError(ctx.messages) ? errorCue : continuationCue
         }
@@ -584,6 +594,7 @@ public enum OnDevicePromptBuilder {
         "write_note": ["anot", "nota", "guard", "apunt"],
         "move_reminder": ["mov", "pas", "qued", "cambi", "program", "recuerd"],
         "done_reminder": ["hech", "marc", "list", "complet"],
+        "undo_done": ["pendient", "deshic", "desmarc", "vuelv", "reactiv"],
     ]
 
     /// Pretérito en 1ª persona que no es de Anima ("saqué", "llamé") o en 2ª

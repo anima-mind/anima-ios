@@ -286,7 +286,8 @@ public actor AgentLoop {
             }
             let route = binding.router.route(turnClass)
             let toolProfile = ToolProfile.for(model: route.model)
-            allSpecs = toolProfile.apply(allSpecs, quote: quote, ownerText: Self.plainText(content))
+            allSpecs = toolProfile.apply(allSpecs, quote: quote, ownerText: Self.plainText(content),
+                                         now: clock?() ?? Date())
             await workingMemory.updateRestructureBanner(restructureBanner)
 
             // Fase 3 (§5.5): el render vivo del SelfModel reemplaza al SelfView estático.
@@ -474,6 +475,16 @@ public actor AgentLoop {
                 var content = response.content
                 let closes = response.stopReason != .toolUse && response.stopReason != .pauseTurn
                 var noticed = false
+                // Modelo local: a veces repite el bloque de la cita (o una variante
+                // entre corchetes: "[El recordatorio «…» se marca como hecho.]") como
+                // respuesta. Si el turno no escribió nada, se retira ANTES de las
+                // guardas (que ven lo que queda) y queda lo que dijo después.
+                if toolProfile == .onDevice, closes, let quote, !wroteSuccessfully,
+                   let echoed = ChatQuoteContext.withoutEcho(Self.plainText(content), quote: quote) {
+                    emit(.retracted)
+                    emit(.textDelta(echoed))
+                    content = [.text(echoed)]
+                }
                 if closes, let notice = ToolFailureNotice.notice(failures: failures.entries,
                                                                  finalText: Self.plainText(response.content)) {
                     content = ToolFailureNotice.prepend(notice, to: content)
@@ -494,14 +505,6 @@ public actor AgentLoop {
                     }
                     content = ToolFailureNotice.prepend(ActionClaimGuard.notice, to: content)
                     emit(.toolFailure(ActionClaimGuard.notice))
-                }
-                // Modelo local: a veces repite el bloque de la cita como respuesta
-                // (medido con "gracias"): se retira y queda lo que dijo después.
-                if toolProfile == .onDevice, closes, quote != nil,
-                   let echoed = ChatQuoteContext.withoutEcho(Self.plainText(content)) {
-                    emit(.retracted)
-                    emit(.textDelta(echoed))
-                    content = [.text(echoed)]
                 }
                 // Modelo local: pidió cambiar/dar por logrado algo sin tool para eso y
                 // el turno cerró sin tools ⇒ dónde se hace, determinista.
@@ -752,7 +755,11 @@ public actor AgentLoop {
     /// "¿Qué tengo pendiente?" con el modelo local: recordatorios + metas activas
     /// + agenda de hoy en un solo listado (las tools que no estén, se omiten).
     private func pendingSummary(now: Date, ownerText: String) async -> ToolResult {
-        let range = LocalWhen(now: now, calendar: .current, ownerText: ownerText).requestedRange
+        let when = LocalWhen(now: now, calendar: .current, ownerText: ownerText)
+        // "¿qué tengo el viernes 22?" con el 22 en jueves: se pregunta, no se
+        // contesta con el resumen de hoy.
+        if let question = when.ambiguousDayQuestion { return ToolResult(content: question) }
+        let range = when.requestedRange
         func read(_ tool: String, _ input: JSONValue) async -> String? {
             guard await sensorimotor.has(tool) else { return nil }
             let result = await sensorimotor.execute(name: tool, input: input)

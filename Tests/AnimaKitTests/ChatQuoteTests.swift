@@ -497,10 +497,10 @@ enum QuoteFixtures {
         let tools = try RealToolSet.specs()
         let reminder = QuoteFixtures.reminderQuote()
         let names = { (q: ChatQuote?, owner: String) in ToolProfile.onDevice.apply(tools, quote: q, ownerText: owner).map(\.name) }
-        #expect(names(reminder, "pásalo para el viernes").last == "move_reminder")
+        #expect(names(reminder, "pásalo para el viernes") == ["move_reminder"])
         #expect(!names(reminder, "pásalo para el viernes").contains("done_reminder"))
-        #expect(names(reminder, "ya lo pagué").last == "done_reminder")
-        #expect(names(reminder, "listo, ya lo mandé").last == "done_reminder")
+        #expect(names(reminder, "ya lo pagué") == ["done_reminder"])
+        #expect(names(reminder, "listo, ya lo mandé") == ["done_reminder"])
         // Review #43 (MEDIO 2): sin pedido del dueño no viaja ninguna.
         for owner in ["gracias", "¿a qué hora era?", "", "ok", "¿ya lo hice?", "¿listo para mañana?"] {
             let list = names(reminder, owner)
@@ -585,8 +585,12 @@ enum QuoteFixtures {
         #expect(day("el viernes", today: thu) == F.date(2026, 10, 16, 0))
         #expect(day("este viernes", today: thu) == F.date(2026, 10, 16, 0))
         #expect(day("el 23", today: thu) == nil)
-        #expect(day("viernes 3 de noviembre", today: thu) == F.date(2026, 11, 3, 0))
-        #expect(day("el viernes 23 de noviembre", today: thu) == F.date(2026, 11, 23, 0))
+        // Review #43 ronda 2: fecha explícita con día de la semana que no coincide
+        // (el 3 y el 23 de noviembre no son viernes) ⇒ misma regla: no se repara.
+        #expect(day("viernes 3 de noviembre", today: thu) == nil)
+        #expect(day("el viernes 23 de noviembre", today: thu) == nil)
+        #expect(day("el viernes 6 de noviembre", today: thu) == F.date(2026, 11, 6, 0))
+        #expect(day("el 3 de noviembre", today: thu) == F.date(2026, 11, 3, 0))
         #expect(day("el lunes 8:30", today: thu) == F.date(2026, 10, 19, 0))
         #expect(day("el viernes 3 pm", today: thu) == F.date(2026, 10, 16, 0))
         // Las horas no son días (antes: martes 3-nov, domingo 8-nov).
@@ -622,21 +626,83 @@ enum QuoteFixtures {
         }
     }
 
+    /// Frases negativas del review #43 ronda 2 (MAYOR 2, MEDIO 2): ninguna
+    /// marca hecho ni mueve. Compartidas con el smoke en vivo.
+    static let neverAct = [
+        "listo, gracias", "hecho de menos", "ya lo mandé a mi mamá", "ya veo", "ya sé", "ya casi", "ya casi termino",
+        "ya voy", "ya lo hago", "ya mismo", "ya en un rato lo hago", "listo, ahorita lo hago", "listo para mañana",
+        "ya está bien así, déjalo", "ya no me lo recuerdes", "hecho un lío", "ya mandé el correo pero falta pagar",
+        "hecho de menos a mi mamá", "gracias", "¿a qué hora era?", "pasa algo?", "¿qué pasa si lo paso al lunes?",
+        "pasé por la tienda", "me cambié de casa", "corre", "atrasado", "¿ya lo hice?", "ok", "¿qué dice?",
+        "no sé si pueda", "cumplido, gracias", "ok listo pero mañana", "ya",
+    ]
+
     @Test func ownerIntentOnTheQuotedReminder() {
-        let move: Set<String> = ["move_reminder"], done: Set<String> = ["done_reminder"]
+        let move: Set<String> = ["move_reminder"], done: Set<String> = ["done_reminder"], undo: Set<String> = ["undo_done"]
         let cases: [(String, Set<String>)] = [
-            ("pásalo para el viernes 23", move), ("¿la puedes pasar al viernes?", move), ("muévelo a las 5", move),
-            ("posponlo una hora", move), ("mejor mañana", move), ("cámbialo para el lunes", move),
-            ("ya lo hice", done), ("ya lo pagué", done), ("listo", done), ("hecho", done), ("listo, ya lo mandé", done),
-            ("dalo por hecho", done), ("ya quedó", done),
+            // Mover: imperativo o solo fecha/hora (MEDIO 1).
+            ("pásalo para el viernes 23", move), ("muévelo a las 5", move), ("posponlo una hora", move),
+            ("mejor mañana", move), ("cámbialo para el lunes", move), ("mañana a las 5", move), ("para el viernes", move),
+            ("a las 5", move), ("en una hora", move), ("más tarde", move), ("el lunes a las 8:30", move),
+            ("déjalo para el lunes", move), ("pospón", move), ("listo, pásalo mañana", move),
+            // Hecho: lista blanca estricta (MAYOR 2).
+            ("ya lo hice", done), ("ya lo pagué", done), ("ya lo mandé", done), ("listo", done), ("hecho", done),
+            ("listo!", done), ("listo, ya lo hice", done), ("ya está hecho", done), ("lo hice", done),
+            ("dalo por hecho", done), ("dale por hecho", done), ("ok listo", done), ("cumplido", done),
+            ("ya pagué la luz", done), ("listo, ya lo mandé", done),
             (AudioTool.transcriptPrefix + " listo ya lo pagué", done),
-            // Controles negativos.
-            ("gracias", []), ("¿a qué hora era?", []), ("¿ya lo hice?", []), ("ok", []), ("¿qué dice?", []),
-            ("no sé si pueda", []), ("", []),
-        ]
+            // Deshacer.
+            ("no lo he hecho", undo), ("deshaz", undo), ("desmárcalo", undo), ("me equivoqué, todavía no lo hago", undo),
+            ("", []), ("¿la puedes pasar al viernes?", []), ("déjalo", []), ("ponlo", []),
+        ] + Self.neverAct.map { ($0, Set<String>()) }
         for (owner, expected) in cases {
             #expect(LocalToolAdapter.quotedReminderIntent(owner) == expected, "\(owner)")
         }
+    }
+
+    /// MAYOR 1 ronda 2: "viernes 23 en la tarde" es el 23 (N > 12 no es hora).
+    @Test func aBandAfterTheNumberIsAnHourOnlyUpTo12() {
+        let thu = F.date(2026, 10, 15, 19)
+        func day(_ text: String) -> Date? {
+            LocalWhen(now: thu, calendar: F.calendar, ownerText: "").day(LocalWhen.fold(text))
+        }
+        #expect(day("el viernes 23 en la tarde") == F.date(2026, 10, 23, 0))
+        #expect(day("el viernes 23 por la noche") == F.date(2026, 10, 23, 0))
+        #expect(day("el viernes 30 en la mañana") == F.date(2026, 10, 30, 0))
+        #expect(day("el viernes 8 y 30") == F.date(2026, 10, 16, 0))   // hora
+        #expect(day("el viernes 3 en la tarde") == F.date(2026, 10, 16, 0))
+        // Duda: el 6-nov ES viernes y "6 en la mañana" también es hora ⇒ no se repara.
+        #expect(day("el viernes 6 en la mañana") == nil)
+        let quote = QuoteFixtures.reminderQuote(id: "R")
+        for (owner, model, expected) in [
+            ("pásalo para el viernes 23 en la tarde", "2026-10-23 15:00", "2026-10-23T15:00"),
+            ("pásalo para el viernes 23 por la noche", "2026-10-23 20:00", "2026-10-23T20:00"),
+            ("pásalo para el viernes 30 en la mañana", "2026-10-30 09:00", "2026-10-30T09:00"),
+            ("pásalo para el viernes 6 en la mañana", "2026-11-06 06:00", "2026-11-06T06:00"),
+        ] {
+            let moved = LocalToolAdapter.resolve(name: "move_reminder", input: .object(["when": .string(model)]),
+                                                 now: thu, ownerText: owner, calendar: F.calendar, quote: quote)
+            guard case .real(_, let input) = moved else { Issue.record("\(owner): \(moved)"); continue }
+            #expect(input["fire_at"]?.stringValue?.hasPrefix(expected) == true,
+                    "\(owner) → \(input["fire_at"]?.stringValue ?? "nil")")
+        }
+        let remind = LocalToolAdapter.resolve(name: "remind_me", input: .object([
+            "text": .string("pagar"), "when": .string("2026-10-23 15:00"), "repeat": .string("none")]),
+            now: thu, ownerText: "recuérdame el viernes 23 en la tarde pagar", calendar: F.calendar)
+        guard case .real(_, let input) = remind else { Issue.record("\(remind)"); return }
+        #expect(input["fire_at"]?.stringValue?.hasPrefix("2026-10-23T15:00") == true, "\(input["fire_at"]?.stringValue ?? "nil")")
+    }
+
+    /// Menor: "¿qué tengo pendiente el viernes 22?" (el 22 es jueves) pregunta, no responde con hoy.
+    @Test func anAmbiguousDayAsks() {
+        let thu = F.date(2026, 10, 15, 19)
+        let when = LocalWhen(now: thu, calendar: F.calendar, ownerText: "¿qué tengo pendiente el viernes 22?")
+        #expect(when.dayIsAmbiguous)
+        let question = when.ambiguousDayQuestion ?? ""
+        #expect(question.contains("viernes 16 de octubre") && question.contains("jueves 22 de octubre"), "\(question)")
+        let clear = LocalWhen(now: thu, calendar: F.calendar, ownerText: "¿qué tengo pendiente el viernes 23?")
+        #expect(!clear.dayIsAmbiguous && clear.ambiguousDayQuestion == nil)
+        #expect(LocalWhen(now: thu, calendar: F.calendar, ownerText: "el viernes 3 de noviembre").dayIsAmbiguous)
     }
 
     @Test func changeHintFollowsTheQuote() {
@@ -1006,5 +1072,170 @@ enum QuoteFixtures {
             #expect(e != .retracted)
         }
         #expect(try w.symbolic.visibleTurns(sessionId: sid).last?.text == "De nada.")
+    }
+}
+
+/// Review #43 ronda 2: deshacer por chat (undo_done) y los menores.
+@Suite struct ChatQuoteRound2Tests {
+    typealias F = ProactiveFixtures
+
+    static func doneQuote(doneAt: Date?) -> ChatQuote {
+        ChatQuote(ref: .init(kind: .reminder, id: "R"), title: "Abonar", excerpt: "", detail: "ya marcado hecho",
+                  closed: true, doneAt: doneAt)
+    }
+
+    @Test func undoDoneTravelsOnlyOnARecentDoneWithTheAsk() throws {
+        let tools = try RealToolSet.specs()
+        let now = F.date(2026, 10, 15, 19)
+        func names(_ q: ChatQuote, _ owner: String) -> [String] {
+            ToolProfile.onDevice.apply(tools, quote: q, ownerText: owner, now: now).map(\.name)
+        }
+        let recent = Self.doneQuote(doneAt: now.addingTimeInterval(-3600))
+        #expect(names(recent, "no lo he hecho") == ["undo_done"])
+        #expect(names(recent, "desmárcalo") == ["undo_done"])
+        // Controles: sin pedido, hecho hace > 24 h, recordatorio activo, mover sobre un hecho.
+        #expect(!names(recent, "gracias").contains("undo_done"))
+        #expect(!names(Self.doneQuote(doneAt: now.addingTimeInterval(-25 * 3600)), "deshaz").contains("undo_done"))
+        #expect(!names(Self.doneQuote(doneAt: nil), "deshaz").contains("undo_done"))
+        #expect(!names(QuoteFixtures.reminderQuote(), "deshaz").contains("undo_done"))
+        #expect(!names(recent, "pásalo para mañana").contains("move_reminder"))
+        let undo = LocalToolAdapter.resolve(name: "undo_done", input: .object([:]), now: now, ownerText: "no lo he hecho",
+                                            quote: recent)
+        #expect(undo == .real(name: "anima_reminders", input: .object(["action": .string("reopen"), "id": .string("R")])))
+        guard case .invalid = LocalToolAdapter.resolve(name: "undo_done", input: .object([:]), now: now,
+                                                       ownerText: "gracias", quote: recent)
+        else { Issue.record("sin pedido debió rechazar"); return }
+        #expect(LocalToolAdapter.verb(local: "undo_done") == "deshacer el recordatorio hecho")
+        // La cita de un hecho lleva cuándo (y sobrevive al JSON).
+        #expect(ChatQuote.decode(recent.json)?.doneAt == recent.doneAt)
+        let line = ChatQuoteContext.line(recent, compact: true, localTools: ["undo_done"])
+        #expect(line.contains("undo_done"))
+    }
+
+    /// Presupuesto: con un pedido sobre lo citado viaja SOLO esa tool (el set
+    /// base ya mide ~870 de 900); siempre bajo el techo, medido con el tokenizer.
+    @Test func theQuotedToolsFitTheLocalBudget() async throws {
+        let tools = try RealToolSet.specs()
+        let base = ToolProfile.onDevice.apply(tools)
+        let recent = Self.doneQuote(doneAt: Date().addingTimeInterval(-60))
+        for (owner, quote, tool) in [("pásalo para el viernes", QuoteFixtures.reminderQuote(), "move_reminder"),
+                                     ("ya lo hice", QuoteFixtures.reminderQuote(), "done_reminder"),
+                                     ("no lo he hecho", recent, "undo_done")] {
+            let set = ToolProfile.onDevice.apply(tools, quote: quote, ownerText: owner)
+            #expect(set.map(\.name) == [tool])
+            #expect(ToolProfile.onDevice.apply(set) == set)     // el provider re-aplica: idempotente
+            let estimate = ContextBudget.onDevice.toolTokens(set)
+            #expect(estimate <= ToolProfileTests.onDeviceToolCeiling)
+            if let real = await RealToolSet.frameworkTokenCount(set) {
+                print("[quote-tools] tokenizer real: \(tool) solo = \(real) tokens")
+                #expect(real <= ToolProfileTests.onDeviceToolCeiling)
+            }
+        }
+        // Control: sin pedido, el set base (sin remind_me: crear otro exige "recuérdame…").
+        #expect(ToolProfile.onDevice.apply(tools, quote: QuoteFixtures.reminderQuote(), ownerText: "gracias")
+                == base.filter { $0.name != "remind_me" })
+        // Y nunca dos pedidos a la vez.
+        for owner in ["ya lo hice, pásalo", "no lo he hecho, pásalo"] {
+            #expect(LocalToolAdapter.quotedReminderIntent(owner).count <= 1, "\(owner)")
+        }
+    }
+
+    /// Medido en vivo: respondiendo a un recordatorio, el 3B creaba OTRO ante
+    /// "ya no me lo recuerdes" o "¿qué pasa si lo paso al lunes?". remind_me solo
+    /// viaja si el dueño pide crear ("recuérdame…").
+    @Test func noNewReminderWhileQuotingUnlessAsked() throws {
+        let tools = try RealToolSet.specs()
+        let quote = QuoteFixtures.reminderQuote()
+        for owner in ["ya no me lo recuerdes", "¿qué pasa si lo paso al lunes?", "ok listo pero mañana", "gracias"] {
+            #expect(!ToolProfile.onDevice.apply(tools, quote: quote, ownerText: owner).contains { $0.name == "remind_me" },
+                    "\(owner)")
+        }
+        // Controles: pedido explícito con cita, y sin cita.
+        #expect(ToolProfile.onDevice.apply(tools, quote: quote, ownerText: "recuérdame también llamar al banco")
+            .contains { $0.name == "remind_me" })
+        #expect(ToolProfile.onDevice.apply(tools, quote: nil, ownerText: "ya no me lo recuerdes")
+            .contains { $0.name == "remind_me" })
+    }
+
+    @Test func reopenOnARepeatingReminderSaysWhy() async throws {
+        let w = try F.world()
+        let daily = try await w.reminders.create(text: "agua", fireAt: F.date(2026, 10, 6, 9), repeat: .daily)
+        _ = try await w.reminders.complete(id: daily.id)
+        await #expect(throws: AnimaReminderError.repeatingStillScheduled) { try await w.reminders.reopen(id: daily.id) }
+        let result = await AnimaRemindersTool(store: w.reminders).execute(
+            .object(["action": .string("reopen"), "id": .string(daily.id)]))
+        #expect(result.isError && result.content.contains("se repite") && !result.content.contains("24 horas"))
+    }
+
+    @Test func anInvalidQuoteWithMicOpensThePlainChat() throws {
+        #expect(AnimaDeepLink.parse(try #require(URL(string: "anima://chat?quote=reminder:x%20y&mic=1"))) == .chat(turn: nil))
+        #expect(AnimaDeepLink.parse(try #require(URL(string: "anima://chat?quote=nada&mic=1"))) == .chat(turn: nil))
+        // Control: sin cita, mic sigue siendo "hablar".
+        #expect(AnimaDeepLink.parse(try #require(URL(string: "anima://chat?mic=1"))) == .talk)
+    }
+
+    @Test func echoAndSummaryUseStructuralClosers() {
+        let quote = ChatQuote(ref: .init(kind: .reminder, id: "R"), title: "Pagar [luz] del mes", excerpt: "")
+        let line = ChatQuoteContext.line(quote, compact: true)
+        #expect(ChatQuoteContext.withoutEcho(line + " Ok.", quote: quote) == "Ok.")
+        #expect(ChatQuoteContext.withoutEcho("[El recordatorio «Pagar [luz] del mes» se marca como hecho.]", quote: quote)
+                == ChatQuoteContext.echoFallback)
+        // Variante sin corchete (medida en vivo).
+        #expect(ChatQuoteContext.withoutEcho("El dueño responde a tu recordatorio «Abonar 5M» (programado mar 20 oct, 6:33 p. m.). Ok.",
+                                             quote: quote) == "Ok.")
+        #expect(ChatQuoteContext.withoutEcho("El dueño responde a tu recordatorio «Abonar 5M» (programado mar 20 oct, 6:33 p. m.).",
+                                             quote: quote) == ChatQuoteContext.echoFallback)
+        // Controles: corchetes que no repiten la cita, o texto que no abre con corchete.
+        #expect(ChatQuoteContext.withoutEcho("[nota] Pagar luz", quote: quote) == nil)
+        #expect(ChatQuoteContext.withoutEcho("Pagar [luz] del mes", quote: quote) == nil)
+        let paren = ChatQuote(ref: .init(kind: .reminder, id: "R"), title: "Llamar (urgente) a mamá", excerpt: "")
+        #expect(ChatQuoteContext.summary(ChatQuoteContext.line(paren, compact: false))
+                == "tu recordatorio «Llamar (urgente) a mamá»")
+        #expect(ChatQuoteContext.summary(ChatQuoteContext.line(paren, compact: true))
+                == "tu recordatorio «Llamar (urgente) a mamá»")
+    }
+
+    @Test func claimGuardCatchesQuotedReminderClaims() {
+        for claim in ["El recordatorio quedó marcado como hecho.", "Listo, lo marqué como hecho.",
+                      "[El recordatorio «Abonar» se marca como hecho.]", "Lo moví al viernes.", "Lo pasé al lunes."] {
+            #expect(ActionClaimGuard.claimsWrite(claim), "\(claim)")
+        }
+        for not in ["¿Lo marco como hecho?", "Si quieres, lo marco como hecho.", "No lo marqué.",
+                    "Está programado para el martes."] {
+            #expect(!ActionClaimGuard.claimsWrite(not), "\(not)")
+        }
+    }
+
+    /// El reintento de la guarda conserva la línea completa de la cita (con la tool).
+    @Test func theRetryKeepsTheFullQuoteLine() throws {
+        let line = ChatQuoteContext.line(QuoteFixtures.reminderQuote(), compact: true, localTools: ["move_reminder"])
+        let ctx = AssembledContext(messages: [
+            Message(role: .user, content: [.text(line + "\n"), .text("pásalo para el viernes")]),
+            .assistant([.text("Listo, lo moví.")]),
+            .user(ActionClaimGuard.nudge),
+        ])
+        let request = OnDevicePromptBuilder.request(ctx: ctx, tools: [], opts: try OnDeviceTestConfig.opts())
+        let all = request.history.map { "\($0)" }.joined() + request.prompt
+        #expect(all.contains("move_reminder"))
+        #expect(!all.contains("(sobre tu recordatorio"))
+    }
+
+    /// Eco con otra forma y sin tool: el loop lo retira antes de las guardas.
+    @Test func aBracketedClaimEchoIsRetracted() async throws {
+        let w = try F.world()
+        let quote = QuoteFixtures.reminderQuote()
+        let model = OnDeviceProvider.modelName
+        func text(_ s: String) -> [ProviderEvent] {
+            [.messageStart(id: "t", model: model), .textDelta(s), .blockStop(index: 0),
+             .messageDelta(stopReason: .endTurn, usage: Usage()), .messageStop]
+        }
+        let provider = QuoteCapturingProvider([text("[El recordatorio «Abonar 5M a la deuda» se marca como hecho.]")])
+        let loop = AgentLoop(provider: provider, store: w.symbolic, telemetry: Telemetry(queue: w.queue),
+                             router: try OnDeviceTestConfig.router(), authMode: .apiKey, token: "",
+                             clientTools: [AnimaRemindersTool(store: w.reminders)], serverTools: [], sleep: { _ in })
+        let sid = try w.symbolic.startSession()
+        for await _ in await loop.run(sessionId: sid, content: [.text("gracias")], surface: .phoneChat, quote: quote) {}
+        let saved = try w.symbolic.visibleTurns(sessionId: sid).last?.text ?? ""
+        #expect(saved == ChatQuoteContext.echoFallback, "\(saved)")
     }
 }

@@ -41,6 +41,7 @@ public enum AnimaReminderError: Error, Equatable, LocalizedError {
     case unknownGoal
     case invalidMinutes
     case notReopenable
+    case repeatingStillScheduled
 
     public var errorDescription: String? {
         switch self {
@@ -51,6 +52,8 @@ public enum AnimaReminderError: Error, Equatable, LocalizedError {
         case .unknownGoal: return "no existe una meta con ese goal_id"
         case .invalidMinutes: return "los minutos deben ser mayores que 0"
         case .notReopenable: return "solo se puede deshacer un 'hecho' de las últimas 24 horas"
+        case .repeatingStillScheduled:
+            return "ese recordatorio se repite: marcar hecho no lo cerró, sigue programado; no hay nada que deshacer"
         }
     }
 }
@@ -241,6 +244,8 @@ public actor AnimaReminderStore {
     @discardableResult
     public func reopen(id: String) throws -> AnimaReminder {
         let current = try found(id)
+        // En uno que se repite "hecho" marca la ocurrencia y la serie sigue programada.
+        if current.repeatCadence != .none { throw AnimaReminderError.repeatingStillScheduled }
         guard current.status == .done, let doneAt = current.doneAt,
               now().timeIntervalSince(doneAt) <= Self.reopenWindow else { throw AnimaReminderError.notReopenable }
         let status = current.fireAt > now() ? "scheduled" : "fired"

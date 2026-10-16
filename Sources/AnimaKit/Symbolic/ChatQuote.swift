@@ -22,15 +22,21 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
     /// Existe pero ya no está activo (un recordatorio ya marcado hecho): se
     /// puede hablar de él, no moverlo ni volver a marcarlo.
     public var closed: Bool
+    /// Cuándo se marcó hecho (deshacer: solo los de las últimas 24 h).
+    public var doneAt: Date?
+    /// La hora del recordatorio citado ("a la misma hora").
+    public var at: Date?
 
     public init(ref: ChatQuoteRef, title: String, excerpt: String, detail: String? = nil, missing: Bool = false,
-                closed: Bool = false) {
+                closed: Bool = false, doneAt: Date? = nil, at: Date? = nil) {
         self.ref = ref
         self.title = Self.oneLine(title, limit: Self.titleLimit)
         self.excerpt = Self.oneLine(excerpt, limit: Self.excerptLimit)
         self.detail = detail
         self.missing = missing
         self.closed = closed
+        self.doneAt = doneAt
+        self.at = at
     }
 
     /// ¿Se puede actuar sobre lo citado? (existe y sigue activo).
@@ -44,7 +50,7 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
 
     // MARK: Codable (claves explícitas; detail/missing opcionales para crecer sin romper)
 
-    enum CodingKeys: String, CodingKey { case kind, id, title, excerpt, detail, missing, closed }
+    enum CodingKeys: String, CodingKey { case kind, id, title, excerpt, detail, missing, closed, doneAt = "done_at", at }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -54,6 +60,8 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
         missing = try c.decodeIfPresent(Bool.self, forKey: .missing) ?? false
         closed = try c.decodeIfPresent(Bool.self, forKey: .closed) ?? false
+        doneAt = try c.decodeIfPresent(Double.self, forKey: .doneAt).map(Date.init(timeIntervalSince1970:))
+        at = try c.decodeIfPresent(Double.self, forKey: .at).map(Date.init(timeIntervalSince1970:))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -65,6 +73,8 @@ public struct ChatQuote: Sendable, Codable, Equatable, Identifiable {
         try c.encodeIfPresent(detail, forKey: .detail)
         if missing { try c.encode(true, forKey: .missing) }
         if closed { try c.encode(true, forKey: .closed) }
+        try c.encodeIfPresent(doneAt?.timeIntervalSince1970, forKey: .doneAt)
+        try c.encodeIfPresent(at?.timeIntervalSince1970, forKey: .at)
     }
 
     var json: String? {
@@ -157,27 +167,74 @@ public enum ChatQuoteContext {
 
     public static func withoutBlock(_ blocks: [ContentBlock]) -> [ContentBlock] { split(blocks).rest }
 
-    /// La respuesta repite el bloque de la cita: lo que queda sin él (o un
-    /// acuse breve si no queda nada). nil si no hay eco.
-    public static func withoutEcho(_ text: String) -> String? {
+    /// La respuesta abre con un bloque entre corchetes que repite la cita (el
+    /// marcador o el título citado): lo que queda sin él (o un acuse breve si
+    /// no queda nada). nil si no hay eco. El cierre es el "]" que balancea el
+    /// "[" inicial ("Pagar [luz] del mes" no se corta).
+    public static func withoutEcho(_ text: String, quote: ChatQuote? = nil) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix(marker) else { return nil }
-        let rest = trimmed.firstIndex(of: "]").map { trimmed[trimmed.index(after: $0)...] } ?? ""
-        let clean = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Variante sin corchete: "El dueño responde a tu recordatorio «…» (…). Resto".
+        let bare = String(marker.dropFirst())
+        if trimmed.hasPrefix(bare) {
+            var depth = 0
+            var end = trimmed.endIndex
+            for index in trimmed.indices {
+                let ch = trimmed[index]
+                if ch == "(" || ch == "«" { depth += 1 }
+                if ch == ")" || ch == "»" { depth -= 1 }
+                if (ch == "." || ch == "]"), depth <= 0 {
+                    end = trimmed.index(after: index)
+                    break
+                }
+            }
+            let clean = trimmed[end...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? echoFallback : clean
+        }
+        guard trimmed.hasPrefix("["), let close = balancedClose(trimmed) else { return nil }
+        let inside = trimmed[trimmed.index(after: trimmed.startIndex)..<close]
+        let echoes = trimmed.hasPrefix(marker)
+            || (quote.map { !$0.title.isEmpty && inside.contains($0.title) } ?? false)
+        guard echoes else { return nil }
+        let clean = trimmed[trimmed.index(after: close)...].trimmingCharacters(in: .whitespacesAndNewlines)
         return clean.isEmpty ? echoFallback : clean
+    }
+
+    /// El "]" que cierra el "[" del inicio (con corchetes anidados).
+    static func balancedClose(_ text: String) -> String.Index? {
+        var depth = 0
+        for index in text.indices {
+            switch text[index] {
+            case "[": depth += 1
+            case "]":
+                depth -= 1
+                if depth == 0 { return index }
+            default: break
+            }
+        }
+        return nil
     }
 
     public static let echoFallback = "Aquí estoy. ¿Qué quieres hacer con eso?"
 
     /// "tu recordatorio «Abonar 5M…»" desde la línea de la cita: lo citado, sin
-    /// ids ni instrucciones (para el resumen de la conversación).
+    /// ids ni instrucciones (para el resumen de la conversación). El título va
+    /// entre «»: se corta en su cierre ("Llamar (urgente) a mamá" queda entero).
     public static func summary(_ line: String) -> String? {
         guard line.hasPrefix(marker) else { return nil }
-        let body = line.dropFirst(marker.count)
-        // Hasta el primer "(" (ids, detalle) o el cierre: lo citado, sin instrucciones.
-        let cut = body.firstIndex(where: { $0 == "(" || $0 == "]" }) ?? body.endIndex
+        let body = String(line.dropFirst(marker.count))
+        let paren = body.range(of: " (")?.lowerBound
+        if let open = body.firstIndex(of: "«"), paren.map({ open < $0 }) ?? true {
+            var depth = 0
+            for index in body[open...].indices {
+                if body[index] == "«" { depth += 1 }
+                if body[index] == "»" {
+                    depth -= 1
+                    if depth == 0 { return String(body[...index]) }
+                }
+            }
+        }
+        let cut = body.range(of: " (")?.lowerBound ?? body.firstIndex(where: { $0 == "]" || $0 == ":" }) ?? body.endIndex
         var head = body[..<cut].trimmingCharacters(in: .whitespaces)
-        if let close = head.lastIndex(of: "»") { head = String(head[...close]) }
         if head.hasSuffix(".") { head.removeLast() }
         return head.isEmpty ? nil : head
     }
@@ -214,7 +271,7 @@ public enum ChatQuoteContext {
         }
         switch q.kind {
         case .reminder:
-            return marker + "tu recordatorio «\(q.title)» (id \(id)\(detail))\(excerpt). Si pide cambiarlo, moverlo, posponerlo, darlo por hecho o borrarlo, usa anima_reminders con ese id.]"
+            return marker + "tu recordatorio «\(q.title)» (id \(id)\(detail))\(excerpt). Si pide moverlo, posponerlo o borrarlo, usa anima_reminders con ese id. Márcalo hecho SOLO si afirma que ya lo hizo («ya lo pagué», «ya lo hice»); un «listo», «ya», «gracias» o un «ya lo hago» es ambiguo: pregúntale antes de tocarlo.]"
         case .goal:
             return marker + "su meta «\(q.title)» (id \(id)\(detail))\(excerpt). Si pide ajustarla, su seguimiento o darla por lograda, usa goals con ese id.]"
         case .checkIn:
@@ -241,6 +298,7 @@ public enum ChatQuoteContext {
             var hint = ""
             if localTools.contains("move_reminder") { hint += " Para moverlo usa move_reminder." }
             if localTools.contains("done_reminder") { hint += " Para darlo por hecho usa done_reminder." }
+            if localTools.contains("undo_done") { hint += " Ya estaba hecho; para deshacerlo usa undo_done." }
             return marker + "tu recordatorio «\(title)»\(detail).\(hint)]"
         case .goal:
             return marker + "su meta «\(title)»\(detail).]"
@@ -339,7 +397,8 @@ public struct ChatQuoteResolver: Sendable {
         let title = reminder.text.prefix(1).uppercased() + reminder.text.dropFirst()
         return ChatQuote(ref: ChatQuoteRef(kind: .reminder, id: reminder.id), title: title,
                          excerpt: reminder.spokenMessage, detail: detail,
-                         closed: reminder.status == .done || reminder.status == .cancelled)
+                         closed: reminder.status == .done || reminder.status == .cancelled,
+                         doneAt: reminder.status == .done ? reminder.doneAt : nil, at: reminder.fireAt)
     }
 
     /// La meta (o su seguimiento): estado, seguimiento y progreso.

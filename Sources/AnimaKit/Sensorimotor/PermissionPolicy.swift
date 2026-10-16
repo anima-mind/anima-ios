@@ -56,6 +56,18 @@ public struct PermissionPolicy: Sendable {
         ["declare", "set_checkin", "clear_checkin", "mark_achieved"].map { AllowlistEntry(tool: "goals", operation: $0) }
         + ["create", "complete", "cancel", "snooze"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
 
+    /// Operaciones que destruyen algo FUERA del estado reversible de Anima
+    /// (borrar un evento del calendario…). Jamás se autorizan "siempre": piden
+    /// ok cada vez, y desde Siri o CarPlay se niegan.
+    public static let destructiveOperations: Set<String> = ["delete", "remove", "erase", "purge", "clear"]
+
+    /// ¿Destruye algo que el dueño no recupera desde Anima? Lo interno y
+    /// reversible (cancelar un recordatorio de Anima, quitar un check-in) no.
+    public static func isDestructive(tool: String, operation: String) -> Bool {
+        let entry = AllowlistEntry(tool: tool, operation: operation)
+        return !internalReversible.contains(entry) && destructiveOperations.contains(operation)
+    }
+
     /// La política de la app: internas reversibles + lo autorizado siempre.
     public static func app(ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry>) -> PermissionPolicy {
         PermissionPolicy(allowlist: internalReversible, ownerAllowlist: ownerAllowlist)
@@ -71,7 +83,12 @@ public struct PermissionPolicy: Sendable {
         case .efferent:
             if let operation {
                 let entry = AllowlistEntry(tool: tool, operation: operation)
-                if allowlist.contains(entry) || ownerAllowlist().contains(entry) { return .allow }
+                if allowlist.contains(entry) { return .allow }
+                // "Autorizar siempre" jamás cubre un borrado (aunque venga de un
+                // build viejo que lo guardó): pide ok cada vez.
+                if ownerAllowlist().contains(entry), !Self.isDestructive(tool: tool, operation: operation) {
+                    return .allow
+                }
             }
             return .ask
         }

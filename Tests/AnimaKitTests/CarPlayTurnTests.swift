@@ -286,19 +286,21 @@ struct CarPlayConversationTests {
         #expect(CarPlayTurn.busyText(.phoneChat) == CarPlayTurn.busyText(nil))
     }
 
-    @Test func siOtraSuperficieTomaLaCompuertaMientrasEscuchaNoEspejaNada() async throws {
+    @Test func mientrasEscuchaLaCompuertaEsDelCarro() async throws {
         let runner = MockRunner()
+        runner.replies.mutate { $0 = [[.textDelta("Hecho.")]] }
         let rig = CarRig(runner: runner)
         rig.voice.holdOpen.mutate { $0 = true }
         rig.conversation.talk()
         await rig.waitFor { rig.conversation.phase == .listening }
-        let chat = try #require(rig.gate.begin(.phoneChat))
+        // Con el micrófono del carro abierto, ninguna otra superficie toma el turno.
+        #expect(rig.gate.current == .carplay)
+        #expect(rig.gate.begin(.phoneChat) == nil)
+        #expect(rig.gate.begin(.glassesHUD) == nil)
         rig.voice.finish()
         await rig.settle()
-        #expect(runner.received.value.isEmpty)
-        #expect(rig.phone.rendered.isEmpty)
-        #expect(rig.log.spoken == [CarPlayTurn.busyText(.phoneChat)])
-        rig.gate.end(chat)
+        #expect(runner.received.value.count == 1)
+        #expect(rig.gate.current == nil)
     }
 
     @Test func sinSesionDeAudioNoEscucha() async {
@@ -534,12 +536,13 @@ struct CarPlayConversationTests {
     }
 
     @Test func respuestaQueNoSeEntiendeNiega() async {
-        let rig = CarRig(runner: MockRunner(), heard: ["agéndame el dentista", "eh, el jueves creo"])
+        let rig = CarRig(runner: MockRunner(), heard: ["agéndame el dentista", "eh, a ver"])
         let runner = CarApprovalRunner(router: rig.confirmRouter())
         rig.readiness = .ready(runner: runner, sessionId: "s1")
         rig.conversation.talk()
         await rig.settle()
         #expect(runner.decisions.value == [false])
+        #expect(rig.log.spoken.contains(CarPlayTurn.unclearText))
     }
 
     @Test func cancelarDuranteLaConfirmacionNiegaYCorta() async {
@@ -734,12 +737,21 @@ struct CarPlayPolicyTests {
     }
 
     @Test(arguments: [
-        ("sí", true), ("Sí, dale", true), ("hazlo por favor", true), ("ok", true), ("de una", true),
-        ("claro que sí", true), ("SI", true), ("no", false), ("No, mejor no", false), ("sí... no, cancela", false),
-        ("mejor no", false), ("déjalo", false), ("el jueves", nil), ("", nil), ("eh", nil),
-    ] as [(String, Bool?)])
-    func respuestaHablada(_ said: String, _ expected: Bool?) {
-        #expect(CarPlayTurn.parseAnswer(said) == expected)
+        // Un sí limpio aprueba.
+        ("sí", CarPlayTurn.Answer.approve), ("Sí, dale", .approve), ("hazlo por favor", .approve), ("ok", .approve),
+        ("de una", .approve), ("claro que sí", .approve), ("SI", .approve), ("confirmo", .approve),
+        // La negación gana.
+        ("no", .deny), ("No, mejor no", .deny), ("sí... no, cancela", .deny), ("mejor no", .deny), ("déjalo", .deny),
+        // Un sí con condición NO aprueba la acción original (control negativo del bug: antes eran true).
+        ("sí pero a las cinco", .amend), ("dale, pero cámbialo al viernes", .amend), ("sí, mejor el lunes", .amend),
+        ("ok a las 4", .amend), ("el jueves", .amend), ("sí, en vez de eso ponlo mañana", .amend),
+        // Afirmativos ambiguos: en la duda, no.
+        ("va", .unclear), ("bueno, a ver", .unclear), ("bueno", .unclear), ("listo", .unclear), ("porfa", .unclear),
+        ("sí, creo", .unclear), ("", .unclear), ("eh", .unclear), ("mmm", .unclear),
+    ] as [(String, CarPlayTurn.Answer)])
+    func respuestaHablada(_ said: String, _ expected: CarPlayTurn.Answer) {
+        #expect(CarPlayTurn.answer(said) == expected)
+        #expect(CarPlayTurn.answer(said).approves == (expected == .approve))
     }
 
     @Test func laPreguntaDiceLaAccionSinEmojis() {

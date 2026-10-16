@@ -1,7 +1,6 @@
-// CarPlayAudioIO.swift — la sesión de audio del carro detrás de los puertos
-// (CarPlayAudioPort para la conversación; AudioSessionPort para reutilizar la
-// captura y el TTS de las gafas sin su ruta HFP). Capa humilde: la política
-// (cuándo se toma y se suelta) vive en CarPlayConversation, testeada.
+// CarPlayAudioIO.swift — AVAudioSession detrás de AudioSessionControl. Capa
+// humilde: quién la toma y la suelta vive en CarPlayAudioSessionOwner y
+// CarPlayConversation (testeados con un doble de la sesión).
 // Configuración de Apple para "voice-based conversation" (WWDC26 "Rev up your
 // CarPlay app"): .playAndRecord, modo .default, sin mezclar. En CarPlay el
 // micrófono y los parlantes son los del carro (la ruta la pone el sistema).
@@ -9,34 +8,23 @@
 #if os(iOS) && canImport(AVFoundation)
 import AVFoundation
 
-public struct CarPlayVoiceAudioSession: CarPlayAudioPort, AudioSessionPort {
-    public let spec: CarPlayAudioSpec
+public struct SystemAudioSessionControl: AudioSessionControl {
+    public init() {}
 
-    public init(spec: CarPlayAudioSpec = .conversation) {
-        self.spec = spec
-    }
-
-    private var session: AVAudioSession { .sharedInstance() }
-
-    public func activateConversation() throws {
+    public func configure(_ spec: CarPlayAudioSpec) throws {
         let options: AVAudioSession.CategoryOptions = spec.mixesWithOthers ? [.mixWithOthers] : []
-        try session.setCategory(.playAndRecord, mode: .default, options: options)
-        try session.setActive(true)
+        try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: options)
     }
 
-    public func releaseConversation() {
-        try? session.setActive(false, options: spec.notifiesOthersOnRelease ? .notifyOthersOnDeactivation : [])
+    public func setActive(_ active: Bool, notifyOthers: Bool) throws {
+        try AVAudioSession.sharedInstance().setActive(active, options: notifyOthers ? .notifyOthersOnDeactivation : [])
     }
+}
 
-    // MARK: AudioSessionPort — la conversación ya tiene la sesión tomada.
-
-    public func hfpInputAvailable() -> Bool { false }
-    public func activateHFP() throws { try activateConversation() }
-    public func currentInputIsHFP() -> Bool { false }
-    public func activatePhoneMic() throws { try activateConversation() }
-    public func activatePlaybackA2DP() throws { try activateConversation() }
-    /// La captura y el TTS no la sueltan entre escuchar y hablar (la música no
-    /// salta en cada fase): la suelta la conversación con `releaseConversation`.
-    public func deactivate() {}
+extension CarPlayAudioSessionOwner {
+    /// La sesión real del proceso.
+    public static func system() -> CarPlayAudioSessionOwner {
+        CarPlayAudioSessionOwner(control: SystemAudioSessionControl())
+    }
 }
 #endif

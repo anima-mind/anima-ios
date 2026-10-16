@@ -24,18 +24,28 @@ public enum CarPlayTurn {
     public static let chatTail = "El resto te lo dejo en el chat."
     /// Fin del pedido por silencio: un poco más que las gafas (se habla manejando).
     public static let requestDetector = TurnEndDetector(silence: 1.5, maxDuration: 30)
-    /// Un "sí" o un "no" es corto: corta antes y no escucha de más.
+    /// Un "sí" o un "no" es corto: cada escucha corta antes y no oye de más; si
+    /// no oyó nada se vuelve a escuchar hasta agotar `confirmTimeout`.
     public static let answerDetector = TurnEndDetector(silence: 1.0, maxDuration: 8)
-    /// Cuánto se espera un "sí" o un "no" (voz o botón) antes de negar.
+    /// La ventana TOTAL para un "sí" o un "no" (voz o botón) antes de negar: las
+    /// escuchas se repiten dentro de ella y los botones valen hasta el final.
     public static let confirmTimeout: Duration = .seconds(20)
+    /// Pausa entre una escucha vacía y la siguiente (un mic que falla al
+    /// instante no gira en vacío).
+    public static let relistenPause: Duration = .milliseconds(250)
 
     public static let emptyText = "No te escuché. Toca Hablar cuando quieras."
     public static let interruptedText = "Se interrumpió la respuesta en CarPlay."
     public static let notReadyText = "Anima todavía no está lista en este teléfono. Termínala de configurar cuando no estés conduciendo."
     public static let offlineText = "Estoy sin conexión. Inténtalo cuando vuelva la red."
     public static let noAnswerHeard = "No te oí confirmar, así que no lo hice."
+    /// Un "sí, pero…": la acción original NO se hace; la corrección es otra instrucción.
+    public static let amendText = "Así como estaba no lo hice. Dime el cambio como una nueva instrucción."
+    public static let unclearText = "No te entendí, así que no lo hice."
     public static let cameraRefusal = "Desde el carro no uso la cámara de las gafas."
     public static let pendingNotice = "Te dejé algo pendiente de CarPlay en el chat."
+    /// La conversación en el carro existe desde iOS 26.4 (categoría y entitlement).
+    public static let needsNewerIOSText = "Para hablar con Anima en el carro, actualiza el iPhone a iOS 26.4 o posterior."
 
     /// Por qué no se pudo escuchar, dicho en el carro (sin mandar al iPhone).
     public static func voiceFailureText(_ failure: VoiceCaptureFailure) -> String {
@@ -88,6 +98,10 @@ public enum CarPlayTurn {
         return pendingRefusal(request.summary)
     }
 
+    /// Desde Siri (sin pantalla, quizá con el teléfono bloqueado) lo destructivo
+    /// se niega siempre, aunque esté "Autorizado siempre".
+    public static let siriDestructiveRefusal = "No lo hice: desde Siri no borro nada. Pídemelo en el chat."
+
     public static func pendingRefusal(_ summary: String) -> String {
         "No lo hice: mientras conduces no hago eso (\(summary)). Dile al dueño que se lo dejas pendiente en el teléfono."
     }
@@ -97,21 +111,62 @@ public enum CarPlayTurn {
         request.surface == .carplay && request.tool != GlassesCameraTool.name && !isVoiceConfirmable(request)
     }
 
-    /// Lo que el dueño contestó en voz a "¿Lo hago?": true = sí, false = no,
-    /// nil = no se entendió (se niega: fail-closed). Una negación gana a un sí
-    /// ("sí, mejor no" ⇒ no).
-    public static func parseAnswer(_ transcript: String) -> Bool? {
-        let folded = transcript.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "es"))
-        let words = folded.split { !$0.isLetter }.map(String.init)
-        guard !words.isEmpty else { return nil }
+    /// Lo que el dueño contestó en voz a "¿Lo hago?".
+    public enum Answer: Sendable, Equatable {
+        /// Un sí limpio: se hace la acción tal cual se dijo.
+        case approve
+        case deny
+        /// Un sí con condición ("sí, pero a las cinco", "dale, cámbialo al
+        /// viernes"): la acción original NO se hace; el cambio es otra instrucción.
+        case amend
+        /// No se entendió o dudó ("bueno, a ver", "va"): en la duda, no.
+        case unclear
+
+        public var approves: Bool { self == .approve }
+
+        /// Lo que se dice antes de seguir (nil: el turno ya lo dirá).
+        public var feedback: String? {
+            switch self {
+            case .approve, .deny: nil
+            case .amend: CarPlayTurn.amendText
+            case .unclear: CarPlayTurn.unclearText
+            }
+        }
+    }
+
+    static let negativeWords: Set<String> = ["no", "cancela", "cancelar", "cancelalo", "dejalo", "espera", "nunca",
+                                             "tampoco", "negativo", "olvidalo", "detente", "alto"]
+    /// Un sí que NO es ambiguo. "va", "bueno", "listo" o "porfa" solos no bastan.
+    static let positiveWords: Set<String> = ["si", "dale", "hazlo", "hagale", "claro", "ok", "okay", "adelante",
+                                             "confirmo", "confirmado", "afirmativo", "correcto", "perfecto",
+                                             "exacto", "agendalo", "crealo"]
+    /// Lo que cambia la acción: con cualquiera de estos, no se aprueba la original.
+    static let amendWords: Set<String> = ["pero", "cambia", "cambialo", "cambiala", "cambiar", "mejor", "aunque",
+                                          "excepto", "salvo", "mueve", "muevelo", "pasalo", "ponlo", "ponla",
+                                          "manana", "pasado", "lunes", "martes", "miercoles", "jueves", "viernes",
+                                          "sabado", "domingo", "tarde", "noche"]
+    static let amendPhrases = [" a las ", " a la una ", " en vez ", " en lugar ", " solo si ", " siempre que ",
+                               " con tal ", " otra hora ", " otro dia "]
+    /// Duda: no hay un sí claro.
+    static let doubtPhrases = [" a ver ", " creo ", " quizas ", " tal vez ", " puede ser ", " depende ", " mmm ",
+                               " eh ", " este "]
+
+    /// Negación gana; luego una condición (corrige ⇒ no); luego la duda; solo
+    /// queda un sí si hay una palabra afirmativa inequívoca.
+    public static func answer(_ transcript: String) -> Answer {
+        let folded = transcript.folding(options: [.caseInsensitive, .diacriticInsensitive],
+                                        locale: Locale(identifier: "es"))
+        let words = folded.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard !words.isEmpty else { return .unclear }
         let joined = " " + words.joined(separator: " ") + " "
-        let negative = ["no", "cancela", "cancelar", "cancelalo", "dejalo", "espera", "nunca", "tampoco", "negativo"]
-        let positive = ["si", "dale", "hazlo", "claro", "ok", "okay", "listo", "adelante", "confirmo", "confirmado",
-                        "va", "bueno", "porfa", "afirmativo", "correcto", "hagale", "perfecto"]
-        let phrases = [" de una ", " por favor ", " me parece "]
-        if words.contains(where: negative.contains) || joined.contains(" mejor no ") { return false }
-        if words.contains(where: positive.contains) || phrases.contains(where: joined.contains) { return true }
-        return nil
+        if words.contains(where: negativeWords.contains) { return .deny }
+        if words.contains(where: amendWords.contains) || amendPhrases.contains(where: joined.contains)
+            || words.contains(where: { $0.first?.isNumber == true }) {
+            return .amend
+        }
+        if doubtPhrases.contains(where: joined.contains) { return .unclear }
+        if words.contains(where: positiveWords.contains) || joined.contains(" de una ") { return .approve }
+        return .unclear
     }
 
     /// Una oración para el TTS: sin markdown ni emojis (el sintetizador los lee).

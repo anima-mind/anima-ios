@@ -43,6 +43,7 @@ public final class CarPlayConversation: Surface {
     private let approvals: CarPlayApprovals
     private weak var router: SurfaceRouter?
     private let confirmTimeout: Duration
+    private let relistenPause: Duration
     private let onPending: @MainActor ([String]) -> Void
     private var onPhase: @MainActor (CarPlayPhase) -> Void
 
@@ -52,10 +53,18 @@ public final class CarPlayConversation: Surface {
     /// Lo que se va diciendo del turno en curso (por oración, con tope).
     private var turnScript = SpokenScript()
     private var streaming = false
-    /// Un turno corre en el loop (entre oraciones se ve "Pensando…").
-    private var turnRunning = false
-    /// Se pidió Hablar mientras un turno callado terminaba: arranca al cerrar.
+    /// Se pidió Hablar mientras la interacción anterior terminaba (callada,
+    /// cancelada o tras reconectar el carro): arranca al cerrarla.
     private var talkAfter = false
+    /// cancel()/disconnect() ya cortaron: la interacción solo está cerrando.
+    private var closing = false
+    /// La compuerta, tomada para TODA la interacción (escuchar + turno + voz):
+    /// mientras el carro usa el micrófono o habla, ninguna otra superficie
+    /// corre un turno ni las gafas abren su captura.
+    private var token: TurnGate.Token?
+    /// El loop que corrió el turno (la compuerta se suelta cuando deja de producir).
+    private var ranOn: (any TurnRunner)?
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     // TTS por oración: cola en orden, una utterance a la vez.
     private var utterances: [String] = []
@@ -64,7 +73,7 @@ public final class CarPlayConversation: Surface {
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     // El "sí / no" de una confirmación.
-    private var answer: CheckedContinuation<Bool, Never>?
+    private var answer: CheckedContinuation<CarPlayTurn.Answer, Never>?
     private var answerTask: Task<Void, Never>?
     private var answerTimer: Task<Void, Never>?
 
@@ -74,6 +83,7 @@ public final class CarPlayConversation: Surface {
                 speech: any SpeechOutputPort, audio: any CarPlayAudioPort = SilentCarPlayAudio(),
                 approvals: CarPlayApprovals, router: SurfaceRouter? = nil,
                 confirmTimeout: Duration = CarPlayTurn.confirmTimeout,
+                relistenPause: Duration = CarPlayTurn.relistenPause,
                 onPending: @escaping @MainActor ([String]) -> Void = { _ in },
                 onPhase: @escaping @MainActor (CarPlayPhase) -> Void = { _ in }) {
         self.readiness = readiness
@@ -86,6 +96,7 @@ public final class CarPlayConversation: Surface {
         self.approvals = approvals
         self.router = router
         self.confirmTimeout = confirmTimeout
+        self.relistenPause = relistenPause
         self.onPending = onPending
         self.onPhase = onPhase
         (events, sink) = AsyncStream<SurfaceEvent>.makeStream()
@@ -115,16 +126,18 @@ public final class CarPlayConversation: Surface {
     }
 
     /// "Hablar" (o abrir Anima en el carro): una interacción de voz completa.
+    /// Si la anterior aún cierra (callada, cancelada, o el carro se reconectó
+    /// antes de que terminara), queda encolada y arranca al cerrarla.
     public func talk() {
         if interaction != nil {
-            // Un turno callado aún termina en el chat: se habla al cerrarlo.
-            if muted, phase == .idle {
+            if muted || closing {
                 talkAfter = true
-                phase = .thinking
+                if phase == .idle { phase = .thinking }
             }
             return
         }
         muted = false
+        closing = false
         talkAfter = false
         interaction = Task { [weak self] in
             await self?.converse()
@@ -136,6 +149,7 @@ public final class CarPlayConversation: Surface {
     /// turno (el chat lo cierra como interrumpido).
     public func cancel() {
         talkAfter = false
+        if interaction != nil { closing = true }
         interaction?.cancel()
         voice.cancel()
         approvals.close()
@@ -161,6 +175,12 @@ public final class CarPlayConversation: Surface {
         phase = .idle
     }
 
+    /// Vuelve cuando no hay interacción (ni una cerrándose).
+    public func waitUntilIdle() async {
+        guard interaction != nil else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
+    }
+
     // MARK: - La interacción
 
     private func converse() async {
@@ -170,10 +190,18 @@ public final class CarPlayConversation: Surface {
             if case .blocked(let why) = ready { await say(why) }
             return
         }
-        if let holder = gate.current, holder != .carplay {
-            await say(CarPlayTurn.busyText(holder))
+        // La compuerta ANTES del micrófono (reintenta si la suelta un turno de
+        // CarPlay que aún cierra).
+        guard let token = await gate.acquire(.carplay, retrying: gateRetry) else {
+            guard !Task.isCancelled else { return }
+            let holder = gate.current
+            // Las gafas usan la MISMA sesión de audio: no se toca (ni se activa
+            // ni se suelta) mientras sean ellas las que responden.
+            if Self.mayTouchAudio(whileHeldBy: holder) { await say(CarPlayTurn.busyText(holder)) }
             return
         }
+        self.token = token
+        guard !Task.isCancelled else { return }
         guard activateAudio() else {
             await say(CarPlayTurn.voiceFailureText(.engineFailed("sesión de audio")))
             return
@@ -191,34 +219,39 @@ public final class CarPlayConversation: Surface {
         await runTurn(text, runner: runner, sessionId: sessionId)
     }
 
+    /// ¿Puede el carro usar la sesión de audio mientras `holder` tiene el turno?
+    /// Las gafas capturan y hablan por la misma sesión del proceso.
+    nonisolated static func mayTouchAudio(whileHeldBy holder: SurfaceID?) -> Bool {
+        holder != .glassesHUD
+    }
+
     private func finished() async {
         if !muted { await drain() }
         stopSpeech()
         releaseAudio()
+        if let token {
+            self.token = nil
+            if let runner = ranOn { await gate.end(token, after: runner) } else { gate.end(token) }
+        }
+        ranOn = nil
         interaction = nil
         muted = false
+        closing = false
         phase = .idle
+        let waiters = idleWaiters
+        idleWaiters = []
+        waiters.forEach { $0.resume() }
         if talkAfter {
             talkAfter = false
             talk()
         }
     }
 
-    /// El turno por el loop normal, marcado `.carplay`, con la compuerta tomada
-    /// ANTES de espejar nada.
+    /// El turno por el loop normal, marcado `.carplay` (la compuerta ya es suya).
     private func runTurn(_ text: String, runner: any TurnRunner, sessionId: SessionID) async {
         phase = .thinking
-        guard let token = await gate.acquire(.carplay, retrying: gateRetry) else {
-            if !Task.isCancelled { await say(CarPlayTurn.busyText(gate.current)) }
-            return
-        }
-        guard !Task.isCancelled else {
-            gate.end(token)
-            return
-        }
         approvals.open()
-        turnRunning = true
-        defer { turnRunning = false }
+        ranOn = runner
         await deliver(.userTurn(text: text, origin: .carplay))
         var collector = SiriTurnCollector()
         turnScript = Self.script()
@@ -265,7 +298,6 @@ public final class CarPlayConversation: Surface {
         }
         let pending = approvals.takePending()
         if !pending.isEmpty { onPending(pending) }
-        await gate.end(token, after: runner)
     }
 
     private static func script() -> SpokenScript {
@@ -298,25 +330,41 @@ public final class CarPlayConversation: Surface {
             if phase == .confirming { phase = .thinking }
             return false
         }
-        let approved = await listenForAnswer()
+        let answer = await listenForAnswer()
         if phase == .confirming { phase = muted ? .idle : .thinking }
-        return approved && !muted
+        if !muted, approvals.isOpen, let feedback = answer.feedback { enqueue([feedback]) }
+        return answer.approves && !muted
     }
 
-    private func listenForAnswer() async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+    /// La ventana entera (`confirmTimeout`) para el "sí / no": si una escucha
+    /// vuelve vacía (silencio, tope de la captura, mic que falla) se vuelve a
+    /// escuchar; los botones Sí/No valen hasta que vence.
+    private func listenForAnswer() async -> CarPlayTurn.Answer {
+        await withCheckedContinuation { (continuation: CheckedContinuation<CarPlayTurn.Answer, Never>) in
             answer = continuation
             let voice = answerVoice
+            let pause = relistenPause
             answerTask = Task { [weak self] in
-                let heard = await Self.listen(voice, onFailure: { _ in })
-                guard !Task.isCancelled else { return }
-                self?.resolveAnswer(heard.flatMap(CarPlayTurn.parseAnswer) ?? false)
+                var micBroken = false
+                while !Task.isCancelled, !micBroken {
+                    let failed = GlassesBox(false)
+                    let heard = await Self.listen(voice, onFailure: { _ in failed.value = true })
+                    guard !Task.isCancelled else { return }
+                    let said = heard?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if !said.isEmpty {
+                        self?.resolveAnswer(CarPlayTurn.answer(said))
+                        return
+                    }
+                    // Sin micrófono no se insiste: quedan los botones hasta el tope.
+                    micBroken = failed.value
+                    try? await Task.sleep(for: pause)
+                }
             }
             let limit = confirmTimeout
             answerTimer = Task { [weak self] in
                 try? await Task.sleep(for: limit)
                 guard !Task.isCancelled else { return }
-                self?.resolveAnswer(false)
+                self?.resolveAnswer(CarPlayTurn.Answer.deny)
             }
         }
     }
@@ -342,6 +390,10 @@ public final class CarPlayConversation: Surface {
     }
 
     private func resolveAnswer(_ approved: Bool) {
+        resolveAnswer(approved ? CarPlayTurn.Answer.approve : .deny)
+    }
+
+    private func resolveAnswer(_ value: CarPlayTurn.Answer) {
         guard let continuation = answer else { return }
         answer = nil
         answerTask?.cancel()
@@ -349,7 +401,7 @@ public final class CarPlayConversation: Surface {
         answerTimer?.cancel()
         answerTimer = nil
         answerVoice.cancel()
-        continuation.resume(returning: approved)
+        continuation.resume(returning: value)
     }
 
     // MARK: - Voz
@@ -363,20 +415,22 @@ public final class CarPlayConversation: Surface {
     }
 
     private func enqueue(_ list: [String]) {
-        guard !muted else { return }
+        // Callado o cortado (cancelar, desconectar, background): no se dice nada más.
+        guard !muted, !closing else { return }
         for raw in list {
             let clean = CarPlayTurn.utterance(raw)
             if !clean.isEmpty { utterances.append(clean) }
         }
         guard !utterances.isEmpty else { return }
-        if phase == .thinking || phase == .listening || phase == .idle { phase = .speaking }
+        // Una vez que habla, queda "respondiendo" hasta el final de la respuesta
+        // (no se alterna por oración: el template limita la frecuencia de cambios).
+        if phase != .speaking, phase != .confirming { phase = .speaking }
         pump()
     }
 
     private func pump() {
         guard speakTask == nil else { return }
         guard !utterances.isEmpty else {
-            if phase == .speaking, turnRunning { phase = .thinking }
             let waiters = drainWaiters
             drainWaiters = []
             waiters.forEach { $0.resume() }
@@ -386,6 +440,8 @@ public final class CarPlayConversation: Surface {
         let generation = speechGeneration
         let speech = self.speech
         speakTask = Task { [weak self] in
+            // Cortada antes de arrancar (stopSpeech): no se dice.
+            guard !Task.isCancelled else { return }
             await speech.speak(next)
             self?.spoke(generation)
         }
@@ -409,7 +465,6 @@ public final class CarPlayConversation: Surface {
         speakTask?.cancel()
         speakTask = nil
         speech.stop()
-        if phase == .speaking, turnRunning { phase = .thinking }
         let waiters = drainWaiters
         drainWaiters = []
         waiters.forEach { $0.resume() }
@@ -418,6 +473,7 @@ public final class CarPlayConversation: Surface {
     // MARK: - Audio
 
     private func activateAudio() -> Bool {
+        guard !closing else { return false }
         guard !audioActive else { return true }
         do {
             try audio.activateConversation()

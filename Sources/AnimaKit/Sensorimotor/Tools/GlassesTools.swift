@@ -210,11 +210,14 @@ public struct SurfaceConfirmationRouter: ConfirmationProvider {
 
     /// Lo que se niega SIN preguntar, según la superficie: la cámara de las
     /// gafas no se confirma por voz desde Siri ni desde el carro (consentimiento
-    /// en el MISMO dispositivo, §8), y desde CarPlay solo se confirma por voz lo
-    /// de bajo riesgo (CarPlayTurn.voiceConfirmable). nil = sigue su camino.
+    /// en el MISMO dispositivo, §8); desde Siri nada destructivo; y desde CarPlay
+    /// solo se confirma por voz lo de bajo riesgo (CarPlayTurn.voiceConfirmable).
+    /// Se evalúa ANTES de la política: ni "Autorizar siempre" lo salta. nil = sigue.
     public static func refusal(for request: ConfirmationRequest) -> String? {
         switch request.surface {
         case .siri where request.tool == GlassesCameraTool.name: siriCameraRefusal
+        case .siri where PermissionPolicy.isDestructive(tool: request.tool, operation: request.operation):
+            CarPlayTurn.siriDestructiveRefusal
         case .carplay: CarPlayTurn.refusal(for: request)
         default: nil
         }

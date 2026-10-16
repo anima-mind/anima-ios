@@ -73,11 +73,13 @@ public final class SymbolicStore: Sendable {
 
     /// Agrega un mensaje al transcript. `usage` se guarda para telemetría/costos;
     /// `surface` marca por dónde llegó (teléfono / gafas) — mismo transcript.
+    /// `quote`: lo que el dueño citó al escribir (la burbuja lo vuelve a pintar).
     public func append(sessionId: SessionID, message: Message, usage: Usage? = nil,
-                       surface: SurfaceID? = nil, proactive: ProactiveTag? = nil) throws {
+                       surface: SurfaceID? = nil, proactive: ProactiveTag? = nil, quote: ChatQuote? = nil) throws {
         let contentJSON = try Self.encodeBlocks(message.content)
         let usageJSON = try usage.map { try Self.encodeUsage($0) }
         let proactiveJSON = try proactive.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        let quoteJSON = quote?.json
         let now = Date().timeIntervalSince1970
         try queue.write { db in
             let seq = (try Int.fetchOne(
@@ -92,6 +94,11 @@ public final class SymbolicStore: Sendable {
                     """,
                 arguments: [sessionId, seq, message.role.rawValue, contentJSON, usageJSON, now, surface?.rawValue,
                             proactiveJSON])
+            // La columna solo se toca si hay cita: el INSERT de siempre no cambia.
+            if let quoteJSON {
+                try db.execute(sql: "UPDATE turn_event SET quote_json=? WHERE id=?",
+                               arguments: [quoteJSON, db.lastInsertedRowID])
+            }
             try db.execute(sql: "UPDATE session SET last_event_at=? WHERE id=?", arguments: [now, sessionId])
         }
     }
@@ -135,11 +142,23 @@ public final class SymbolicStore: Sendable {
     public func visibleTurns(sessionId: SessionID) throws -> [VisibleTurn] {
         let rows: [Row] = try queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, session_id, role, content_json, surface, proactive_json, created_at, seq FROM turn_event
-                WHERE session_id=? ORDER BY seq ASC
+                SELECT id, session_id, role, content_json, surface, proactive_json, quote_json, created_at, seq
+                FROM turn_event WHERE session_id=? ORDER BY seq ASC
                 """, arguments: [sessionId])
         }
         return try rows.compactMap(Self.visibleTurn(from:))
+    }
+
+    /// Un turno visible por su rowid (la cita de un mensaje). nil si no existe o
+    /// no es visible (tool_result, turno sintético).
+    public func visibleTurn(rowId: Int64) throws -> VisibleTurn? {
+        let row: Row? = try queue.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT id, session_id, role, content_json, surface, proactive_json, quote_json, created_at, seq
+                FROM turn_event WHERE id=?
+                """, arguments: [rowId])
+        }
+        return try row.flatMap(Self.visibleTurn(from:))
     }
 
     // MARK: - Historial completo del chat (campo batch 8 #3)
@@ -169,7 +188,7 @@ public final class SymbolicStore: Sendable {
         while collected.count < limit, !exhausted {
             let rows: [Row] = try queue.read { db in
                 try Row.fetchAll(db, sql: """
-                    SELECT id, session_id, role, content_json, surface, proactive_json, created_at, seq
+                    SELECT id, session_id, role, content_json, surface, proactive_json, quote_json, created_at, seq
                     FROM turn_event WHERE id < ? ORDER BY id DESC LIMIT ?
                     """, arguments: [cursor, batch])
             }
@@ -209,6 +228,9 @@ public final class SymbolicStore: Sendable {
         if let raw: String = row["proactive_json"],
            let tag = try? JSONDecoder().decode(ProactiveTag.self, from: Data(raw.utf8)) {
             turn?.proactive = tag
+        }
+        if role == .user, let quote = ChatQuote.decode(row["quote_json"]) {
+            turn?.quote = quote
         }
         turn?.createdAt = (row["created_at"] as Double?).map(Date.init(timeIntervalSince1970:))
         turn?.seq = row["seq"]
@@ -279,6 +301,8 @@ public struct VisibleTurn: Sendable, Equatable {
     public var surface: SurfaceID?
     /// Turno proactivo (recordatorio entregado, check-in): se pinta como card.
     public var proactive: ProactiveTag?
+    /// Lo que el dueño citó en este turno ("responder citando").
+    public var quote: ChatQuote?
     /// Cuándo se escribió (hora y separador de día del chat).
     public var createdAt: Date?
     /// Posición en el transcript (las fronteras de contexto se ubican por seq).
@@ -308,6 +332,8 @@ public struct VisibleTurn: Sendable, Equatable {
             case .text(let t):
                 if role == .user, ActionClaimGuard.isNudge(t) {
                     return nil   // turno sintético del harness: jamás se pinta
+                } else if role == .user, ChatQuoteContext.isBlock(t) {
+                    continue     // la cita como contexto del modelo: la burbuja la pinta aparte
                 } else if role == .user, IntentionAcceptance.isAcceptance(t) {
                     texts.append(IntentionAcceptance.shownText)
                 } else if role == .user, t == HUDPhoto.prompt {

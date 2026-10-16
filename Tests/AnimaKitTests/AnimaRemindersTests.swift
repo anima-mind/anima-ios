@@ -342,7 +342,8 @@ enum ProactiveFixtures {
         #expect(request.title == "Lumen" && request.body == "Te recuerdo: llamar al banco")
         #expect(request.categoryId == ProactiveNotificationIDs.reminderCategory)
         #expect(request.trigger == .at(F.date(2026, 10, 6, 9)))
-        #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://reminder?id=\(r.id)")
+        // "Responder citando": el push abre el chat con el recordatorio citado.
+        #expect(request.userInfo[ProactiveNotificationIDs.linkKey] == "anima://chat?quote=reminder:\(r.id)")
 
         let before = w.fake.scheduled
         _ = await w.scheduler.sync()

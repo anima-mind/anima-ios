@@ -214,6 +214,22 @@ public actor AnimaReminderStore {
         return try found(id)
     }
 
+    /// Mueve a `fireAt` ("pásalo para el viernes"). Un entregado vuelve a
+    /// `scheduled`. En uno que se repite NO mueve la serie: como `snooze`, crea
+    /// uno-a-uno con el mismo texto y lo devuelve.
+    @discardableResult
+    public func reschedule(id: String, to fireAt: Date) throws -> AnimaReminder {
+        let current = try active(id)
+        guard fireAt > now() else { throw AnimaReminderError.pastFireAt }
+        if current.repeatCadence != .none {
+            return try create(text: current.text, message: current.message, fireAt: fireAt, goalId: current.goalId,
+                              originSessionId: current.originSessionId)
+        }
+        update(id: id, sql: "UPDATE anima_reminder SET status='scheduled', fire_at=?, fired_at=NULL WHERE id=?",
+               arguments: [fireAt.timeIntervalSince1970, id])
+        return try found(id)
+    }
+
     // MARK: - Repetición
 
     /// Próxima ocurrencia estrictamente posterior a `reference` (ver ProactiveCadence).

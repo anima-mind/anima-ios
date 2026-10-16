@@ -77,6 +77,20 @@ public enum LocalToolAdapter {
             example: "{name:'libros'}"),
     ]
 
+    /// Solo viajan cuando el dueño cita un recordatorio ("responder citando"):
+    /// actúan sobre EL citado y el id lo pone el adapter (el 3B no copia ids).
+    public static let quotedReminderTools: [LocalTool] = [
+        LocalTool(
+            name: "move_reminder", realTool: "anima_reminders", realAction: "reschedule",
+            spec: spec("move_reminder", "Mueve el recordatorio citado a otra fecha y hora. Ej: {when:'2026-10-09 18:00'}",
+                       [("when", .date)]),
+            example: "{when:'2026-10-09 18:00'}"),
+        LocalTool(
+            name: "done_reminder", realTool: "anima_reminders", realAction: "complete",
+            spec: spec("done_reminder", "Marca como hecho el recordatorio citado.", []),
+            example: "{}"),
+    ]
+
     /// "crear el recordatorio": la intención de una tool local.
     public static func verb(local name: String) -> String {
         guard let tool = byName[name] else { return "usar \(name)" }
@@ -89,7 +103,8 @@ public enum LocalToolAdapter {
 
     public static let readOnlyTools: Set<String> = ["list_reminders", "list_goals", "list_events", "read_note"]
 
-    static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
+    static let byName: [String: LocalTool] = Dictionary(uniqueKeysWithValues: (tools + quotedReminderTools)
+        .map { ($0.name, $0) })
 
     /// Las tools reales que tienen forma local.
     public static var realTools: Set<String> { Set(tools.map(\.realTool)) }
@@ -104,7 +119,19 @@ public enum LocalToolAdapter {
             guard case .client(let name, _, _) = spec else { continue }
             if let local = byName[name] { real.insert(local.realTool) } else { real.insert(name) }
         }
-        return tools.filter { real.contains($0.realTool) }.map(\.spec)
+        // Las de la cita se conservan si ya venían (el provider re-aplica el perfil).
+        let quoted = quotedReminderTools.filter { tool in available.contains { $0.name == tool.name } }
+        return (tools + quoted).filter { real.contains($0.realTool) }.map(\.spec)
+    }
+
+    /// El set local del turno: con un recordatorio citado (que existe) suman las
+    /// tools que actúan sobre él.
+    public static func specs(for available: [ToolSpec], quote: ChatQuote?) -> [ToolSpec] {
+        let base = specs(for: available)
+        guard let quote, quote.kind == .reminder, !quote.missing,
+              base.contains(where: { byName[$0.name]?.realTool == "anima_reminders" }) else { return base }
+        let present = Set(base.map(\.name))
+        return base + quotedReminderTools.filter { !present.contains($0.name) }.map(\.spec)
     }
 
     // MARK: - Traducción
@@ -115,7 +142,7 @@ public enum LocalToolAdapter {
     /// los dijo sin ambigüedad ("el jueves a las 3 pm"): el 3B se equivoca
     /// convirtiendo "3 pm" o contando días; lo dicho por el dueño gana.
     public static func resolve(name: String, input: JSONValue, now: Date, ownerText: String = "",
-                               calendar: Calendar = .current) -> Resolution {
+                               calendar: Calendar = .current, quote: ChatQuote? = nil) -> Resolution {
         guard let tool = byName[name] else {
             return .invalid(tool: name, message: "No existe la herramienta '\(name)'. Usa: "
                             + tools.map(\.name).joined(separator: ", ") + ".")
@@ -267,6 +294,22 @@ public enum LocalToolAdapter {
             // append: nunca pisa una nota existente (crear también, si no existe).
             return .real(name: tool.realTool, input: .object([
                 "action": .string("append"), "name": .string(noteName), "content": .string(content),
+            ]))
+
+        case "move_reminder", "done_reminder":
+            guard let quote, quote.kind == .reminder, !quote.missing else {
+                return invalid("No hay un recordatorio citado: usa list_reminders o remind_me.")
+            }
+            guard name == "move_reminder" else {
+                return .real(name: tool.realTool, input: .object(["action": .string("complete"), "id": .string(quote.ref.id)]))
+            }
+            // La hora del modelo (vio la del recordatorio) salvo que el dueño diga otra.
+            guard let target = args.raw("when").flatMap({ when.parse($0) }) else {
+                return invalid(missing("when", "formato 'YYYY-MM-DD HH:MM', hora local"))
+            }
+            guard target > now else { return invalid("Esa fecha ya pasó: usa una futura en formato 'YYYY-MM-DD HH:MM'.") }
+            return .real(name: tool.realTool, input: .object([
+                "action": .string("reschedule"), "id": .string(quote.ref.id), "fire_at": .string(when.isoLocal(target)),
             ]))
 
         case "read_note":
@@ -1041,8 +1084,14 @@ struct LocalWhen {
 
     /// La nota cuando el dueño pidió cambiar algo y el turno terminó sin tool
     /// (medido: "ya cumplí mi meta" ⇒ felicitaba y la meta seguía activa).
-    static func changeHint(_ ownerText: String) -> String? {
+    static func changeHint(_ ownerText: String, quoted: ChatQuoteKind? = nil) -> String? {
         guard asksToChange(ownerText) else { return nil }
+        // Lo citado dice de qué se habla aunque el dueño no lo nombre ("bórralo").
+        switch quoted {
+        case .reminder?: return "Eso lo cambias en la tab Recordatorios."
+        case .goal?, .checkIn?: return "Para cambiarla o borrarla, hazlo en la tab Metas."
+        case .message?, nil: break
+        }
         let owner = fold(ownerText)
         if owner.contains("recordatorio") || owner.contains("recuerd") || owner.contains("recordarme") {
             return "Eso lo borras en la tab Recordatorios."

@@ -13,7 +13,14 @@ public enum ProactiveNotificationAction: Sendable, Equatable {
 
     /// `actionIdentifier` + el deep link del userInfo → acción. nil si no es de Anima.
     public static func from(actionIdentifier: String, link: URL?) -> ProactiveNotificationAction? {
-        guard let link, let parsed = AnimaDeepLink.parse(link) else { return nil }
+        guard let link, var parsed = AnimaDeepLink.parse(link) else { return nil }
+        // El push de un recordatorio abre el chat con él citado; sus botones
+        // ("Hecho", "En 1 hora") siguen siendo del recordatorio.
+        if case .chatQuote(let ref) = parsed, ref.kind == .reminder,
+           actionIdentifier == ProactiveNotificationIDs.reminderDoneAction
+            || actionIdentifier == ProactiveNotificationIDs.reminderSnoozeAction {
+            parsed = .reminder(id: ref.id)
+        }
         switch (actionIdentifier, parsed) {
         case (ProactiveNotificationIDs.reminderDoneAction, .reminder(let id)):
             return .reminderDone(id: id)

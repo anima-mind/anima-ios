@@ -22,6 +22,8 @@ public final class GoalsViewModel: ObservableObject {
     public var onCheckInChanged: (@Sendable () async -> Void)?
     /// Meta a la que saltar (check-in tocado en la tab Recordatorios).
     @Published public var focusedGoalId: String?
+    /// "Hablar de esta meta": el chat con la meta citada (lo cablea el shell).
+    public var onTalk: ((ChatQuote) -> Void)?
 
     public init(otherModel: OtherModel) {
         self.otherModel = otherModel
@@ -40,6 +42,12 @@ public final class GoalsViewModel: ObservableObject {
 
     public func focus(goalId: String) {
         focusedGoalId = goalId
+    }
+
+    /// La meta con su estado, seguimiento y progreso → el chat, citada.
+    public func talk(about goal: Goal) async {
+        let streak = progress[goal.id]?.streak ?? 0
+        onTalk?(ChatQuoteResolver.quote(goal, streak: streak, last: progress[goal.id]?.last))
     }
 
     public func confirm(_ goal: Goal) async {
@@ -325,6 +333,9 @@ public struct GoalsView: View {
             if goal.status == .active {
                 checkInRow(goal)
             }
+            if goal.isOpen {
+                talkButton(goal)
+            }
             if goal.status == .pendingConfirmation {
                 HStack(spacing: Theme.Space.stack) {
                     Button("Abandonar") { Task { await model.abandon(goal) } }
@@ -347,6 +358,9 @@ public struct GoalsView: View {
                               lineWidth: Theme.Stroke.hairline))
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         .contextMenu {
+            Button { Task { await model.talk(about: goal) } } label: {
+                Label("Hablar de esta meta", systemImage: "bubble.left")
+            }
             if goal.status == .active {
                 Button { Task { await model.markAchieved(goal) } } label: {
                     Label("Marcar lograda", systemImage: "checkmark")
@@ -356,6 +370,19 @@ public struct GoalsView: View {
                 Label("Eliminar", systemImage: "trash")
             }
         }
+    }
+
+    /// "Hablar de esta meta": darle contexto o respuesta a Anima sobre ella.
+    private func talkButton(_ goal: Goal) -> some View {
+        Button { Task { await model.talk(about: goal) } } label: {
+            Label("Hablar de esta meta", systemImage: "bubble.left")
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.accentText)
+                .frame(minHeight: Theme.minHitTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("goal.talk.\(goal.id)")
     }
 
     private static let cadenceOptions: [(ProactiveCadence, String)] = [

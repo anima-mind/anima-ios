@@ -561,6 +561,8 @@ public enum OnDevicePromptBuilder {
         "declare_goal": ["meta", "regist", "pregunt", "segui", "recuerd"],
         "add_calendar_event": ["agend", "event", "calend", "cita", "reuni"],
         "write_note": ["anot", "nota", "guard", "apunt"],
+        "move_reminder": ["mov", "pas", "qued", "cambi", "program", "recuerd"],
+        "done_reminder": ["hech", "marc", "list", "complet"],
     ]
 
     /// Pretérito en 1ª persona que no es de Anima ("saqué", "llamé") o en 2ª

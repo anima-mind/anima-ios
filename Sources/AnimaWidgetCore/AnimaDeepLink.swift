@@ -27,6 +27,10 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case mind
     /// Un aviso por inactividad: chat con la pregunta de Anima lista para responder.
     case nudge(id: String)
+    /// "Responder citando": el chat con lo citado ya en el composer y el foco
+    /// listo (`anima://chat?quote=reminder:<id>`). Lo usan el tap a un
+    /// recordatorio (programado o entregado), las metas y los widgets.
+    case chatQuote(ChatQuoteRef)
 
     public static let scheme = "anima"
 
@@ -61,6 +65,9 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case .nudge(let id):
             components.host = "nudge"
             components.queryItems = [URLQueryItem(name: "id", value: id)]
+        case .chatQuote(let ref):
+            components.host = "chat"
+            components.queryItems = [URLQueryItem(name: "quote", value: ref.token)]
         }
         return components.url!
     }
@@ -73,6 +80,10 @@ public enum AnimaDeepLink: Sendable, Equatable {
         case "glasses":
             return .glasses
         case "chat":
+            if let token = components.queryItems?.first(where: { $0.name == "quote" })?.value,
+               let ref = ChatQuoteRef(token: token) {
+                return .chatQuote(ref)
+            }
             if components.queryItems?.contains(where: { $0.name == "mic" && $0.value == "1" }) == true {
                 return .talk
             }

@@ -54,7 +54,7 @@ public struct PermissionPolicy: Sendable {
     /// (agenda, Recordatorios del iPhone, cámara…) sigue pidiendo ok.
     public static let internalReversible: Set<AllowlistEntry> = Set(
         ["declare", "set_checkin", "clear_checkin", "mark_achieved"].map { AllowlistEntry(tool: "goals", operation: $0) }
-        + ["create", "complete", "cancel", "snooze"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
+        + ["create", "complete", "cancel", "snooze", "reschedule"].map { AllowlistEntry(tool: "anima_reminders", operation: $0) })
 
     /// La política de la app: internas reversibles + lo autorizado siempre.
     public static func app(ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry>) -> PermissionPolicy {

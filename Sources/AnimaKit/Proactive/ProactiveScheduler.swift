@@ -185,6 +185,6 @@ public actor ProactiveScheduler {
             id: ProactiveNotificationIDs.reminderPrefix + reminder.id + suffix,
             title: title, body: reminder.spokenMessage, trigger: .at(date),
             categoryId: ProactiveNotificationIDs.reminderCategory,
-            deepLink: AnimaDeepLink.reminder(id: reminder.id).url)
+            deepLink: AnimaDeepLink.chatQuote(ChatQuoteRef(kind: .reminder, id: reminder.id)).url)
     }
 }

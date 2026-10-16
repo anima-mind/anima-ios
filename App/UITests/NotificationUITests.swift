@@ -1,6 +1,7 @@
 // NotificationUITests.swift — el tap al push de un recordatorio de Anima abre el
-// Chat con la card del recordatorio, sin crash, en los tres estados del proceso:
-// terminado (cold launch desde la notificación), en background y al frente.
+// Chat con la card del recordatorio y el recordatorio YA citado en el composer
+// ("responder citando"), sin crash, en los tres estados del proceso: terminado
+// (cold launch desde la notificación), en background y al frente.
 // Notificaciones REALES del simulador: `--uitest-sticky` mantiene el modo
 // UI-test aunque el sistema lance la app sin argumentos.
 
@@ -67,7 +68,26 @@ final class NotificationUITests: AnimaUITestCase {
         waitFor(app.textFields["chat.input"], timeout: 30)
         let card = element(app, "chat.proactive.reminder")
         waitFor(card, timeout: 20)
+        // El recordatorio entregado queda citado, listo para responderle.
+        waitUntil(element(app, "chat.quote.text"), "label CONTAINS 'Respondiendo a recordatorio Cita médica de prueba'",
+                  timeout: 20)
         XCTAssertEqual(app.state, .runningForeground, "La app murió tras abrir el recordatorio")
+    }
+
+    /// En frío: el tap al push abre el chat con el recordatorio citado y el foco
+    /// listo; la respuesta del dueño sale con la cita en su burbuja.
+    @MainActor
+    func testTapOnReminderColdQuotesItAndTheReplyCarriesIt() {
+        let app = launchWithSeededReminder()
+        app.terminate()
+        tapNotification(timeout: TimeInterval(Self.leadSeconds + 30))
+        assertOpensReminderCard(app)
+        let input = app.textFields["chat.input"]
+        waitUntil(input, "hasKeyboardFocus == true")
+        input.typeText("ya voy saliendo")
+        tap(app.buttons["chat.send"])
+        waitUntil(element(app, "chat.userMessage.quote"), "label CONTAINS 'Cita médica de prueba'")
+        waitUntil(element(app, "chat.quote.composer"), "exists == false")
     }
 
     @MainActor

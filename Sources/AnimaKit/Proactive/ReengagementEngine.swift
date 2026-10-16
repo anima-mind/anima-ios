@@ -12,6 +12,8 @@ public actor ReengagementEngine {
     private let planner: ReengagementPlanner
     /// Pulsos del deseo ya entregados HOY (comparten el tope diario).
     private let pulsesToday: @Sendable () async -> Int
+    /// El aviso de despertar (7:30) también cuenta para la distancia y el tope.
+    private let wake: WakePreference?
     private let now: @Sendable () -> Date
     /// Cuánto tiempo un aviso entregado sin respuesta aparece al abrir la app.
     public static let showOnOpenWindow: TimeInterval = 12 * 3600
@@ -19,7 +21,9 @@ public actor ReengagementEngine {
     public init(preference: ReengagementPreference, questions: ReengagementQuestionStore?,
                 planner: ReengagementPlanner = ReengagementPlanner(),
                 pulsesToday: @escaping @Sendable () async -> Int = { 0 },
+                wake: WakePreference? = nil,
                 now: @escaping @Sendable () -> Date = { Date() }) {
+        self.wake = wake
         self.preference = preference
         self.questions = questions
         self.planner = planner
@@ -28,7 +32,7 @@ public actor ReengagementEngine {
     }
 
     /// Pulsos del deseo de hoy (hora local) en `desire_pulse`.
-    public static func pulseCounter(queue: DatabaseQueue, calendar: Calendar = .current,
+    public static func pulseCounter(queue: DatabaseQueue, calendar: Calendar = .autoupdatingCurrent,
                                     now: @escaping @Sendable () -> Date = { Date() }) -> @Sendable () async -> Int {
         {
             let start = calendar.startOfDay(for: now())
@@ -51,30 +55,40 @@ public actor ReengagementEngine {
 
     public var lastUseAt: Date? { preference.lastUseAt }
 
-    /// Avisos entregados desde el último uso (= ignorados seguidos).
-    public func ignoredStreak() -> Int {
-        reconcileDelivered()
-        guard let last = preference.lastUseAt else { return 0 }
-        return preference.delivered.filter { $0.at > last }.count
-    }
+    public var isEnabled: Bool { preference.isEnabled }
+
+    /// El aviso de despertar que el sueño programa casi cada noche (7:30): el
+    /// planner lo trata como un aviso más de Anima ese día.
+    static let predictedWake: LocalNotificationRequest = {
+        var c = DateComponents()
+        c.hour = WakeNotice.morning.hour
+        c.minute = WakeNotice.morning.minute
+        return LocalNotificationRequest(id: WakeNotice.prefix + "predicted", title: "", body: "",
+                                        trigger: .calendar(c, repeats: true), categoryId: WakeNotice.category,
+                                        deepLink: nil)
+    }()
 
     // MARK: - La cadena
 
     /// Los requests de la cadena (vacío si está apagado). `others`: lo demás que
     /// Anima tiene programado (check-ins, recordatorios) — el planner lo esquiva.
-    public func requests(others: [LocalNotificationRequest], title: String) async -> [LocalNotificationRequest] {
+    /// `limit`: los cupos de iOS que quedan. El plan guarda SOLO lo que de verdad
+    /// se programa: lo que no cupo jamás cuenta como entregado.
+    public func requests(others: [LocalNotificationRequest], title: String,
+                         limit: Int = .max) async -> [LocalNotificationRequest] {
         reconcileDelivered()
-        guard preference.isEnabled else {
+        guard preference.isEnabled, limit > 0 else {
             preference.plan = []
             return []
         }
+        let others = (wake?.isEnabled ?? false) ? others + [Self.predictedWake] : others
         let current = now()
         let lastUse = preference.lastUseAt ?? current
         if preference.lastUseAt == nil { preference.lastUseAt = current }
         let today = await pulsesToday()
         let calendar = planner.calendar
         let fires = planner.chain(lastUse: lastUse, days: preference.days, others: others, now: current,
-                                  load: { calendar.isDate($0, inSameDayAs: current) ? today : 0 })
+                                  load: { calendar.isDate($0, inSameDayAs: current) ? today : 0 }).prefix(limit)
         let picked = pick(count: fires.count)
         let plan = zip(fires, picked).map { ReengagementPlanEntry(fireAt: $0, ref: $1.ref, text: $1.text) }
         preference.plan = plan
@@ -83,13 +97,27 @@ public actor ReengagementEngine {
         }
     }
 
-    /// "Probar en 1 minuto": un aviso suelto con la próxima pregunta (no toca la cadena).
+    /// Sin permiso (o sin cupo): nada está programado, así que nada se entregará.
+    public func clearPlan() {
+        preference.plan = []
+    }
+
+    /// "Probar en 1 minuto": un aviso suelto con la mejor pregunta disponible (la
+    /// del sueño, para ver la real). Queda reservada: la cadena, al re-planearse,
+    /// ya no la lleva (ni la duplica ni la quema). Se recuerda hasta que suene.
     public func probeRequest(after seconds: TimeInterval, title: String) -> LocalNotificationRequest {
-        let entry = pick(count: 1).first ?? (ref: ReengagementFallback.ref(0), text: ReengagementFallback.questions[0])
+        reconcileDelivered()
+        let entry = pick(count: 1, includingProbe: true).first
+            ?? (ref: ReengagementFallback.ref(0), text: ReengagementFallback.questions[0])
         let fire = now().addingTimeInterval(seconds)
-        return Self.request(id: ReengagementIDs.probeId, title: title,
-                            entry: ReengagementPlanEntry(fireAt: fire, ref: entry.ref, text: entry.text),
-                            trigger: .at(fire))
+        let probe = ReengagementPlanEntry(fireAt: fire, ref: entry.ref, text: entry.text)
+        preference.probe = probe
+        return Self.request(id: ReengagementIDs.probeId, title: title, entry: probe, trigger: .at(fire))
+    }
+
+    /// El probe pendiente se cancela (toggle apagado): su pregunta vuelve a estar libre.
+    public func cancelProbe() {
+        preference.probe = nil
     }
 
     static func request(id: String, title: String, entry: ReengagementPlanEntry,
@@ -101,9 +129,12 @@ public actor ReengagementEngine {
 
     /// Las preguntas del sueño primero; si no alcanzan, las de respaldo en rotación
     /// sin repetir las últimas entregadas.
-    private func pick(count: Int) -> [(ref: String, text: String)] {
+    private func pick(count: Int, includingProbe: Bool = false) -> [(ref: String, text: String)] {
         guard count > 0 else { return [] }
-        var out: [(ref: String, text: String)] = (questions?.upcoming(limit: count) ?? []).map { ($0.id, $0.text) }
+        // La pregunta del probe pendiente no va también en la cadena.
+        let reserved = includingProbe ? nil : preference.probe?.ref
+        var out: [(ref: String, text: String)] = (questions?.upcoming(limit: count + 1) ?? [])
+            .filter { $0.id != reserved }.prefix(count).map { ($0.id, $0.text) }
         let recent = Set(preference.delivered.suffix(3).map { ReengagementTextGuard.key($0.text) })
         let pool = ReengagementFallback.questions
         var cursor = preference.fallbackCursor
@@ -113,6 +144,7 @@ public actor ReengagementEngine {
             cursor += 1
             tries += 1
             if recent.contains(ReengagementTextGuard.key(pool[index])) && tries <= pool.count { continue }
+            if ReengagementFallback.ref(index) == reserved { continue }
             out.append((ReengagementFallback.ref(index), pool[index]))
         }
         return out
@@ -125,10 +157,15 @@ public actor ReengagementEngine {
     @discardableResult
     public func reconcileDelivered() -> [ReengagementDelivery] {
         let current = now()
+        var fresh: [ReengagementDelivery] = []
+        if let probe = preference.probe, probe.fireAt <= current {
+            preference.probe = nil
+            fresh.append(deliver(ref: probe.ref, text: probe.text, at: probe.fireAt))
+        }
         let plan = preference.plan
         let due = plan.filter { $0.fireAt <= current }
-        guard !due.isEmpty else { return [] }
-        let fresh = due.map { deliver(ref: $0.ref, text: $0.text, at: $0.fireAt) }
+        guard !due.isEmpty else { return fresh }
+        fresh += due.map { deliver(ref: $0.ref, text: $0.text, at: $0.fireAt) }
         preference.plan = plan.filter { $0.fireAt > current }
         return fresh
     }
@@ -161,6 +198,7 @@ public actor ReengagementEngine {
         if let known = preference.delivered.last(where: { $0.ref == ref && $0.at > horizon }) {
             item = known
         } else if let text = preference.plan.first(where: { $0.ref == ref })?.text
+                    ?? (preference.probe?.ref == ref ? preference.probe?.text : nil)
                     ?? questions?.question(id: ref)?.text ?? ReengagementFallback.text(for: ref) {
             item = deliver(ref: ref, text: text, at: current)
         } else {

@@ -200,8 +200,8 @@ public actor AgentLoop {
                 await self.runTurn(sessionId: sessionId, content: content, surface: surface,
                                    emit: { continuation.yield($0) })
                 continuation.finish()
-                await self.ownerTurnFinished(surface)
                 self.untrack(id, sessionId: sessionId)
+                self.ownerTurnFinished(surface)
             }
             inFlight[id] = task
             sessionTail[sessionId] = task
@@ -225,14 +225,34 @@ public actor AgentLoop {
 
     /// Tras cada turno del dueño que corrió (chat, voz, gafas, Siri — también en
     /// background): la capa proactiva reprograma los avisos por inactividad.
+    /// Corre suelto, DESPUÉS de soltar el turno: ni el siguiente turno, ni
+    /// `waitUntilIdle`, ni la compuerta de superficies esperan a la base ni a iOS.
     private var onOwnerTurn: (@Sendable (SurfaceID) async -> Void)?
 
     public func setOnOwnerTurn(_ hook: (@Sendable (SurfaceID) async -> Void)?) {
         onOwnerTurn = hook
     }
 
-    private func ownerTurnFinished(_ surface: SurfaceID) async {
-        await onOwnerTurn?(surface)
+    private func ownerTurnFinished(_ surface: SurfaceID) {
+        guard let hook = onOwnerTurn else { return }
+        Task.detached { await hook(surface) }
+    }
+
+    /// Escribe en el transcript de la sesión EN COLA con sus turnos: espera a que
+    /// termine el que está en vuelo (jamás cae entre un tool_use y su
+    /// tool_result) y el siguiente turno la espera a ella. Para lo que Anima
+    /// dice sin turno: recordatorios entregados, check-ins, avisos, propuestas.
+    public func appendAfterTurns(sessionId: SessionID, _ write: @escaping @Sendable () -> Void) async {
+        let previous = sessionTail[sessionId]
+        let id = UUID()
+        let task = Task {
+            await previous?.value
+            write()
+        }
+        inFlight[id] = task
+        sessionTail[sessionId] = task
+        await task.value
+        untrack(id, sessionId: sessionId)
     }
 
     /// Vuelve cuando ningún turno sigue produciendo (escrituras incluidas).

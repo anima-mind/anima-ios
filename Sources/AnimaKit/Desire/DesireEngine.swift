@@ -155,7 +155,7 @@ public actor DesireEngine {
             : text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let intention = persist(lack: lack, proposedText: proposed, origin: origin)
-        appendTurn(intention, sessionId: sessionId)
+        await appendTurn(intention, sessionId: sessionId)
         recordPulse()
         return intention
     }
@@ -163,21 +163,33 @@ public actor DesireEngine {
     /// Persiste la propuesta como turno del agente MARCADO como Intention
     /// (batch 8 #1): el modelo ve el texto en su contexto y el chat la pinta UNA
     /// vez, como card con "Hagámoslo / Ahora no" — nunca texto suelto + card.
-    private func appendTurn(_ intention: Intention, sessionId: SessionID?) {
+    /// En cola con los turnos de la sesión: el pulso al abrir corre suelto y un
+    /// turno puede estar en vuelo (jamás entre un tool_use y su tool_result).
+    private func appendTurn(_ intention: Intention, sessionId: SessionID?) async {
         guard let store, let sessionId else { return }
         let tag = ProactiveMessage(kind: .intention(id: intention.id), text: intention.proposedText,
                                    at: intention.createdAt).tag
-        try? store.append(sessionId: sessionId, message: .assistant([.text(intention.proposedText)]), proactive: tag)
+        let text = intention.proposedText
+        let write: @Sendable () -> Void = {
+            try? store.append(sessionId: sessionId, message: .assistant([.text(text)]), proactive: tag)
+        }
+        if let transcriptGate { await transcriptGate(sessionId, write) } else { write() }
+    }
+
+    private var transcriptGate: TranscriptGate?
+
+    public func setTranscriptGate(_ gate: TranscriptGate?) {
+        transcriptGate = gate
     }
 
     /// Una propuesta ya redactada (siembra del modo UI-test y reparaciones):
     /// mismo log y mismo turno marcado que el pulso.
     @discardableResult
     public func recordProposal(goal: Goal, text: String, sessionId: SessionID?,
-                               origin: IntentionOrigin = .foreground) -> Intention {
+                               origin: IntentionOrigin = .foreground) async -> Intention {
         let lack = Lack(goal: goal, reading: ObservableReading(satisfied: false, detail: "propuesta"))
         let intention = persist(lack: lack, proposedText: text, origin: origin)
-        appendTurn(intention, sessionId: sessionId)
+        await appendTurn(intention, sessionId: sessionId)
         return intention
     }
 

@@ -1277,15 +1277,15 @@ enum QuoteFixtures {
 /// 12,5 s). Con estas dos más, los 3 hilos del runner quedaban tomados y la
 /// suite entera se congelaba ~13,5 s. Sin modelo, las cotas estimadas bastan.
 enum QuoteTokenizer {
-    static let available: Bool = OnDeviceAvailability.current().isAvailable
+    // La disponibilidad se consulta una vez y fuera del pool cooperativo (RealToolSet).
 
     static func instructionTokens(_ text: String) async -> Int? {
-        guard available else { return nil }
+        guard await RealToolSet.modelIsAvailable() else { return nil }
         return await RealToolSet.frameworkInstructionTokens(text)
     }
 
     static func toolTokens(_ specs: [ToolSpec]) async -> Int? {
-        guard available else { return nil }
+        guard await RealToolSet.modelIsAvailable() else { return nil }
         return await RealToolSet.frameworkTokenCount(specs)
     }
 }

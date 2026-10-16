@@ -89,8 +89,9 @@ import Testing
     }
 
     /// Las cotas estimadas corren siempre; las del tokenizer real solo con el modelo
-    /// de Apple disponible (RealToolSet.modelIsAvailable: en el runner de CI sin
-    /// modelo, `tokenCount` retenía un hilo del pool ~12–13 s).
+    /// de Apple disponible (RealToolSet.modelIsAvailable(): en el runner de CI sin
+    /// modelo, `tokenCount` retenía un hilo del pool ~12–13 s y la disponibilidad
+    /// misma unos 5 s por consulta; se pregunta una vez, fuera del pool).
     @Test func onDeviceProfileFitsTheMeasuredBudget() async throws {
         let tools = try RealToolSet.specs()
         let local = ToolProfile.onDevice.apply(tools)

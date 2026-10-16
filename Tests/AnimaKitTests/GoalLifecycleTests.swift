@@ -87,7 +87,7 @@ import Testing
         // Declarada DESPUÉS del abandono: vuelve (la misma meta).
         let later = await w.other.declare(statement: Self.saving, desiredState: .progressCheckIn(everyDays: 8),
                                           evidence: "otra vez", statedAt: w.clock.value)
-        #expect(later == GoalDeclaration(id: id, outcome: .reactivated))
+        #expect(later.id == id && later.outcome == .reactivated)
         let goal = try #require(await w.other.goal(id: id))
         #expect(goal.status == .active && goal.abandonedAt == nil && goal.supersededBy == nil)
         #expect(goal.declaredAt == w.clock.value)
@@ -219,7 +219,8 @@ import Testing
         let result = await tool.execute(.object(["action": .string("abandon"), "goal": .string("ahorrar")]))
         #expect(!result.isError)
         #expect(result.content == "Listo: dejé la meta «\(GoalLifecycleModelTests.saving)» (id \(id)); ya no te la recuerdo. "
-                + "Cancelé su seguimiento (cada miércoles a las 18:33). Queda en Metas → Historial por si quieres reactivarla.")
+                + "Cancelé su seguimiento (cada miércoles a las 18:33). Queda en Metas → Historial: si la reactivas, vuelven "
+                + "su seguimiento y sus recordatorios.")
         #expect(await w.other.goal(id: id)?.statusReason == OtherModel.leftReason)
         let again = await tool.execute(.object(["action": .string("abandon"), "goal_id": .string(id)]))
         #expect(again.isError)

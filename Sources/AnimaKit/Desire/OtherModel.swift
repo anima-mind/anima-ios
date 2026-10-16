@@ -113,6 +113,8 @@ public struct GoalDeclaration: Sendable, Equatable {
     }
     public var id: String
     public var outcome: Outcome
+    /// Al reactivar: lo que volvió (check-in y recordatorios).
+    public var restored: OtherModel.RestoredFollowUps? = nil
 }
 
 /// Lo que se canceló al dejar una meta (Anima lo cuenta tal cual).
@@ -203,7 +205,8 @@ public actor OtherModel {
                                     updated_at=?
                     WHERE id=?
                     """, arguments: [trimmed, predicateJSON, evidence, at, ts, left.id])
-                return GoalDeclaration(id: left.id, outcome: .reactivated)
+                let restored = try restoreLeftFollowUps(db, goalId: left.id)
+                return GoalDeclaration(id: left.id, outcome: .reactivated, restored: restored)
             }
             // Una reformulación de una meta que el dueño dejó DESPUÉS de este mensaje
             // ("Ahorrar 30M para diciembre" ↔ "Ahorrar 30 millones … de 2026"): tampoco revive.
@@ -353,12 +356,8 @@ public actor OtherModel {
             let successor = try supersededBy.flatMap {
                 try Row.fetchOne(db, sql: "SELECT * FROM goal WHERE id=?", arguments: [$0]).map(Self.goal(from:))
             }
-            try db.execute(sql: """
-                UPDATE goal SET status='abandoned', status_reason=?, superseded_by=?, abandoned_at=?, updated_at=?,
-                                checkin_cadence='none'
-                WHERE id=?
-                """, arguments: [reason, successor?.id, ts, ts, id])
             var cancelled: [String] = []
+            var cancelledIds: [String] = []
             var moved: [String] = []
             for row in try Row.fetchAll(db, sql: """
                 SELECT id, text FROM anima_reminder WHERE goal_id=? AND status IN ('scheduled','fired')
@@ -372,8 +371,17 @@ public actor OtherModel {
                 } else {
                     try db.execute(sql: "UPDATE anima_reminder SET status='cancelled' WHERE id=?", arguments: [reminderId])
                     cancelled.append(text)
+                    cancelledIds.append(reminderId)
                 }
             }
+            let idsJSON = String(data: (try? JSONEncoder().encode(cancelledIds)) ?? Data("[]".utf8), encoding: .utf8)
+            try db.execute(sql: """
+                UPDATE goal SET status='abandoned', status_reason=?, superseded_by=?, abandoned_at=?, updated_at=?,
+                                left_checkin_cadence=?, left_reminder_ids=?, checkin_cadence='none'
+                WHERE id=?
+                """, arguments: [reason, successor?.id, ts, ts,
+                                 goal.checkIn.isActive ? goal.checkIn.cadence.rawValue : nil,
+                                 cancelledIds.isEmpty ? nil : idsJSON, id])
             return GoalAbandonment(goal: goal, cancelledCheckIn: goal.checkIn.isActive ? goal.checkIn : nil,
                                    cancelledReminders: cancelled, movedReminders: moved)
         }) ?? nil
@@ -410,8 +418,57 @@ public actor OtherModel {
                                 status_reason=NULL, superseded_by=NULL, abandoned_at=NULL, declared_at=?, updated_at=?
                 WHERE id=?
                 """, arguments: [ts, ts, id])
+            _ = try restoreLeftFollowUps(db, goalId: id)
             return true
         }) ?? false
+    }
+
+    /// Lo que volvió al reactivar: el check-in (si tenía) y los recordatorios
+    /// cancelados al dejarla que siguen en el futuro (o que se repiten: su
+    /// próxima ocurrencia). Los que ya pasaron no se reviven.
+    public struct RestoredFollowUps: Sendable, Equatable {
+        public var checkIn: CheckInCadence?
+        public var reminders: [String]
+    }
+
+    func restoreLeftFollowUps(_ db: Database, goalId: String) throws -> RestoredFollowUps {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT left_checkin_cadence, left_reminder_ids, checkin_hour, checkin_minute, checkin_weekday
+            FROM goal WHERE id=?
+            """, arguments: [goalId]) else { return RestoredFollowUps(checkIn: nil, reminders: []) }
+        var restored = RestoredFollowUps(checkIn: nil, reminders: [])
+        if let raw: String = row["left_checkin_cadence"], let cadence = ProactiveCadence(rawValue: raw), cadence != .none {
+            let checkIn = CheckInCadence(cadence: cadence, hour: row["checkin_hour"] ?? CheckInCadence.defaultHour,
+                                         minute: row["checkin_minute"] ?? 0,
+                                         weekday: cadence == .weekly ? (row["checkin_weekday"] ?? 2) : nil)
+            if checkIn.isValid {
+                try db.execute(sql: "UPDATE goal SET checkin_cadence=?, checkin_weekday=? WHERE id=?",
+                               arguments: [cadence.rawValue, checkIn.weekday, goalId])
+                restored.checkIn = checkIn
+            }
+        }
+        let json: String? = row["left_reminder_ids"]
+        let ids = json.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
+        let reference = now()
+        for id in ids {
+            guard let reminder = try Row.fetchOne(db, sql: """
+                SELECT text, fire_at, repeat, status, goal_id FROM anima_reminder WHERE id=?
+                """, arguments: [id]),
+                  reminder["status"] as String? == "cancelled", reminder["goal_id"] as String? == goalId else { continue }
+            let fireAt = Date(timeIntervalSince1970: reminder["fire_at"])
+            let cadence = ProactiveCadence(rawValue: reminder["repeat"] ?? "none") ?? .none
+            var next: Date? = fireAt > reference ? fireAt : nil
+            if next == nil, cadence != .none {
+                next = AnimaReminderStore.nextOccurrence(after: reference, of: fireAt, repeat: cadence, calendar: calendar)
+            }
+            guard let next else { continue }
+            try db.execute(sql: "UPDATE anima_reminder SET status='scheduled', fire_at=? WHERE id=?",
+                           arguments: [next.timeIntervalSince1970, id])
+            restored.reminders.append(reminder["text"])
+        }
+        try db.execute(sql: "UPDATE goal SET left_checkin_cadence=NULL, left_reminder_ids=NULL WHERE id=?",
+                       arguments: [goalId])
+        return restored
     }
 
     /// La meta abierta a la que se refiere el dueño ("ahorrar", "la del gym", un

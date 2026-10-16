@@ -80,7 +80,7 @@ final class GoalsDeleteUITests: AnimaUITestCase {
 
 /// Campo 2026-10-15 ("ya no quiero ahorrar…" y quedaban las dos): dejar una meta
 /// en Metas cancela su seguimiento (sale de Recordatorios) y desde el Historial
-/// se reactiva.
+/// se reactiva con su seguimiento.
 final class GoalsLeaveUITests: AnimaUITestCase {
     @MainActor
     private func byPrefix(_ app: XCUIApplication, _ prefix: String) -> XCUIElement {
@@ -89,7 +89,7 @@ final class GoalsLeaveUITests: AnimaUITestCase {
     }
 
     @MainActor
-    func testLeavingAGoalCancelsItsFollowUpAndHistoryReactivatesIt() {
+    func testLeavingAGoalCancelsItsFollowUpAndReactivatingRestoresIt() {
         let app = makeApp(reset: true)
         app.launchArguments.append(GoalsUITests.seedFlag)
         app.launch()
@@ -122,14 +122,17 @@ final class GoalsLeaveUITests: AnimaUITestCase {
         waitUntil(element(app, "reminders.checkin"), "exists == false")
         screenshot(app, "recordatorios-sin-seguimiento")
 
-        // Historial → Reactivar: vuelve a las metas activas, sin seguimiento (se fija de nuevo).
+        // Historial → Reactivar: vuelve a las metas activas CON su seguimiento
+        // (review #45: reversible de verdad), y vuelve a Recordatorios.
         openTab(app, "Metas")
         let row = text(app, "abandonada")
         tap(element(app, "goals.history"), until: row)
         row.swipeLeft()
         tap(app.buttons["Reactivar"])
-        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Sin seguimiento'")
+        waitUntil(byPrefix(app, "goal.checkin.status."), "label BEGINSWITH 'Seguimiento cada día a las 8:00 p. m.'")
         waitUntil(element(app, "goals.history"), "exists == false")
         screenshot(app, "metas-reactivada")
+        openTab(app, "Recordatorios")
+        waitFor(element(app, "reminders.checkin"))
     }
 }

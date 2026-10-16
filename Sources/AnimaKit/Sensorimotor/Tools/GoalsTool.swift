@@ -18,7 +18,8 @@ public struct GoalsTool: SensorimotorTool {
         self.onChange = onChange
     }
 
-    private static let readOps: Set<String> = ["list", "record_checkin"]
+    /// ask_drop: la forma local de NO actuar ante la duda (solo pregunta).
+    private static let readOps: Set<String> = ["list", "record_checkin", "ask_drop"]
     private static let cadences = ProactiveCadence.allCases.map { JSONValue.string($0.rawValue) }
 
     public var spec: ToolSpec {
@@ -125,6 +126,7 @@ public struct GoalsTool: SensorimotorTool {
         case "mark_achieved": return await markAchieved(input)
         case "abandon": return await abandon(input)
         case "replace": return await replace(input)
+        case "ask_drop": return await askDrop(input)
         default: return Self.error("acción de goals desconocida: \(action)")
         }
     }
@@ -178,7 +180,17 @@ public struct GoalsTool: SensorimotorTool {
         }
         let saved = await otherModel.goal(id: id)?.statement ?? statement
         if declaration.outcome == .reactivated {
-            return ToolResult(content: "La habías dejado y la reactivé (id \(id)): \(saved).\(suffix)")
+            var back: [String] = []
+            if let restored = declaration.restored {
+                if let previous = restored.checkIn, !(checkIn?.isActive ?? false) {
+                    back.append("su seguimiento (\(previous.phrase))")
+                }
+                if !restored.reminders.isEmpty {
+                    back.append(restored.reminders.count == 1 ? "1 recordatorio" : "\(restored.reminders.count) recordatorios")
+                }
+            }
+            let returned = back.isEmpty ? "" : " Volvieron " + back.joined(separator: " y ") + "."
+            return ToolResult(content: "La habías dejado y la reactivé (id \(id)): \(saved).\(returned)\(suffix)")
         }
         return ToolResult(content: "Meta registrada (id \(id)): \(saved).\(suffix)")
     }
@@ -241,6 +253,29 @@ public struct GoalsTool: SensorimotorTool {
         }
     }
 
+    /// El modelo local quiso dejar una meta pero el texto del dueño no lo dice sin
+    /// duda: no se deja nada; se pregunta por la meta que nombró (si hay una).
+    private func askDrop(_ input: JSONValue) async -> ToolResult {
+        let reference = (input["goal"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let open = await otherModel.allGoals().filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+        var candidates = open.filter { GoalDedupe.overlap(reference, $0.statement) > 0 }
+        if candidates.isEmpty, !reference.isEmpty, GoalDedupe.key(reference).terms.isEmpty, open.count == 1 {
+            candidates = open   // "borra mi meta" con una sola meta abierta
+        }
+        let said = reference.isEmpty ? "…" : reference
+        switch candidates.count {
+        case 0:
+            return ToolResult(content: "No dejé ninguna meta.")
+        case 1:
+            return ToolResult(content: "No la dejé todavía: no me quedó claro. ¿Quieres que deje tu meta "
+                              + "«\(candidates[0].statement)»? Si es así, dime «deja mi meta de \(said)».")
+        default:
+            let options = candidates.prefix(3).map { "«\($0.statement)»" }.joined(separator: " o ")
+            return ToolResult(content: "No dejé ninguna meta. ¿Cuál quieres dejar: \(options)? "
+                              + "Dímelo así: «deja mi meta de …».")
+        }
+    }
+
     /// Lo cancelado al dejar una meta, dicho tal cual (sin inventar nada).
     static func cancellations(_ abandonment: GoalAbandonment) -> String {
         var parts: [String] = []
@@ -259,7 +294,7 @@ public struct GoalsTool: SensorimotorTool {
         return text
     }
 
-    static let historyNote = " Queda en Metas → Historial por si quieres reactivarla."
+    static let historyNote = " Queda en Metas → Historial: si la reactivas, vuelven su seguimiento y sus recordatorios."
 
     private struct GoalLookupError: Error {
         let result: ToolResult

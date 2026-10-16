@@ -60,7 +60,8 @@ public final class GoalsViewModel: ObservableObject {
         await changed()
     }
 
-    /// Historial → Reactivar: vuelve a motivar (el seguimiento se fija de nuevo).
+    /// Historial → Reactivar: vuelve a motivar con su seguimiento y los
+    /// recordatorios cancelados que sigan en el futuro.
     public func reactivate(_ goal: Goal) async {
         await otherModel.reactivate(id: goal.id)
         await changed()
@@ -238,7 +239,7 @@ public struct GoalsView: View {
             Button("Eliminar", role: .destructive) { Task { await model.delete(goal) } }
             Button("Cancelar", role: .cancel) {}
         } message: { _ in
-            Text("Deja de motivarte y se cancelan su seguimiento y sus recordatorios. Queda en el historial, donde puedes reactivarla.")
+            Text("Deja de motivarte y se cancelan su seguimiento y sus recordatorios. Queda en el historial: si la reactivas, vuelven.")
         }
     }
 

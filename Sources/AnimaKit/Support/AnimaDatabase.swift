@@ -111,6 +111,8 @@ public enum AnimaDatabase {
         GoalMergeV17.register(&m)
         // Batch 8 #1: las propuestas viejas sin marca pasan a ser su card.
         IntentionTurnRepair.register(&m)
+        // Avisos por inactividad: las preguntas que deja el sueño.
+        ReengagementSchema.register(&m)
 
         return m
     }

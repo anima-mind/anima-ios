@@ -16,6 +16,7 @@ public enum ProactiveCard {
         case .reminder: return "bell.fill"
         case .checkIn: return "target"
         case .intention: return "sparkles"
+        case .nudge: return "bubble.left.and.text.bubble.right"
         }
     }
 
@@ -28,6 +29,8 @@ public enum ProactiveCard {
             return goalStatement.map { "Seguimiento · \($0)" } ?? "Seguimiento"
         case .intention:
             return selfName.map { "Propuesta de \($0)" } ?? "Propuesta"
+        case .nudge:
+            return selfName.map { "Pregunta de \($0)" } ?? "Pregunta"
         }
     }
 

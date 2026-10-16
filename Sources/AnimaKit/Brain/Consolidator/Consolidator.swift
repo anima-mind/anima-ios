@@ -4,6 +4,8 @@
 //   c. escritura   — por candidato ADD/UPDATE/INVALIDATE/NOOP contra el brain
 //   d. reconsolid. — Haiku (.reconsolidation): memorias frecuentes/contradichas
 //   e. reflection  — Haiku (.consolidation): síntesis del ciclo → cycle_log
+//   …  restructures, metas declaradas y, al final, las preguntas de los avisos
+//      por inactividad (ReengagementDraft: barata, jamás tumba el ciclo).
 //
 // Todo el ciclo es REANUDABLE: cada etapa hace checkpoint en GRDB. Si el
 // BGProcessingTask muere a mitad, el próximo retoma donde iba. Los prompts piden
@@ -32,7 +34,8 @@ public actor Consolidator {
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
     enum Stage: String, Codable {
-        case pending, salient, distilled, written, reconsolidated, reflected, restructured, goalsExtracted, done
+        case pending, salient, distilled, written, reconsolidated, reflected, restructured, goalsExtracted
+        case nudgesDrafted, done
         var order: Int {
             switch self {
             case .pending: return 0
@@ -43,7 +46,8 @@ public actor Consolidator {
             case .reflected: return 5
             case .restructured: return 6
             case .goalsExtracted: return 7
-            case .done: return 8
+            case .nudgesDrafted: return 8
+            case .done: return 9
             }
         }
     }
@@ -62,24 +66,32 @@ public actor Consolidator {
     // Fase 4 (§5.8): la extracción de Stated Goals es una etapa nueva del ciclo; el
     // reflection también puede proponer metas inferred (siempre pending_confirmation).
     private let otherModel: OtherModel?
+    /// Las preguntas de los avisos por inactividad (nil ⇒ la etapa no corre).
+    private let nudgeQuestions: ReengagementQuestionStore?
+    private let now: @Sendable () -> Date
 
     /// Init de un solo córtex Claude (comportamiento previo a §4.9).
     public init(brain: Brain, queue: DatabaseQueue, provider: Provider, router: ModelRouter,
                 authMode: AuthMode, token: String, telemetry: Telemetry? = nil,
                 cycleTokenBudget: Int = 8000,
                 selfModel: SelfModel? = nil, realRegister: RealRegister? = nil,
-                otherModel: OtherModel? = nil) {
+                otherModel: OtherModel? = nil, nudgeQuestions: ReengagementQuestionStore? = nil,
+                now: @escaping @Sendable () -> Date = { Date() }) {
         self.init(brain: brain, queue: queue,
                   selector: .claudeOnly(provider: provider, router: router, authMode: authMode, token: token),
                   telemetry: telemetry, cycleTokenBudget: cycleTokenBudget,
-                  selfModel: selfModel, realRegister: realRegister, otherModel: otherModel)
+                  selfModel: selfModel, realRegister: realRegister, otherModel: otherModel,
+                  nudgeQuestions: nudgeQuestions, now: now)
     }
 
     /// Init por modo de operación (§4.9): el selector decide dónde corre el sueño.
     public init(brain: Brain, queue: DatabaseQueue, selector: ProviderSelector,
                 telemetry: Telemetry? = nil, cycleTokenBudget: Int = 8000,
                 selfModel: SelfModel? = nil, realRegister: RealRegister? = nil,
-                otherModel: OtherModel? = nil) {
+                otherModel: OtherModel? = nil, nudgeQuestions: ReengagementQuestionStore? = nil,
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.nudgeQuestions = nudgeQuestions
+        self.now = now
         self.brain = brain
         self.queue = queue
         self.selector = selector
@@ -150,6 +162,10 @@ public actor Consolidator {
         if stage.order < Stage.goalsExtracted.order {
             try await extractGoalsStage(cycle: n)
             if try advance(to: .goalsExtracted) { return try report(cycle: n, completed: false) }
+        }
+        if stage.order < Stage.nudgesDrafted.order {
+            await draftNudgesStage(cycle: n)
+            if try advance(to: .nudgesDrafted) { return try report(cycle: n, completed: false) }
         }
         try finish(cycle: n)
         // El ciclo exitoso madura la plasticidad del self (§5.5): n += 1.
@@ -420,6 +436,52 @@ public actor Consolidator {
                                               evidence: goal.evidence ?? "",
                                               priority: goal.priority ?? 5)
         }
+    }
+
+    // MARK: - h. Preguntas para los avisos por inactividad (barata, best-effort)
+
+    /// 3–5 preguntas en su voz ancladas en lo que sabe. Un fallo del córtex o una
+    /// respuesta inservible no tumba el ciclo: quedan las de antes o las de respaldo.
+    private func draftNudgesStage(cycle: Int) async {
+        guard let nudgeQuestions else { return }
+        guard let material = await nudgeMaterial(cycle: cycle), !material.isEmpty else { return }
+        guard let text = try? await complete(.consolidation, system: ReengagementDraft.system(material),
+                                             user: ReengagementDraft.user(material), maxOutputTokens: 400)
+        else { return }
+        let questions = ReengagementDraft.parse(text)
+        guard !questions.isEmpty else { return }
+        _ = try? nudgeQuestions.replace(with: questions, cycle: cycle)
+    }
+
+    /// Lo que Anima sabe para preguntar: memorias recientes (no reflexiones ni
+    /// lecciones), metas que motivan con su avance y lo último que el dueño contó.
+    func nudgeMaterial(cycle: Int) async -> ReengagementDraft.Material? {
+        let since = now().addingTimeInterval(-ReengagementDraft.memoryWindow).timeIntervalSince1970
+        let memories = (try? await queue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT content FROM memory
+                WHERE invalidated_at IS NULL AND purged_at IS NULL AND kind IN ('episodic','semantic')
+                AND created_at >= ? ORDER BY importance DESC, created_at DESC LIMIT ?
+                """, arguments: [since, ReengagementDraft.maxMemories])
+        }) ?? []
+        var goals: [String] = []
+        if let otherModel {
+            for goal in await otherModel.desire().prefix(5) {
+                let days = await otherModel.daysSinceProgress(goalId: goal.id)
+                let progress = days.map { $0 == 0 ? "avanzó hoy" : "último avance hace \($0) días" }
+                    ?? "sin avances anotados"
+                goals.append("\(goal.statement) (\(progress))")
+            }
+        }
+        let messages = ((try? inboxTexts(cycle: cycle)) ?? []).suffix(ReengagementDraft.maxMessages)
+            .map(ReengagementDraft.shorten)
+        let view = await selfModel?.view()
+        let style = view?.style ?? ""
+        let language = ReengagementDraft.language(of: Array(messages),
+                                                  fallback: ReengagementDraft.defaultLanguage(fromStyle: style))
+        return ReengagementDraft.Material(selfName: await selfModel?.name() ?? Birth.seed.name, style: style,
+                                          language: language, memories: memories, goals: goals,
+                                          messages: Array(messages))
     }
 
     /// Batch 8 #5: las metas que ya existen van al prompt (extracción y

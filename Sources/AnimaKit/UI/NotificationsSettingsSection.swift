@@ -26,16 +26,58 @@ public final class NotificationsSettingsModel: ObservableObject {
     public var openList: (() -> Void)?
     /// Re-sincroniza lo programado al prender/apagar los avisos.
     public var onEnabledChanged: (@Sendable () async -> Void)?
+    /// "Avisos si no hablamos": una pregunta suya tras N días sin uso.
+    private let nudges: ReengagementPreference?
+    @Published public private(set) var nudgeEnabled = true
+    @Published public private(set) var nudgeDays = ReengagementPreference.defaultDays
+    /// Re-programa la cadena al cambiar el toggle o los días (lo cablea el shell).
+    public var onNudgeChanged: (@Sendable () async -> Void)?
+    /// "Probar en 1 minuto": programa un aviso suelto (true si quedó programado).
+    public var onNudgeProbe: (@Sendable () async -> Bool)?
+    @Published public private(set) var nudgeProbeScheduled = false
 
     public init(scheduler: any LocalNotificationScheduler, reminders: AnimaReminderStore?,
-                preference: ProactivePreference? = nil, wake: WakePreference? = nil) {
+                preference: ProactivePreference? = nil, wake: WakePreference? = nil,
+                nudges: ReengagementPreference? = nil) {
         self.scheduler = scheduler
         self.reminders = reminders
         self.preference = preference
         self.wake = wake
+        self.nudges = nudges
         enabled = preference?.isEnabled ?? true
         wakeEnabled = wake?.isEnabled ?? true
+        nudgeEnabled = nudges?.isEnabled ?? true
+        nudgeDays = nudges?.days ?? ReengagementPreference.defaultDays
     }
+
+    public func setNudgeEnabled(_ on: Bool) async {
+        nudges?.isEnabled = on
+        nudgeEnabled = on
+        nudgeProbeScheduled = false
+        await onNudgeChanged?()
+    }
+
+    /// 2, 3 o 5 días.
+    public func setNudgeDays(_ days: Int) async {
+        guard ReengagementPreference.dayOptions.contains(days) else { return }
+        nudges?.days = days
+        nudgeDays = days
+        await onNudgeChanged?()
+    }
+
+    public func probeNudge() async {
+        nudgeProbeScheduled = await onNudgeProbe?() ?? false
+    }
+
+    /// Respeta el toggle general (y por él, el permiso del iPhone).
+    public var nudgeToggleIsOn: Bool { nudgeEnabled && toggleIsOn }
+    public var nudgeToggleIsEnabled: Bool { toggleIsOn }
+
+    public static func nudgeDetail(days: Int) -> String {
+        "Si pasan \(days) días sin que hablemos, te escribo una pregunta."
+    }
+
+    public static func nudgeDaysLabel(_ days: Int) -> String { "\(days) días" }
 
     public func setWakeEnabled(_ on: Bool) async {
         wake?.isEnabled = on
@@ -52,6 +94,8 @@ public final class NotificationsSettingsModel: ObservableObject {
         scheduledCount = await reminders?.scheduledCount() ?? 0
         enabled = preference?.isEnabled ?? true
         wakeEnabled = wake?.isEnabled ?? true
+        nudgeEnabled = nudges?.isEnabled ?? true
+        nudgeDays = nudges?.days ?? ReengagementPreference.defaultDays
     }
 
     public func requestPermission() async {
@@ -161,6 +205,8 @@ public struct NotificationsSettingsSection: View {
                         .accessibilityIdentifier("settings.notifications.wake")
                 }
                 .padding(.vertical, Theme.Space.unit * 2.5)
+                divider
+                nudgeRow
                 switch model.status {
                 case .denied:
                     divider
@@ -209,6 +255,58 @@ public struct NotificationsSettingsSection: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
         }
         .task { await model.refresh() }
+    }
+
+    /// "Avisos si no hablamos" + cada cuántos días + probarlo.
+    private var nudgeRow: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            HStack(alignment: .center, spacing: Theme.Space.stack) {
+                VStack(alignment: .leading, spacing: Theme.Space.unit / 2) {
+                    Text("Avisos si no hablamos")
+                        .font(Theme.Type_.body)
+                        .foregroundStyle(model.nudgeToggleIsEnabled ? Theme.Colors.text : Theme.Colors.textFaint)
+                    Text(NotificationsSettingsModel.nudgeDetail(days: model.nudgeDays))
+                        .font(Theme.Type_.meta)
+                        .foregroundStyle(Theme.Colors.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("settings.notifications.nudge.detail")
+                }
+                Spacer(minLength: 0)
+                Toggle("Avisos si no hablamos", isOn: Binding(
+                    get: { model.nudgeToggleIsOn },
+                    set: { on in Task { await model.setNudgeEnabled(on) } }))
+                    .labelsHidden()
+                    .tint(Theme.Colors.accent)
+                    .disabled(!model.nudgeToggleIsEnabled)
+                    .accessibilityIdentifier("settings.notifications.nudge")
+            }
+            if model.nudgeToggleIsOn {
+                Picker("Cada cuántos días", selection: Binding(
+                    get: { model.nudgeDays },
+                    set: { days in Task { await model.setNudgeDays(days) } })) {
+                    ForEach(ReengagementPreference.dayOptions, id: \.self) { days in
+                        Text(NotificationsSettingsModel.nudgeDaysLabel(days)).tag(days)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("settings.notifications.nudge.days")
+                Button { Task { await model.probeNudge() } } label: {
+                    HStack {
+                        Text(model.nudgeProbeScheduled ? "Listo: te escribo en un minuto" : "Probar en 1 minuto")
+                        Spacer(minLength: 0)
+                        Image(systemName: model.nudgeProbeScheduled ? "checkmark" : "paperplane")
+                            .font(Theme.Type_.secondary.weight(.light))
+                    }
+                    .font(Theme.Type_.secondary)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(minHeight: Theme.minHitTarget)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.notifications.nudge.probe")
+            }
+        }
+        .padding(.vertical, Theme.Space.unit * 2.5)
     }
 
     private var divider: some View {

@@ -1,7 +1,8 @@
 // AnimaNotifications.swift — el ÚNICO UNUserNotificationCenterDelegate del shell.
 // Registra las categorías de Anima (recordatorio, check-in, Intention) con sus
 // acciones; las acciones corren en background sin abrir la app y el tap por
-// defecto abre el deep link (lo recibe onOpenURL). Con la app al frente,
+// defecto abre el deep link (lo recibe onOpenURL). El aviso por inactividad
+// oculta su pregunta si el dueño ocultó las vistas previas. Con la app al frente,
 // recordatorios y check-ins SÍ se muestran (banner + sonido): el dueño quiere
 // que ella le avise aunque esté dentro; el resto conserva el default de iOS.
 
@@ -34,6 +35,11 @@ final class AnimaNotifications: NSObject, UNUserNotificationCenterDelegate, Send
             UNNotificationCategory(identifier: ProactiveNotificationIDs.intentionCategory, actions: [],
                                    intentIdentifiers: []),
             UNNotificationCategory(identifier: WakeNotice.category, actions: [], intentIdentifiers: []),
+            // Aviso por inactividad: con las vistas previas ocultas iOS muestra
+            // este texto, jamás la pregunta.
+            UNNotificationCategory(identifier: ReengagementIDs.category, actions: [], intentIdentifiers: [],
+                                   hiddenPreviewsBodyPlaceholder: ReengagementIDs.hiddenPreviewPlaceholder,
+                                   options: []),
         ]
     }
 

@@ -16,6 +16,8 @@ public actor ProactiveScheduler {
     /// Ocurrencias que se programan por recordatorio que se repite.
     private let occurrencesPerReminder: Int
     private let preference: ProactivePreference?
+    /// Avisos por inactividad: la cadena se suma al conjunto deseado.
+    private let reengagement: ReengagementEngine?
     /// Tras cada sincronización (= tras cada cambio de recordatorios/metas): la
     /// app republica el snapshot de los widgets aquí.
     private var afterSync: (@Sendable () async -> Void)?
@@ -27,7 +29,8 @@ public actor ProactiveScheduler {
                 calendar: Calendar = .current,
                 maxPending: Int = ProactiveNotificationIDs.maxPending,
                 occurrencesPerReminder: Int = 7,
-                preference: ProactivePreference? = nil) {
+                preference: ProactivePreference? = nil,
+                reengagement: ReengagementEngine? = nil) {
         self.scheduler = scheduler
         self.reminders = reminders
         self.otherModel = otherModel
@@ -36,6 +39,7 @@ public actor ProactiveScheduler {
         self.maxPending = maxPending
         self.occurrencesPerReminder = occurrencesPerReminder
         self.preference = preference
+        self.reengagement = reengagement
     }
 
     private var isEnabled: Bool { preference?.isEnabled ?? true }
@@ -81,14 +85,19 @@ public actor ProactiveScheduler {
 
     private func syncNotifications() async -> [String] {
         guard isEnabled else {
-            let managed = await scheduler.pendingIds().filter { Self.isManaged($0) || $0.hasPrefix(WakeNotice.prefix) }
+            let managed = await scheduler.pendingIds().filter {
+                Self.isManaged($0) || $0.hasPrefix(WakeNotice.prefix) || $0.hasPrefix(ReengagementIDs.prefix)
+            }
             if !managed.isEmpty { await scheduler.cancel(ids: managed) }
             return []
         }
-        let desired = await desiredRequests()
-        if !desired.isEmpty, await scheduler.authorizationStatus() == .notDetermined {
+        let base = await desiredRequests()
+        // Los avisos por inactividad jamás piden el permiso: solo se programan si
+        // el dueño ya lo dio (el permiso se pide cuando hay algo que él pidió).
+        if !base.isEmpty, await scheduler.authorizationStatus() == .notDetermined {
             _ = await scheduler.requestAuthorization()
         }
+        let desired = base + (await nudgeRequests(others: base))
         let desiredIds = Set(desired.map(\.id))
         let stale = await scheduler.pendingIds().filter { id in
             Self.isManaged(id) && !desiredIds.contains(id)
@@ -96,6 +105,55 @@ public actor ProactiveScheduler {
         if !stale.isEmpty { await scheduler.cancel(ids: stale) }
         for request in desired { await scheduler.schedule(request) }
         return desired.map(\.id)
+    }
+
+    // MARK: - Avisos por inactividad
+
+    /// La cadena (vacía sin permiso concedido o con el aviso apagado).
+    private func nudgeRequests(others: [LocalNotificationRequest]) async -> [LocalNotificationRequest] {
+        guard let reengagement else { return [] }
+        guard await scheduler.authorizationStatus() == .granted else {
+            _ = await reengagement.reconcileDelivered()
+            return []
+        }
+        // Lo que el dueño pidió (recordatorios, check-ins) gana los cupos de iOS.
+        let room = max(0, maxPending - others.count)
+        return Array(await reengagement.requests(others: others, title: await selfName()).prefix(room))
+    }
+
+    /// El dueño usó Anima (un turno de cualquier superficie, también en
+    /// background): la cadena arranca de nuevo desde ahora. Solo toca los avisos
+    /// por inactividad (no re-programa recordatorios ni republica widgets).
+    public func ownerUsedAnima() async {
+        guard let reengagement else { return }
+        await reengagement.recordUse()
+        await syncReengagement()
+    }
+
+    /// Re-programa solo la cadena de inactividad contra lo demás programado.
+    @discardableResult
+    public func syncReengagement() async -> [String] {
+        guard reengagement != nil, isEnabled else { return [] }
+        let nudges = await nudgeRequests(others: await desiredRequests())
+        let ids = Set(nudges.map(\.id))
+        let stale = await scheduler.pendingIds().filter { ReengagementIDs.isChain($0) && !ids.contains($0) }
+        if !stale.isEmpty { await scheduler.cancel(ids: stale) }
+        for request in nudges { await scheduler.schedule(request) }
+        return nudges.map(\.id)
+    }
+
+    /// "Probar en 1 minuto" (Ajustes) y el modo UI-test: un aviso suelto con la
+    /// próxima pregunta. Lo pidió el dueño, así que aquí sí puede pedir permiso.
+    @discardableResult
+    public func scheduleProbeNudge(after seconds: TimeInterval) async -> LocalNotificationRequest? {
+        guard let reengagement, isEnabled else { return nil }
+        if await scheduler.authorizationStatus() == .notDetermined {
+            _ = await scheduler.requestAuthorization()
+        }
+        guard await scheduler.authorizationStatus() == .granted else { return nil }
+        let request = await reengagement.probeRequest(after: seconds, title: await selfName())
+        await scheduler.schedule(request)
+        return request
     }
 
     /// Una Intention del pulso en background → notificación inmediata.
@@ -116,6 +174,7 @@ public actor ProactiveScheduler {
 
     static func isManaged(_ id: String) -> Bool {
         id.hasPrefix(ProactiveNotificationIDs.reminderPrefix) || id.hasPrefix(ProactiveNotificationIDs.checkInPrefix)
+            || ReengagementIDs.isChain(id)
     }
 
     /// id `anima-reminder-<id>` (+ `-<n>` en las ocurrencias siguientes de uno que se repite).

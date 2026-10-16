@@ -28,6 +28,8 @@ public final class ChatViewModel: ObservableObject {
         /// Capa proactiva: el recordatorio entregado o la meta del check-in.
         public var reminderId: String?
         public var goalId: String?
+        /// Aviso por inactividad: la pregunta de Anima (ref de la pregunta).
+        public var nudgeId: String?
         /// Hora del aviso/pregunta y meta asociada: la etiqueta de la card.
         public var proactiveAt: Date?
         public var goalStatement: String?
@@ -62,6 +64,7 @@ public final class ChatViewModel: ObservableObject {
             if let reminderId { return .reminder(id: reminderId) }
             if let goalId { return .checkIn(goalId: goalId) }
             if let intentionId { return .intention(id: intentionId) }
+            if let nudgeId { return .nudge(id: nudgeId) }
             return nil
         }
 
@@ -71,6 +74,7 @@ public final class ChatViewModel: ObservableObject {
             case .reminder(let id): message.reminderId = id
             case .checkIn(let goalId): message.goalId = goalId
             case .intention(let id): message.intentionId = id
+            case .nudge(let id): message.nudgeId = id
             }
             message.proactiveAt = item.at
             message.goalStatement = item.goalStatement
@@ -466,6 +470,9 @@ public final class ChatViewModel: ObservableObject {
                 guard !shownIntentionIds.contains(id) else { continue }
                 shownIntentionIds.insert(id)
                 messages.append(.proactive(item))
+            case .nudge(let id):
+                guard !messages.contains(where: { $0.nudgeId == id && $0.text == item.text }) else { continue }
+                messages.append(.proactive(item))
             }
         }
     }
@@ -477,6 +484,7 @@ public final class ChatViewModel: ObservableObject {
             case .reminder(let id): return message.reminderId == id
             case .checkIn(let goalId): return message.goalId == goalId
             case .intention(let id): return message.intentionId == id
+            case .nudge(let id): return message.nudgeId == id
             }
         }
         focusedMessageId = match?.id ?? messages.last?.id

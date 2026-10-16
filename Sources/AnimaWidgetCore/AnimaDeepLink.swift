@@ -25,6 +25,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
     case goals(id: String?)
     /// El aviso de despertar (batch 8 #7): abre el Mind sheet.
     case mind
+    /// Un aviso por inactividad: chat con la pregunta de Anima lista para responder.
+    case nudge(id: String)
 
     public static let scheme = "anima"
 
@@ -56,6 +58,9 @@ public enum AnimaDeepLink: Sendable, Equatable {
             if let id { components.queryItems = [URLQueryItem(name: "id", value: id)] }
         case .mind:
             components.host = "mind"
+        case .nudge(let id):
+            components.host = "nudge"
+            components.queryItems = [URLQueryItem(name: "id", value: id)]
         }
         return components.url!
     }
@@ -85,6 +90,8 @@ public enum AnimaDeepLink: Sendable, Equatable {
             return .goals(id: id)
         case "mind":
             return .mind
+        case "nudge":
+            return id.map { .nudge(id: $0) }
         default:
             return nil
         }

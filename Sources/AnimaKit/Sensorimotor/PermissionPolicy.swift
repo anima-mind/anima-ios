@@ -69,6 +69,12 @@ public struct PermissionPolicy: Sendable {
         return !internalReversible.contains(entry) && destructiveOperations.contains(operation)
     }
 
+    /// Internas reversibles que igual se hacen SOLO desde el teléfono: dejar o
+    /// cambiar una meta no se ejecuta desde CarPlay ni Siri (se niega y queda
+    /// pendiente en el teléfono, como lo riesgoso).
+    public static let phoneOnly: Set<AllowlistEntry> = Set(
+        ["abandon", "replace"].map { AllowlistEntry(tool: "goals", operation: $0) })
+
     /// La política de la app: internas reversibles + lo autorizado siempre.
     public static func app(ownerAllowlist: @escaping @Sendable () -> Set<AllowlistEntry>) -> PermissionPolicy {
         PermissionPolicy(allowlist: internalReversible, ownerAllowlist: ownerAllowlist)

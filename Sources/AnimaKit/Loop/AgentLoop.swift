@@ -162,10 +162,13 @@ public actor AgentLoop {
     public static let glassesSurfaceHint = "[Superficie: gafas] El dueño te habla por voz desde sus gafas y oirá tu respuesta: responde en 1–2 frases cortas, sin markdown ni listas. Si hace falta más, dilo breve y ofrece verlo en el teléfono."
     public static let siriSurfaceHint = "[Superficie: Siri] El dueño te habla por Siri, quizá con el teléfono bloqueado, y oirá tu respuesta en voz: responde en 1–3 frases cortas, sin markdown, listas ni emojis. Si hace falta más, dilo breve y avisa que el detalle queda en el chat."
 
+    public static let carplaySurfaceHint = "[Superficie: CarPlay] El dueño te habla desde el carro y conduce: respuestas cortas, solo voz, nada visual. Responde en 1–2 frases cortas, sin markdown, listas, emojis, enlaces ni nada que haya que leer o mirar. Si hace falta más, dilo breve y avisa que el detalle queda en el chat del teléfono."
+
     static func surfaceHint(_ surface: SurfaceID) -> String? {
         switch surface {
         case .glassesHUD: glassesSurfaceHint
         case .siri: siriSurfaceHint
+        case .carplay: carplaySurfaceHint
         case .phoneChat: nil
         }
     }

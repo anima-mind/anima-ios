@@ -13,6 +13,9 @@ public enum SurfaceID: String, Sendable, Codable, Equatable, CaseIterable {
     /// Siri / Atajos sin abrir el teléfono (batch 10 #2). Columna TEXT: un
     /// build viejo que lea "siri" lo trata como sin superficie (nil).
     case siri
+    /// CarPlay (escena de conversación por voz). Columna TEXT: un build viejo
+    /// que lea "carplay" lo trata como sin superficie (nil), igual que `.siri`.
+    case carplay
 }
 
 public struct SurfaceCapabilities: Sendable, Equatable {
@@ -39,6 +42,11 @@ public struct SurfaceCapabilities: Sendable, Equatable {
     /// Siri: entra un transcript y sale voz; sin pantalla propia ni botones.
     public static let siri = SurfaceCapabilities(freeText: false, images: false, maxButtons: 0,
                                                  voiceIn: true, audioOut: true)
+    /// CarPlay: el dueño conduce. Entra voz y sale voz; en pantalla solo los
+    /// estados del template de voz y botones simples (Hablar, Sí/No, Cancelar).
+    public static let carplay = SurfaceCapabilities(freeText: false, images: false,
+                                                    maxButtons: CarPlayTurn.maxButtons,
+                                                    voiceIn: true, audioOut: true)
 }
 
 /// Contenido SEMÁNTICO (nunca visual) que la mente emite.

@@ -207,10 +207,25 @@ public final class TurnGate: @unchecked Sendable {
         }
     }
 
+    /// Toma la compuerta para `surface`. Si la tiene un turno de la MISMA
+    /// superficie (el que se acaba de cancelar y aún suelta su productor),
+    /// reintenta hasta `wait` antes de decir que está ocupada; otra superficie
+    /// ⇒ ocupada de inmediato.
+    public func acquire(_ surface: SurfaceID, retrying wait: Duration) async -> Token? {
+        if let token = begin(surface) { return token }
+        let deadline = ContinuousClock.now.advanced(by: wait)
+        while current == surface, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(50))
+            if let token = begin(surface) { return token }
+        }
+        return Task.isCancelled ? nil : begin(surface)
+    }
+
     public static func busyText(_ holder: SurfaceID?) -> String {
         switch holder {
         case .siri: "Estoy respondiendo algo que me pediste por Siri. Inténtalo en un momento."
         case .glassesHUD: "Estoy respondiendo en tus gafas. Inténtalo en un momento."
+        case .carplay: "Estoy respondiendo en CarPlay. Inténtalo en un momento."
         default: "Estoy terminando otra respuesta. Inténtalo en un momento."
         }
     }
@@ -517,11 +532,11 @@ struct SiriTurnCollector {
     }
 
     /// Lo que se espeja en el chat al cerrar (el turno del dueño ya se espejó).
-    static func mirror(_ outcome: SiriTurn.Outcome) -> SurfaceContent? {
+    static func mirror(_ outcome: SiriTurn.Outcome, origin: SurfaceID = .siri) -> SurfaceContent? {
         switch outcome {
-        case .replied(let text): .assistantTurn(text: text, origin: .siri)
-        case .declined(let text): .declined(text: text, origin: .siri)
-        case .failed(let message): .turnFailed(text: message, origin: .siri)
+        case .replied(let text): .assistantTurn(text: text, origin: origin)
+        case .declined(let text): .declined(text: text, origin: origin)
+        case .failed(let message): .turnFailed(text: message, origin: origin)
         default: nil
         }
     }

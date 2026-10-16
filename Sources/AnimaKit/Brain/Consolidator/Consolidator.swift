@@ -30,6 +30,8 @@ public actor Consolidator {
         public var rejected: Int = 0
         /// Metas creadas o reforzadas durante el ciclo (el aviso de despertar: "1 meta al día").
         public var goalsUpdated: Int = 0
+        /// Metas que el dueño dejó o cambió y el ciclo archivó (el aviso lo dice).
+        public var goalsLeft: Int = 0
     }
 
     /// Etapas ordenadas del ciclo (persistidas para reanudar).
@@ -413,28 +415,109 @@ public actor Consolidator {
     // MARK: - g. Extracción de Stated Goals (§5.8, Haiku)
 
     /// Detecta declaraciones de meta del dueño en las sesiones del ciclo ("quiero
-    /// X", "mi meta es Y") → goals stated (motivan de inmediato) con evidencia. El
-    /// upsert por statement de OtherModel hace la etapa idempotente al reanudar.
+    /// X", "mi meta es Y") → goals stated (motivan de inmediato) con evidencia, y
+    /// las metas que el dueño DEJÓ o cambió ("ya no quiero X, mejor Y"). Se aplica
+    /// en orden cronológico — lo último que dijo el dueño gana — y con guardas
+    /// deterministas: una meta dejada no revive desde un mensaje anterior al
+    /// abandono, y una meta solo se deja si el mensaje citado lo dice. El upsert
+    /// por statement de OtherModel hace la etapa idempotente al reanudar.
     private func extractGoalsStage(cycle: Int) async throws {
         guard let otherModel else { return }
-        let texts = try inboxTexts(cycle: cycle)
-        guard !texts.isEmpty else { return }
-        let joined = texts.enumerated().map { "(\($0.offset + 1)) \($0.element)" }.joined(separator: "\n")
+        let messages = try inboxMessages(cycle: cycle)
+        guard !messages.isEmpty else { return }
+        let joined = messages.enumerated().map { "(\($0.offset + 1)) \($0.element.text)" }.joined(separator: "\n")
         let user = """
-        Mensajes del dueño en el ciclo:
+        Mensajes del dueño en el ciclo (en orden cronológico; el número es el índice del mensaje):
         \(joined)
-        \(await existingGoalsBlock())
-        Devuelve SOLO el arreglo JSON de metas declaradas NUEVAS.
+        \(await existingGoalsBlock(withIds: true))\(await leftGoalsBlock())
+        Devuelve SOLO el objeto JSON.
         """
         let text = try await complete(.consolidation, system: Self.goalsPrompt, user: user, maxOutputTokens: 1024)
-        let goals = Self.decode([StatedGoalDTO].self, from: text) ?? []
-        for goal in goals {
-            guard !goal.statement.trimmingCharacters(in: .whitespaces).isEmpty,
-                  let predicate = goal.predicate?.toPredicate() else { continue }
-            _ = await otherModel.ingestStated(statement: goal.statement,
-                                              desiredState: predicate,
-                                              evidence: goal.evidence ?? "",
-                                              priority: goal.priority ?? 5)
+        let extraction = GoalExtractionDTO.parse(text)
+        await applyGoalExtraction(extraction, messages: messages, otherModel: otherModel)
+    }
+
+    /// Un evento de la extracción con su hora (la del mensaje del dueño).
+    private enum GoalEvent {
+        case declared(StatedGoalDTO)
+        case left(LeftGoalDTO)
+    }
+
+    private func applyGoalExtraction(_ extraction: GoalExtractionDTO, messages: [(text: String, at: Date)],
+                                     otherModel: OtherModel) async {
+        var events: [(at: Date, order: Int, event: GoalEvent)] = []
+        for goal in extraction.goals ?? [] {
+            // Sin mensaje identificable: el más viejo del ciclo (jamás revive una meta
+            // dejada durante el ciclo por una cita que no se puede ubicar).
+            let index = Self.messageIndex(goal.message, evidence: goal.evidence, in: messages) ?? 0
+            events.append((messages[index].at, 1, .declared(goal)))
+        }
+        for left in extraction.abandoned ?? [] {
+            // Dejar exige ubicar el mensaje y que el mensaje lo diga (fail-closed).
+            guard let index = Self.messageIndex(left.message, evidence: left.evidence, in: messages),
+                  GoalDrop.hasCue(messages[index].text) else { continue }
+            events.append((messages[index].at, 0, .left(left)))
+        }
+        events.sort { ($0.at, $0.order) < ($1.at, $1.order) }
+        for (at, _, event) in events {
+            switch event {
+            case .declared(let goal):
+                guard !goal.statement.trimmingCharacters(in: .whitespaces).isEmpty,
+                      let predicate = goal.predicate?.toPredicate() else { continue }
+                await otherModel.declare(statement: goal.statement, desiredState: predicate,
+                                         evidence: goal.evidence ?? "", priority: goal.priority ?? 5, statedAt: at)
+            case .left(let left):
+                guard let target = await Self.leftTarget(left, otherModel: otherModel),
+                      at > (target.declaredAt ?? target.createdAt) else { continue }
+                let evidence = left.evidence ?? ""
+                if let replacement = left.replaced_by?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   let successor = await otherModel.goal(id: replacement) {
+                    // Medido con Haiku: replaced_by trae el id de la nueva cuando ya existe.
+                    guard successor.isOpen, successor.id != target.id else { continue }
+                    await otherModel.abandon(id: target.id, reason: OtherModel.replacedReason, supersededBy: successor.id)
+                } else if let replacement = left.replaced_by?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !replacement.isEmpty {
+                    let declared = (extraction.goals ?? []).first { GoalDedupe.equivalent($0.statement, replacement) }
+                    let predicate = declared?.predicate?.toPredicate() ?? .progressCheckIn(everyDays: 7)
+                    _ = await otherModel.replace(id: target.id, with: replacement, desiredState: predicate,
+                                                 evidence: evidence, priority: declared?.priority ?? 5, statedAt: at)
+                } else {
+                    await otherModel.abandon(id: target.id, reason: OtherModel.leftReason)
+                }
+            }
+        }
+    }
+
+    /// La meta abierta que el modelo dice que el dueño dejó: por id, o por
+    /// enunciado (equivalente o la única que comparte palabras). Nunca adivina.
+    private static func leftTarget(_ left: LeftGoalDTO, otherModel: OtherModel) async -> Goal? {
+        if let id = left.goal_id, let goal = await otherModel.goal(id: id), goal.isOpen { return goal }
+        guard let statement = left.goal, !statement.isEmpty else { return nil }
+        let open = await otherModel.allGoals().filter(\.isOpen)
+        if let equivalent = OtherModel.openEquivalent(in: open, to: statement) { return equivalent }
+        let scored = open.map { ($0, GoalDedupe.overlap(statement, $0.statement)) }.filter { $0.1 > 0 }
+        guard let best = scored.map(\.1).max() else { return nil }
+        let top = scored.filter { $0.1 == best }
+        return top.count == 1 ? top[0].0 : nil
+    }
+
+    /// El índice (0-based) del mensaje citado: el número que dio el modelo, o el
+    /// primer mensaje que contiene la cita. nil si no se puede ubicar.
+    static func messageIndex(_ number: Int?, evidence: String?, in messages: [(text: String, at: Date)]) -> Int? {
+        if let number, (1...messages.count).contains(number) { return number - 1 }
+        let quote = GoalDrop.fold(evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        guard quote.count >= 4 else { return nil }
+        return messages.firstIndex { GoalDrop.fold($0.text).contains(quote) }
+    }
+
+    private func inboxMessages(cycle: Int) throws -> [(text: String, at: Date)] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT text, created_at FROM consolidation_inbox
+                WHERE cycle=? AND consolidated_at IS NULL ORDER BY created_at ASC
+                """, arguments: [cycle]).map { row in
+                (text: row["text"] as String, at: Date(timeIntervalSince1970: row["created_at"]))
+            }
         }
     }
 
@@ -448,7 +531,10 @@ public actor Consolidator {
         guard let text = try? await complete(.consolidation, system: ReengagementDraft.system(material),
                                              user: ReengagementDraft.user(material), maxOutputTokens: 400)
         else { return }
-        let questions = ReengagementDraft.parse(text)
+        // Las metas que el dueño dejó (también en este ciclo: la extracción va antes)
+        // no se preguntan aunque sigan en sus mensajes o memorias.
+        let questions = ReengagementDraft.withoutLeftGoals(ReengagementDraft.parse(text), left: material.leftGoals,
+                                                           active: material.goals)
         guard !questions.isEmpty else { return }
         _ = try? nudgeQuestions.replace(with: questions, cycle: cycle)
     }
@@ -465,7 +551,10 @@ public actor Consolidator {
                 """, arguments: [since, ReengagementDraft.maxMemories])
         }) ?? []
         var goals: [String] = []
+        var left: [String] = []
         if let otherModel {
+            // Solo las que motivan: una dejada o reemplazada nunca es contexto.
+            left = await otherModel.leftGoals(limit: 5).map(\.statement)
             for goal in await otherModel.desire().prefix(5) {
                 let days = await otherModel.daysSinceProgress(goalId: goal.id)
                 let progress = days.map { $0 == 0 ? "avanzó hoy" : "último avance hace \($0) días" }
@@ -481,20 +570,40 @@ public actor Consolidator {
                                                   fallback: ReengagementDraft.defaultLanguage(fromStyle: style))
         return ReengagementDraft.Material(selfName: await selfModel?.name() ?? Birth.seed.name, style: style,
                                           language: language, memories: memories, goals: goals,
-                                          messages: Array(messages))
+                                          messages: Array(messages), leftGoals: left)
     }
 
     /// Batch 8 #5: las metas que ya existen van al prompt (extracción y
     /// reflection) — el modelo no las repite ni reformuladas. El dedupe
-    /// determinista de OtherModel es la red de seguridad.
-    private func existingGoalsBlock() async -> String {
+    /// determinista de OtherModel es la red de seguridad. Con ids en la
+    /// extracción: el modelo dice cuál dejó el dueño.
+    private func existingGoalsBlock(withIds: Bool = false) async -> String {
         guard let otherModel else { return "" }
-        let existing = await otherModel.existingStatements()
+        let existing: [String]
+        if withIds {
+            existing = await otherModel.allGoals().filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+                .map { "[\($0.id)] \($0.statement) (\($0.source == .inferred ? "inferida" : "declarada"))" }
+        } else {
+            existing = await otherModel.existingStatements()
+        }
         guard !existing.isEmpty else { return "" }
         return """
 
         Metas que YA existen (NO las repitas ni reformuladas; si el dueño vuelve a hablar de una, no la devuelvas):
         \(existing.map { "- \($0)" }.joined(separator: "\n"))
+
+        """
+    }
+
+    /// Las metas que el dueño ya dejó: no se devuelven salvo que las vuelva a
+    /// declarar DESPUÉS de dejarlas (y aun así, la guarda de fechas decide).
+    private func leftGoalsBlock() async -> String {
+        guard let otherModel else { return "" }
+        let left = await otherModel.leftGoals(limit: 8)
+        guard !left.isEmpty else { return "" }
+        return """
+        Metas que el dueño DEJÓ (no las devuelvas en goals salvo que las vuelva a declarar en un mensaje posterior):
+        \(left.map { "- \($0.statement)" }.joined(separator: "\n"))
 
         """
     }
@@ -613,6 +722,12 @@ public actor Consolidator {
                 AND updated_at >= (SELECT started_at FROM consolidation_cycle WHERE cycle=?)
                 """, arguments: [cycle]) ?? 0
         }
+        let goalsLeft = try queue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM goal WHERE status = 'abandoned' AND status_reason IN (?, ?)
+                AND abandoned_at >= (SELECT started_at FROM consolidation_cycle WHERE cycle=?)
+                """, arguments: [OtherModel.leftReason, OtherModel.replacedReason, cycle]) ?? 0
+        }
         return CycleReport(
             cycle: cycle,
             distilled: distilledCount,
@@ -624,7 +739,8 @@ public actor Consolidator {
             reflectionSummary: summary,
             completed: completed,
             rejected: rejected,
-            goalsUpdated: goalsUpdated)
+            goalsUpdated: goalsUpdated,
+            goalsLeft: goalsLeft)
     }
 
     static let rejectedPrefix = "REJECTED: "
@@ -804,6 +920,33 @@ private struct StatedGoalDTO: Codable {
     let evidence: String?
     let priority: Int?
     let predicate: PredicateDTO?
+    /// Índice (1-based) del mensaje del dueño donde la declaró.
+    var message: Int? = nil
+}
+
+/// Una meta existente que el dueño dejó en el ciclo ("ya no quiero X").
+private struct LeftGoalDTO: Codable {
+    let goal_id: String?
+    let goal: String?
+    /// La meta nueva si la cambió por otra ("mejor Y").
+    let replaced_by: String?
+    let evidence: String?
+    let message: Int?
+}
+
+/// Salida de la extracción: {"goals":[...],"abandoned":[...]}; un arreglo a
+/// secas (formato previo) son solo declaraciones.
+private struct GoalExtractionDTO: Codable {
+    var goals: [StatedGoalDTO]?
+    var abandoned: [LeftGoalDTO]?
+
+    static func parse(_ text: String) -> GoalExtractionDTO {
+        if let object = Consolidator.decode(GoalExtractionDTO.self, from: text),
+           object.goals != nil || object.abandoned != nil {
+            return object
+        }
+        return GoalExtractionDTO(goals: Consolidator.decode([StatedGoalDTO].self, from: text) ?? [], abandoned: nil)
+    }
 }
 
 private struct InferredGoalDTO: Codable {
@@ -861,10 +1004,10 @@ extension Consolidator {
     """
 
     static let goalsPrompt = """
-    Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente"). Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta corta en infinitivo, como la diría el dueño: "Bajar 10 kg", "Entrenar 3 veces por semana"; NUNCA "El dueño quiere…"), evidence (cita textual del mensaje), priority (1-10) y un predicate observable de la lista cerrada. Devuelve SOLO un arreglo JSON:
-    [{"statement":"...","evidence":"cita","priority":1-10,"predicate":{"kind":"...","value":N}}]
+    Eres el proceso que extrae METAS DECLARADAS por el dueño ("quiero X", "mi meta es Y", "necesito Z de forma recurrente") y las metas que el dueño DEJÓ o CAMBIÓ ("ya no quiero X", "olvida la meta de X", "ya no quiero X, mejor Y"). Los mensajes van en orden cronológico: lo último que dijo el dueño gana. Ignora deseos triviales o de un solo uso. Para cada meta estable devuelve statement (la meta corta en infinitivo, como la diría el dueño: "Bajar 10 kg", "Entrenar 3 veces por semana"; NUNCA "El dueño quiere…"), evidence (cita textual del mensaje), message (el número del mensaje), priority (1-10) y un predicate observable de la lista cerrada. En abandoned va cada meta que YA existe y que el dueño dejó: goal_id (el id entre corchetes), goal (su enunciado), replaced_by (la meta nueva si la cambió por otra —su id entre corchetes si ya existe—, o null), evidence (cita textual) y message. Una meta que el dueño dejó en un mensaje NO va en goals aunque la haya declarado en un mensaje anterior. Devuelve SOLO un objeto JSON:
+    {"goals":[{"statement":"...","evidence":"cita","message":N,"priority":1-10,"predicate":{"kind":"...","value":N}}],"abandoned":[{"goal_id":"id","goal":"...","replaced_by":"... o null","evidence":"cita","message":N}]}
     Predicados válidos (kind): workouts_per_week{value}, reminders_overdue_at_most{value}, sleep_hours_at_least{hours,last_days}, calendar_has_free_slot{min_minutes,within_days}, days_since_last_mention_at_most{topic,days}, progress_check_in{every_days} (el dueño reporta avance cada N días; úsalo para metas de hábito o ahorro sin otro observable).
     No devuelvas metas que ya existen, ni reformuladas ("Bajar 10 kg de peso" = "Bajar 10 kg"): una meta, una sola vez.
-    Si no hay metas declaradas nuevas, devuelve [].
+    Si no hay nada, devuelve {"goals":[],"abandoned":[]}.
     """
 }

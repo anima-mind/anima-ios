@@ -149,6 +149,12 @@ targets:
         # + App Group group.com.joshuamoreno1.anima.widgets (base + snapshot de widgets)
         # + CarPlay voice-based conversation (com.apple.developer.carplay-voice-based-conversation).
         CODE_SIGN_ENTITLEMENTS: Anima.entitlements
+      # Release (archive del CD) firma con el certificado Apple Distribution: el
+      # runner no crea un "Apple Development" por deploy. Solo en la app y la
+      # extensión; los bundles de SPM (Firebase…) no se firman con esta identidad.
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: Apple Distribution
 
   # Extensión de widgets: lee SOLO el snapshot JSON del App Group (jamás GRDB):
   # linkea AnimaWidgetCore, no AnimaKit (sin GRDB ni el harness en el binario).
@@ -186,6 +192,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_ENTITLEMENTS: AnimaWidgets.entitlements
         SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: Apple Distribution
 
   # UI tests (XCUITest) contra el simulador. La app se lanza con `--uitest`
   # (dobles deterministas sin red, ver App/UITestSupport.swift). Categoría aparte

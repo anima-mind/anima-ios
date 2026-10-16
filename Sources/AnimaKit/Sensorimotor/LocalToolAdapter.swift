@@ -1189,7 +1189,6 @@ struct LocalWhen {
             day = Int(m.1); month = Int(m.2)
             year = m.3.flatMap { Int($0) }.map { $0 < 100 ? 2000 + $0 : $0 }
         }
-        if day == nil, let dated = weekdayWithDay(folded) { return dated }
         guard let day, let month else { return nil }
         let today = calendar.startOfDay(for: now)
         let thisYear = calendar.component(.year, from: today)
@@ -1198,27 +1197,42 @@ struct LocalWhen {
         return date
     }
 
-    /// "el viernes 23" (sin mes): el próximo día 23 que cae viernes (hasta 3
-    /// meses); si ninguno cae en ese día de la semana, el próximo 23. Sin esto
-    /// "viernes" ganaba y quedaba el viernes más cercano (medido con el modelo
-    /// real: "pásalo para el viernes 23" → el viernes 16). "viernes 3 pm",
-    /// "lunes 8:30" o "lunes 8 de la mañana" son horas, no días.
-    func weekdayWithDay(_ folded: String) -> Date? {
-        guard let m = folded.firstMatch(
-            of: /\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado) (\d{1,2})\b(?!\s*(?::|h\b|hrs?\b|am\b|pm\b|a\.?\s?m|p\.?\s?m|de la|y media|y cuarto))/),
-              let weekday = Self.weekday(String(m.1)), let number = Int(m.2), (1...31).contains(number) else { return nil }
+    /// "<día de la semana> <N>" sin mes.
+    enum WeekdayWithDay: Equatable {
+        /// El N que cae en ese día de la semana, dentro de la ventana.
+        case date(Date)
+        /// Nombró un N que no cae en ese día dentro de la ventana ("el viernes
+        /// 22" con el 22 en jueves): contradictorio ⇒ no se repara nada.
+        case mismatch
+    }
+
+    /// Ventana de "el viernes 23": ~5 semanas. Más allá, un "viernes N" casi
+    /// nunca es lo que el dueño quiso (antes saltaba a enero del año siguiente).
+    static let weekdayWithDayWindow = 35
+
+    /// "el viernes 23" (sin mes): el 23 que cae en viernes dentro de ~5
+    /// semanas (medido con el modelo real: "pásalo para el viernes 23" quedaba
+    /// en el viernes más cercano). El número es el DÍA solo si no es una hora:
+    /// "viernes 3 pm", "lunes 8:30", "viernes 3 en la tarde", "lunes 8 por la
+    /// mañana", "domingo 7 horas" no cuentan (nil: rige el día de la semana).
+    /// Si día y número no coinciden en la ventana ⇒ `.mismatch`: lo más
+    /// conservador es NO reparar (queda la fecha del modelo, que vio la misma
+    /// frase y la semana del contexto) en vez de inventar un mes lejano o
+    /// elegir por el dueño entre "el viernes" y "el 22".
+    func weekdayWithDay(_ folded: String) -> WeekdayWithDay? {
+        let hourAfter = #"\s*(?::|\.\d|h\b|hrs?\b|horas?\b|minutos?\b|mins?\b|dias?\b|semanas?\b|am\b|pm\b|a\.?\s?m\b|p\.?\s?m\b|(?:de|en|por) la (?:manana|tarde|noche|madrugada)\b|de la$|y media\b|y cuarto\b|menos\b)"#
+        guard let regex = try? Regex(#"\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado) (\d{1,2})\b(?!"# + hourAfter + ")"),
+              let m = folded.firstMatch(of: regex),
+              let dayName = m.output[1].substring, let digits = m.output[2].substring,
+              let weekday = Self.weekday(String(dayName)), let number = Int(digits), (1...31).contains(number)
+        else { return nil }
         let today = calendar.startOfDay(for: now)
-        var fallback: Date?
-        for offset in 0..<4 {
-            guard let month = calendar.date(byAdding: .month, value: offset, to: today) else { continue }
-            let parts = calendar.dateComponents([.year, .month], from: month)
-            guard let year = parts.year, let mo = parts.month,
-                  let candidate = make(year: year, month: mo, day: number, hour: 0, minute: 0),
-                  calendar.component(.day, from: candidate) == number, candidate >= today else { continue }
-            if calendar.component(.weekday, from: candidate) == weekday { return candidate }
-            if fallback == nil { fallback = candidate }
+        for offset in 0...Self.weekdayWithDayWindow {
+            guard let candidate = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+            if calendar.component(.day, from: candidate) == number,
+               calendar.component(.weekday, from: candidate) == weekday { return .date(candidate) }
         }
-        return fallback
+        return .mismatch
     }
 
     /// El día que nombra el texto (ya plegado), o nil. La fecha explícita gana
@@ -1226,6 +1240,11 @@ struct LocalWhen {
     /// franja, no el día siguiente.
     func day(_ folded: String) -> Date? {
         if let explicit = explicitDate(folded) { return explicit }
+        switch weekdayWithDay(folded) {
+        case .date(let date)?: return date
+        case .mismatch?: return nil
+        case nil: break
+        }
         let text = folded.replacingOccurrences(of: "de la manana", with: " ")
             .replacingOccurrences(of: "por la manana", with: " ")
         let words = Self.words(text)

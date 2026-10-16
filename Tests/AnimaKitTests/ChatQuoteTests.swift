@@ -475,29 +475,55 @@ enum QuoteFixtures {
     }
 
     /// Medido con el modelo real: "pásalo para el viernes 23" quedaba en el
-    /// viernes más cercano (el adapter repara la fecha con lo que dijo el dueño).
-    @Test func weekdayWithDayOfMonthIsThatDate() {
-        let when = LocalWhen(now: F.date(2026, 10, 15, 19), calendar: F.calendar, ownerText: "")
-        #expect(when.day("pasalo para el viernes 23 a la misma hora") == F.date(2026, 10, 23, 0))
-        #expect(when.day("el viernes 6") == F.date(2026, 11, 6, 0))      // el próximo 6 que cae viernes
-        #expect(when.day("el lunes 30") == F.date(2026, 11, 30, 0))
-        #expect(when.day("el viernes 13") == F.date(2026, 11, 13, 0))
-        // Controles negativos: horas, no días; sin número, el día de la semana de siempre.
-        #expect(when.day("el viernes 3 pm") == F.date(2026, 10, 16, 0))
-        #expect(when.day("el lunes 8:30") == F.date(2026, 10, 19, 0))
-        #expect(when.day("el lunes 8 de la manana") == F.date(2026, 10, 19, 0))
-        #expect(when.day("el jueves 45") == F.date(2026, 10, 22, 0))
-        #expect(when.day("el viernes") == F.date(2026, 10, 16, 0))
-        #expect(when.day("el 23 de octubre") == F.date(2026, 10, 23, 0))
-        // Un día que nunca cae en ese día de la semana: el próximo con ese número.
-        #expect(when.day("el viernes 31") == F.date(2026, 10, 31, 0))
-        // De punta a punta: move_reminder con el día bien contado por el modelo se respeta.
+    /// viernes más cercano. Review #43 (MAYOR): el arreglo atrapaba horas y
+    /// saltaba meses; ahora el número es día solo si no es hora, la ventana es
+    /// de ~5 semanas y si no coinciden no se repara (queda la fecha del modelo).
+    @Test func weekdayWithDayOfMonthIsThatDateOrNothing() {
+        func day(_ text: String, today: Date) -> Date? {
+            LocalWhen(now: today, calendar: F.calendar, ownerText: "").day(LocalWhen.fold(text))
+        }
+        let thu = F.date(2026, 10, 15, 19)   // jueves 15-oct-2026
+        // Lo que ya pasaba.
+        #expect(day("pasalo para el viernes 23 a la misma hora", today: thu) == F.date(2026, 10, 23, 0))
+        #expect(day("el viernes 23", today: thu) == F.date(2026, 10, 23, 0))
+        #expect(day("el viernes", today: thu) == F.date(2026, 10, 16, 0))
+        #expect(day("este viernes", today: thu) == F.date(2026, 10, 16, 0))
+        #expect(day("el 23", today: thu) == nil)
+        #expect(day("viernes 3 de noviembre", today: thu) == F.date(2026, 11, 3, 0))
+        #expect(day("el viernes 23 de noviembre", today: thu) == F.date(2026, 11, 23, 0))
+        #expect(day("el lunes 8:30", today: thu) == F.date(2026, 10, 19, 0))
+        #expect(day("el viernes 3 pm", today: thu) == F.date(2026, 10, 16, 0))
+        // Las horas no son días (antes: martes 3-nov, domingo 8-nov).
+        #expect(day("el viernes 3 en la tarde", today: thu) == F.date(2026, 10, 16, 0))
+        #expect(day("el lunes 8 por la mañana", today: thu) == F.date(2026, 10, 19, 0))
+        #expect(day("el lunes 8 de la noche", today: thu) == F.date(2026, 10, 19, 0))
+        #expect(day("el viernes 2 horas antes", today: thu) == F.date(2026, 10, 16, 0))
+        // No coinciden en ~5 semanas ⇒ sin reparar (antes: ene-2027, 31-dic, 30-ene-2027, sábado 7-nov).
+        #expect(day("el viernes 22", today: thu) == nil)
+        #expect(day("jueves 31", today: thu) == nil)
+        #expect(day("el sabado 30", today: thu) == nil)
+        #expect(day("el domingo 7 a las 9", today: thu) == nil)
+        // Hoy = sábado 31-ene-2026 (antes: 10-abr y lunes 23-feb).
+        let sat = F.date(2026, 1, 31, 10)
+        #expect(day("el viernes 10 a las 5", today: sat) == nil)
+        #expect(day("el viernes 23", today: sat) == nil)
+        #expect(day("el viernes 6", today: sat) == F.date(2026, 2, 6, 0))
+        // Cruce de año dentro de la ventana: lunes 28-dic, "el viernes 1" → 1-ene.
+        #expect(day("el viernes 1", today: F.date(2026, 12, 28, 9)) == F.date(2027, 1, 1, 0))
+        // Ventana: el 27-nov (viernes) cae a 43 días ⇒ fuera.
+        #expect(day("el viernes 27", today: thu) == nil)
+
+        // De punta a punta: con "el viernes 22" queda la fecha del modelo (22-oct), no 2027.
         let quote = QuoteFixtures.reminderQuote(id: "R")
-        let moved = LocalToolAdapter.resolve(name: "move_reminder", input: .object(["when": .string("2026-10-23 18:33")]),
-                                             now: F.date(2026, 10, 15, 19), ownerText: "pásalo para el viernes 23 a la misma hora",
-                                             calendar: F.calendar, quote: quote)
-        guard case .real(_, let input) = moved else { Issue.record("\(moved)"); return }
-        #expect(input["fire_at"]?.stringValue?.hasPrefix("2026-10-23T18:33") == true)
+        for (owner, model, expected) in [("pásalo para el viernes 22", "2026-10-22 18:33", "2026-10-22T18:33"),
+                                         ("pásalo para el viernes 23 a la misma hora", "2026-10-16 18:33", "2026-10-23T18:33"),
+                                         ("pásalo para el viernes 3 en la tarde", "2026-10-16 15:00", "2026-10-16T15:00")] {
+            let moved = LocalToolAdapter.resolve(name: "move_reminder", input: .object(["when": .string(model)]),
+                                                 now: thu, ownerText: owner, calendar: F.calendar, quote: quote)
+            guard case .real(_, let input) = moved else { Issue.record("\(owner): \(moved)"); continue }
+            #expect(input["fire_at"]?.stringValue?.hasPrefix(expected) == true,
+                    "\(owner) → \(input["fire_at"]?.stringValue ?? "nil")")
+        }
     }
 
     @Test func changeHintFollowsTheQuote() {

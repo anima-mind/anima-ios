@@ -1207,24 +1207,35 @@ struct LocalWhen {
     /// ("recuérdame el viernes cambiar el aceite" es un recordatorio).
     static func asksToChange(_ ownerText: String) -> Bool {
         let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        // Primero la negación: "ya no quiero que me recuerdes…", "deja de recordarme…".
-        if owner.firstMatch(of: /\b(?:no (?:quiero que )?me recuerdes|deja de recordarme|ya no me recuerdes|no me recuerdes)\b/) != nil {
-            return true
+        func matches(_ regex: NSRegularExpression) -> Bool {
+            regex.firstMatch(in: owner, range: NSRange(owner.startIndex..., in: owner)) != nil
         }
+        // Primero la negación: "ya no quiero que me recuerdes…", "deja de recordarme…".
+        if matches(Self.stopReminding) { return true }
         // Un imperativo de creación como palabra, al inicio: es una creación.
         if opensWithCreation(ownerText) { return false }
-        let verb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
-        let opening = try? Regex("^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(verb))")
-        let object = try? Regex("\(verb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
-        return (opening.map { owner.firstMatch(of: $0) != nil } ?? false)
-            || (object.map { owner.firstMatch(of: $0) != nil } ?? false)
+        return matches(Self.changeOpening) || matches(Self.changeObject)
     }
+
+    // Compiladas UNA vez (ICU): las `Regex` de Swift se reconstruían en cada
+    // llamada (~1 ms aquí; en el runner de CI de 3 núcleos, sincrónicas en el
+    // pool cooperativo, dejaban sin hilos al resto de la suite).
+    private static let changeVerb = "(?:elimin|borr|cancel|quit|cambi|modific|cumpl|logr|termin|complet)\\w*"
+    private static let stopReminding = try! NSRegularExpression(
+        pattern: #"\b(?:no (?:quiero que )?me recuerdes|deja de recordarme|ya no me recuerdes|no me recuerdes)\b"#)
+    private static let changeOpening = try! NSRegularExpression(
+        pattern: "^(?:por favor,? |oye,? |ya )*(?:no (?:quiero|voy)|ya no|\(changeVerb))")
+    private static let changeObject = try! NSRegularExpression(
+        pattern: "\(changeVerb)(?: \\w+){0,2} (?:mi|la|el|mis|las|los) (?:meta|metas|recordatorio|recordatorios|evento|eventos|cita|objetivo)")
 
     /// La frase abre con un imperativo de creación ("recuérdame…", "anota…").
     static func opensWithCreation(_ ownerText: String) -> Bool {
         let owner = fold(ownerText).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        return owner.firstMatch(of: /^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b/) != nil
+        return Self.creationOpening.firstMatch(in: owner, range: NSRange(owner.startIndex..., in: owner)) != nil
     }
+
+    private static let creationOpening = try! NSRegularExpression(
+        pattern: #"^(?:(?:ya|oye|por favor),? )*(?:recuerdame|recordarme|recuerdeme|agendame|anota|anotame|apunta|apuntame|toma nota)\b"#)
 
     /// La nota cuando el dueño pidió cambiar algo y el turno terminó sin tool
     /// (medido: "ya cumplí mi meta" ⇒ felicitaba y la meta seguía activa).

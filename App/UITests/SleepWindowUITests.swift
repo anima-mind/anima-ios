@@ -1,6 +1,8 @@
-// SleepWindowUITests.swift — Ajustes → Mente → "Hora de dormir": la fila con
-// sus dos selectores (01:00–06:00 por defecto), cambiar el inicio y que quede
-// persistido al relanzar; un rango de más de 12 h se rechaza.
+// SleepWindowUITests.swift — Ajustes → Mente → "Hora de dormir": 01:00–06:00
+// por defecto; las ruedas editan un borrador y "Listo" guarda el rango completo.
+// El orden natural (primero Desde) llega a 23:00–05:00 sin rechazos
+// intermedios, un rango de más de 12 h se rechaza sin cerrar la rueda ni perder
+// lo elegido, y lo guardado persiste al relanzar.
 
 import XCTest
 
@@ -16,60 +18,64 @@ final class SleepWindowUITests: AnimaUITestCase {
     }
 
     @MainActor
-    func testSleepWindowChangesAndPersists() {
+    func testSleepWindowDraftCommitsFullRangeAndPersists() {
         let app = launchInSpanish(reset: true)
         onboard(app)
         openSettings(app, "mind")
 
         waitFor(element(app, "settings.sleepWindow"))
-        let start = app.datePickers["settings.sleepWindow.start"]
-        let end = app.datePickers["settings.sleepWindow.end"]
+        let start = element(app, "settings.sleepWindow.start")
+        let end = element(app, "settings.sleepWindow.end")
         waitFor(start)
-        waitFor(end)
-        XCTAssertEqual(pickerValue(start), "1:00 a.m.")
-        XCTAssertEqual(pickerValue(end), "6:00 a.m.")
+        XCTAssertEqual(value(start), "1:00 a.m.")
+        XCTAssertEqual(value(end), "6:00 a.m.")
 
         tap(start)
-        let hour = app.pickerWheels.element(boundBy: 0)
-        waitFor(hour)
-        hour.adjust(toPickerWheelValue: "2")
-        dismissPopover(app)
-        waitUntil(start, "exists == true")
-        XCTAssertEqual(pickerValue(start), "2:00 a.m.")
+        wheel(app, 0).adjust(toPickerWheelValue: "11")
+        wheel(app, 2).adjust(toPickerWheelValue: "p.m.")
+        XCTAssertFalse(element(app, "settings.sleepWindow.notice").exists, "las ruedas no validan")
+        XCTAssertEqual(value(start), "11:00 p.m.")
+        tap(end)
+        wheel(app, 0).adjust(toPickerWheelValue: "5")
+        XCTAssertEqual(value(start), "11:00 p.m.", "pasar a Hasta conserva el borrador")
+        tap(app.buttons["settings.sleepWindow.done"])
+        waitUntil(app.pickerWheels.firstMatch, "exists == false")
+        XCTAssertEqual(value(start), "11:00 p.m.")
+        XCTAssertEqual(value(end), "5:00 a.m.")
         XCTAssertFalse(element(app, "settings.sleepWindow.notice").exists)
         screenshot(app, "hora-de-dormir")
 
-        tap(end)
-        let endPeriod = app.pickerWheels.element(boundBy: 2)
-        waitFor(endPeriod)
-        endPeriod.adjust(toPickerWheelValue: "p.m.")
+        tap(start)
+        wheel(app, 0).adjust(toPickerWheelValue: "4")
+        tap(app.buttons["settings.sleepWindow.done"])
         let notice = element(app, "settings.sleepWindow.notice")
         waitFor(notice)
-        XCTAssertEqual(notice.label, "El rango debe durar entre 1 y 12 horas.")
-        dismissPopover(app)
-        XCTAssertEqual(pickerValue(app.datePickers["settings.sleepWindow.end"]), "6:00 a.m.")
+        XCTAssertEqual(notice.label, "El rango debe durar entre 1 y 12 horas")
+        XCTAssertTrue(app.pickerWheels.firstMatch.exists, "la rueda no se cierra sola")
+        XCTAssertEqual(value(start), "4:00 p.m.", "no se pierde lo elegido")
+        screenshot(app, "hora-de-dormir-rechazo")
 
         app.terminate()
         let relaunched = launchInSpanish(reset: false)
         waitForChat(relaunched)
         openSettings(relaunched, "mind")
-        let persisted = relaunched.datePickers["settings.sleepWindow.start"]
+        let persisted = element(relaunched, "settings.sleepWindow.start")
         waitFor(persisted)
-        XCTAssertEqual(pickerValue(persisted), "2:00 a.m.")
-        XCTAssertEqual(pickerValue(relaunched.datePickers["settings.sleepWindow.end"]), "6:00 a.m.")
+        XCTAssertEqual(value(persisted), "11:00 p.m.", "queda el último rango válido")
+        XCTAssertEqual(value(element(relaunched, "settings.sleepWindow.end")), "5:00 a.m.")
     }
 
     @MainActor
-    private func dismissPopover(_ app: XCUIApplication) {
-        let region = app.buttons["PopoverDismissRegion"]
-        if region.waitForExistence(timeout: scaled(2)) { region.tap() }
-        waitUntil(app.pickerWheels.firstMatch, "exists == false")
+    private func wheel(_ app: XCUIApplication, _ index: Int) -> XCUIElement {
+        let wheel = app.pickerWheels.element(boundBy: index)
+        waitFor(wheel)
+        return wheel
     }
 
     @MainActor
-    private func pickerValue(_ picker: XCUIElement) -> String? {
-        let inner = picker.descendants(matching: .any).matching(NSPredicate(format: "value CONTAINS ':'")).firstMatch
-        let value = (inner.exists ? inner.value : picker.value) as? String
-        return value?.replacingOccurrences(of: "\u{202F}", with: " ")
+    private func value(_ element: XCUIElement) -> String? {
+        (element.value as? String)?
+            .replacingOccurrences(of: "\u{202F}", with: " ")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 }

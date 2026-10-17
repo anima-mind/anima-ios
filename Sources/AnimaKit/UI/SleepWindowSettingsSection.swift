@@ -1,6 +1,7 @@
 // SleepWindowSettingsSection.swift — "Hora de dormir" (Ajustes → Mente): desde
-// y hasta en hora local, persistidos en SleepWindowPreference. Cambiar el rango
-// re-encola el BGProcessingTask del sueño (lo cablea el shell).
+// y hasta en hora local. Las ruedas editan un borrador; el rango completo se
+// valida y se guarda al tocar "Listo" (SleepWindowPreference) y re-encola el
+// BGProcessingTask del sueño (lo cablea el shell).
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -10,12 +11,20 @@ public final class SleepWindowSettingsModel: ObservableObject {
     public static let title = "Hora de dormir"
     public static let explanation =
         "Anima consolida tus memorias mientras el teléfono carga en este rango. iOS decide el momento exacto."
-    public static let invalidNotice = "El rango debe durar entre 1 y 12 horas."
+    public static let invalidNotice = "El rango debe durar entre 1 y 12 horas"
 
+    public enum Field: String, Sendable {
+        case start
+        case end
+    }
+
+    /// El último rango válido guardado.
     @Published public private(set) var window: SleepWindow
+    /// Lo que el dueño está eligiendo en las ruedas (sin validar ni guardar).
+    @Published public private(set) var draftStart: SleepWindow.Time
+    @Published public private(set) var draftEnd: SleepWindow.Time
+    @Published public private(set) var editing: Field?
     @Published public private(set) var notice: String?
-    /// Sube al rechazar un rango: los selectores se redibujan con lo guardado.
-    @Published public private(set) var revision = 0
     /// Re-encola el sueño con la ventana nueva (lo cablea el shell).
     public var onChanged: (@Sendable (SleepWindow) async -> Void)?
     private let preference: SleepWindowPreference
@@ -24,39 +33,66 @@ public final class SleepWindowSettingsModel: ObservableObject {
     public init(preference: SleepWindowPreference, calendar: Calendar = .autoupdatingCurrent) {
         self.preference = preference
         self.calendar = calendar
-        self.window = preference.window
+        let window = preference.window
+        self.window = window
+        self.draftStart = window.start
+        self.draftEnd = window.end
     }
 
-    @discardableResult
-    public func setStart(_ time: SleepWindow.Time) async -> Bool {
-        await apply(SleepWindow(start: time, end: window.end))
+    public var draft: SleepWindow { SleepWindow(start: draftStart, end: draftEnd) }
+
+    public func draftTime(_ field: Field) -> SleepWindow.Time {
+        field == .start ? draftStart : draftEnd
     }
 
-    @discardableResult
-    public func setEnd(_ time: SleepWindow.Time) async -> Bool {
-        await apply(SleepWindow(start: window.start, end: time))
+    /// Abre la rueda de un extremo. Pasar al otro conserva el borrador.
+    public func edit(_ field: Field) {
+        editing = field
     }
 
-    /// Persiste y re-encola; fuera de 1–12 h no cambia nada y avisa.
+    public func setDraft(_ field: Field, _ time: SleepWindow.Time) {
+        switch field {
+        case .start: draftStart = time
+        case .end: draftEnd = time
+        }
+    }
+
+    /// "Listo": valida el rango completo. Válido → guarda, re-encola y cierra
+    /// la rueda; inválido → aviso, la rueda sigue abierta con lo elegido y se
+    /// conserva el último rango guardado.
     @discardableResult
-    public func apply(_ candidate: SleepWindow) async -> Bool {
+    public func commit() async -> Bool {
+        let candidate = draft
         guard candidate != window else {
             notice = nil
+            editing = nil
             return true
         }
         guard preference.set(candidate) else {
             notice = Self.invalidNotice
-            revision += 1
             return false
         }
         window = candidate
         notice = nil
+        editing = nil
         await onChanged?(candidate)
         return true
     }
 
+    /// Al salir de la pantalla sin un rango válido: vuelve a lo guardado.
+    public func discardDraft() {
+        draftStart = window.start
+        draftEnd = window.end
+        editing = nil
+        notice = nil
+    }
+
     public func refresh() {
         window = preference.window
+        if editing == nil {
+            draftStart = window.start
+            draftEnd = window.end
+        }
     }
 
     public func date(for time: SleepWindow.Time, reference: Date = Date()) -> Date {
@@ -81,15 +117,14 @@ struct SleepWindowSettingsSection: View {
                 .foregroundStyle(Theme.Colors.textMuted)
                 .accessibilityIdentifier("settings.sleepWindow")
             VStack(spacing: 0) {
-                row("Desde", id: "settings.sleepWindow.start", time: model.window.start) { time in
-                    Task { await model.setStart(time) }
-                }
+                row("Desde", .start)
                 Divider().background(Theme.Colors.border)
-                row("Hasta", id: "settings.sleepWindow.end", time: model.window.end) { time in
-                    Task { await model.setEnd(time) }
+                row("Hasta", .end)
+                if let field = model.editing {
+                    Divider().background(Theme.Colors.border)
+                    editor(field)
                 }
             }
-            .id(model.revision)
             .overlay(
                 RoundedRectangle(cornerRadius: Theme.Radius.card)
                     .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
@@ -104,31 +139,75 @@ struct SleepWindowSettingsSection: View {
                 .foregroundStyle(Theme.Colors.textFaint)
         }
         .onAppear { model.refresh() }
+        .onDisappear {
+            Task {
+                if !(await model.commit()) { model.discardDraft() }
+            }
+        }
     }
 
-    private func row(_ title: String, id: String, time: SleepWindow.Time,
-                     set: @escaping (SleepWindow.Time) -> Void) -> some View {
-        HStack {
-            Text(title)
-                .font(Theme.Type_.body)
-                .foregroundStyle(Theme.Colors.text)
-            Spacer()
-            DatePicker(title, selection: Binding(get: { model.date(for: time) },
-                                                 set: { set(model.time(from: $0)) }),
+    private func row(_ title: String, _ field: SleepWindowSettingsModel.Field) -> some View {
+        let value = model.date(for: model.draftTime(field)).formatted(date: .omitted, time: .shortened)
+        let selected = model.editing == field
+        return Button {
+            model.edit(field)
+        } label: {
+            HStack {
+                Text(title)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.text)
+                Spacer()
+                Text(value)
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(selected ? Theme.Colors.accentText : Theme.Colors.textMuted)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                        .fill(selected ? Theme.Colors.tint : Theme.Colors.surface))
+            }
+            .frame(minHeight: 48)
+            .padding(.horizontal, Theme.Space.cardPad)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("settings.sleepWindow.\(field.rawValue)")
+    }
+
+    private func editor(_ field: SleepWindowSettingsModel.Field) -> some View {
+        VStack(spacing: 0) {
+            DatePicker(field == .start ? "Desde" : "Hasta",
+                       selection: Binding(get: { model.date(for: model.draftTime(field)) },
+                                          set: { model.setDraft(field, model.time(from: $0)) }),
                        displayedComponents: .hourAndMinute)
                 .labelsHidden()
-                .compactDatePickerStyle()
-                .accessibilityIdentifier(id)
+                .wheelDatePickerStyle()
+                .id(field)
+                .accessibilityIdentifier("settings.sleepWindow.picker")
+            Button {
+                Task { await model.commit() }
+            } label: {
+                Text("Listo")
+                    .font(Theme.Type_.body)
+                    .foregroundStyle(Theme.Colors.accentText)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("settings.sleepWindow.done")
         }
-        .frame(minHeight: 48)
         .padding(.horizontal, Theme.Space.cardPad)
+        .padding(.bottom, Theme.Space.unit * 2)
     }
 }
 
 private extension View {
-    func compactDatePickerStyle() -> some View {
+    func wheelDatePickerStyle() -> some View {
         #if os(iOS)
-        self.datePickerStyle(.compact)
+        self.datePickerStyle(.wheel)
         #else
         self
         #endif

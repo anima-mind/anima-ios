@@ -222,10 +222,10 @@ struct SleepWindowSchedulerTests {
         #expect(crossing.shouldRunForegroundFallback(lastCycleAt: Self.at(22, 0, day: 15), now: now))
     }
 
-    // MARK: Ajuste → persiste → re-encola
+    // MARK: Ajuste → borrador → Listo → persiste → re-encola
 
     @MainActor
-    @Test func elAjustePersisteYReencolaConLaVentanaNueva() async {
+    @Test func lasRuedasNoGuardanHastaListoYElOrdenNaturalFunciona() async {
         let ud = SleepWindowTests.defaults()
         let pref = SleepWindowPreference(defaults: ud)
         let model = SleepWindowSettingsModel(preference: pref, calendar: Self.cal)
@@ -234,36 +234,64 @@ struct SleepWindowSchedulerTests {
         model.onChanged = { _ in submitted.mutate { $0.append(scheduler.request().earliestBeginDate) } }
         #expect(model.window == .default)
 
-        #expect(await model.setStart(.init(hour: 22)))
-        #expect(model.window == SleepWindowTests.window(22, 0, 6, 0))
+        model.edit(.start)
+        for hour in [2, 7, 13, 18, 23] { model.setDraft(.start, .init(hour: hour)) }
+        #expect(SleepWindowPreference(defaults: ud).window == .default, "las ruedas no guardan")
+        #expect(submitted.value.isEmpty)
+        #expect(model.notice == nil, "los valores intermedios no se validan")
+        model.edit(.end)
+        #expect(model.draftStart == .init(hour: 23), "pasar a Hasta conserva el borrador")
+        model.setDraft(.end, .init(hour: 5))
+        #expect(await model.commit())
+        #expect(model.window == SleepWindowTests.window(23, 0, 5, 0))
         #expect(SleepWindowPreference(defaults: ud).window == model.window)
-        #expect(submitted.value == [Self.at(22)])
+        #expect(submitted.value == [Self.at(23)])
+        #expect(model.editing == nil)
         #expect(model.notice == nil)
-
-        #expect(await model.setEnd(.init(hour: 4, minute: 30)))
-        #expect(submitted.value.count == 2)
-        #expect(SleepWindowPreference(defaults: ud).window == SleepWindowTests.window(22, 0, 4, 30))
     }
 
     @MainActor
-    @Test func elAjusteRechazaRangosFueraDeUnaADoceHoras() async {
+    @Test func listoConUnRangoInvalidoAvisaYConservaLoElegido() async {
         let ud = SleepWindowTests.defaults()
-        let model = SleepWindowSettingsModel(preference: SleepWindowPreference(defaults: ud), calendar: Self.cal)
+        let pref = SleepWindowPreference(defaults: ud)
+        let model = SleepWindowSettingsModel(preference: pref, calendar: Self.cal)
         let calls = Locked(0)
         model.onChanged = { _ in calls.mutate { $0 += 1 } }
 
-        #expect(await model.setStart(.init(hour: 5, minute: 30)) == false)
+        model.edit(.start)
+        model.setDraft(.start, .init(hour: 16))
+        #expect(await model.commit() == false, "16:00–06:00 son 14 h")
         #expect(model.notice == SleepWindowSettingsModel.invalidNotice)
-        #expect(model.revision == 1)
+        #expect(model.editing == .start, "la rueda no se cierra sola")
+        #expect(model.draftStart == .init(hour: 16), "no se pierde lo elegido")
         #expect(model.window == .default)
-        #expect(await model.setStart(.init(hour: 17)) == false, "13 h")
-        #expect(model.revision == 2)
-        #expect(calls.value == 0)
         #expect(SleepWindowPreference(defaults: ud).window == .default)
-
-        #expect(await model.setEnd(.init(hour: 6)), "mismo valor: sin cambio")
-        #expect(model.notice == nil)
+        model.setDraft(.start, .init(hour: 5, minute: 30))
+        #expect(await model.commit() == false, "30 min")
         #expect(calls.value == 0)
+
+        model.edit(.end)
+        model.setDraft(.end, .init(hour: 7))
+        #expect(await model.commit())
+        #expect(model.window == SleepWindowTests.window(5, 30, 7, 0))
+        #expect(model.notice == nil)
+        #expect(calls.value == 1)
+
+        #expect(await model.commit(), "sin cambios")
+        #expect(calls.value == 1)
+    }
+
+    @MainActor
+    @Test func salirConUnBorradorInvalidoVuelveALoGuardado() async {
+        let ud = SleepWindowTests.defaults()
+        let model = SleepWindowSettingsModel(preference: SleepWindowPreference(defaults: ud), calendar: Self.cal)
+        model.edit(.end)
+        model.setDraft(.end, .init(hour: 1))
+        #expect(await model.commit() == false)
+        model.discardDraft()
+        #expect(model.draft == .default)
+        #expect(model.editing == nil && model.notice == nil)
+        #expect(model.draftTime(.start) == .init(hour: 1) && model.draftTime(.end) == .init(hour: 6))
     }
 
     @MainActor

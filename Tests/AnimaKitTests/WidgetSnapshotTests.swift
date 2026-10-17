@@ -277,6 +277,10 @@ import GRDB
         #expect(WidgetCopy.consolidating("Budosky") == "Budosky está consolidando…")
         #expect(WidgetCopy.nightReady(13) == "Noche #13 lista")
         #expect(WidgetCopy.inline("Llamar al banco") == "llamar al banco")
+        #expect(WidgetCopy.talk(to: "Budosky") == "Hablar con Budosky")
+        #expect(WidgetCopy.talk(to: "  ") == "Hablar con Anima")
+        #expect(WidgetCopy.talk(to: WidgetSnapshot.placeholder(now: now).selfName) == WidgetCopy.talk)
+        #expect(WidgetCopy.talkDescription == "Toca para hablar con Anima: abre el chat con el micrófono listo.")
 
         let sample = WidgetSnapshot.sample(now: now, calendar: Self.calendar)
         #expect(copy.lockLine(sample.day(at: now, calendar: Self.calendar)) == "Próximo: llamar al banco · 9:00 a. m.")

@@ -83,6 +83,11 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Anima
+        # Nombres con los que el asistente de voz reconoce la app (además del
+        # display name): con tilde y el nombre de la tienda.
+        INAlternativeAppNames:
+          - INAlternativeAppName: Ánima
+          - INAlternativeAppName: Anima Mind
         # Versión desde los build settings: el CD pasa CURRENT_PROJECT_VERSION=run_number.
         # Sin esto XcodeGen escribe los literales "1"/"1.0" e ignora el setting (build clavado en 1).
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)

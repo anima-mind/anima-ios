@@ -658,21 +658,53 @@ public final class ChatViewModel: ObservableObject {
 
     // MARK: Voz (mic del composer → mismo pipeline que las gafas, ruta teléfono)
 
+    /// Campo build 27: la captura fallaba (escena aún sin activar) y la barra
+    /// desaparecía sin decir nada. Ahora se reintenta una vez y luego se avisa.
+    public static let voiceFailedHeading = "No pude abrir el micrófono"
+    /// Respiro antes del único reintento de la captura.
+    public var voiceRetryDelay: Duration = .milliseconds(600)
+    /// El aviso visible cuando el mic no abrió ni al reintentar (nil = sin aviso).
+    @Published public private(set) var voiceError: String?
+
     /// Tap al mic: listening bar + transcript en vivo; fin por silencio o "Listo".
     public func startVoice() {
         guard let voice, !isListening, !isStreaming else { return }
         isListening = true
         liveTranscript = ""
         voiceCancelled = false
+        voiceError = nil
         Task { [weak self] in
-            let transcript = await voice.capture(onRoute: { _ in }, onPartial: { partial in
-                Task { @MainActor in
-                    guard let self, self.isListening else { return }
-                    self.liveTranscript = partial
+            var transcript: String?
+            for attempt in 0..<2 {
+                let failure = GlassesBox<VoiceCaptureFailure?>(nil)
+                transcript = await voice.capture(onRoute: { _ in }, onPartial: { partial in
+                    Task { @MainActor in
+                        guard let self, self.isListening else { return }
+                        self.liveTranscript = partial
+                    }
+                }, onFailure: { failure.value = $0 })
+                guard let self, let failed = failure.value, !self.voiceCancelled else { break }
+                if attempt == 0 {
+                    try? await Task.sleep(for: self.voiceRetryDelay)
+                    if self.voiceCancelled { break }
+                    continue
                 }
-            })
+                self.voiceFailed(failed)
+                return
+            }
             await self?.voiceEnded(transcript)
         }
+    }
+
+    private func voiceFailed(_ failure: VoiceCaptureFailure) {
+        isListening = false
+        liveTranscript = ""
+        voiceError = "\(Self.voiceFailedHeading). \(failure.message)"
+    }
+
+    /// Cierra el aviso del mic (X del aviso o un nuevo intento).
+    public func dismissVoiceError() {
+        voiceError = nil
     }
 
     /// "Listo": envía lo oído sin esperar el silencio.
@@ -1069,6 +1101,9 @@ public struct ChatView: View {
                 if model.isOffline {
                     OfflinePill(localAvailable: model.localModelAvailable)
                         .padding(.top, Theme.Space.unit * 1.5)
+                }
+                if let error = model.voiceError, !model.isListening {
+                    VoiceErrorNote(text: error, onDismiss: { model.dismissVoiceError() })
                 }
                 if model.isListening {
                     ListeningBar(transcript: model.liveTranscript,
@@ -2305,6 +2340,34 @@ struct ListeningBar: View {
         .padding(Theme.Space.screenInset)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.listeningBar")
+    }
+}
+
+/// El mic no abrió (ni al reintentar): aviso visible sobre el composer.
+struct VoiceErrorNote: View {
+    let text: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "mic.slash")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.Colors.accentText)
+            Text(text)
+                .font(Theme.Type_.secondary)
+                .foregroundStyle(Theme.Colors.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("chat.voiceError")
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.Colors.textFaint)
+                    .frame(width: 28, height: 28)
+            }
+            .accessibilityLabel("Cerrar aviso")
+        }
+        .padding(.horizontal, Theme.Space.screenInset)
+        .padding(.vertical, 6)
     }
 }
 

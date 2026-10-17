@@ -48,4 +48,36 @@ final class SiriShortcutUITests: AnimaUITestCase {
         waitFor(assistantMessage(again, labelContains: fixedReply))
         screenshot(again, "batch10-03-siri-en-el-chat")
     }
+
+    /// Campo build 27: el atajo "Hablar con Anima" abría la app sin mic (el
+    /// intent devolvía OpenURLIntent(anima://…) y iOS lo rechazaba). Desde la
+    /// app Atajos, con la app cerrada: el chat con la barra de escucha.
+    @MainActor
+    func testTalkShortcutOpensTheAppListening() throws {
+        let app = makeApp()
+        app.launchArguments.append("--uitest-sticky")
+        app.launch()
+        onboard(app)
+        app.terminate()
+
+        let shortcuts = XCUIApplication(bundleIdentifier: "com.apple.shortcuts")
+        shortcuts.launch()
+        tap(shortcuts.otherElements["Hablar con Anima"].firstMatch)
+
+        let rejected = shortcuts.alerts["No se puede ejecutar el atajo de la app"]
+        let heard = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier IN %@", ["chat.listeningBar", "chat.userMessage.voice"]))
+            .firstMatch
+        // Sin app al frente no se consulta su árbol (la query se cuelga).
+        if !app.wait(for: .runningForeground, timeout: scaled(15)) {
+            if rejected.exists {
+                throw XCTSkip("linkd rechaza el binario sin team ID (firma ad-hoc): correr con firma de equipo.")
+            }
+            XCTFail("El atajo no abrió la app")
+            return
+        }
+        waitFor(heard, timeout: 30)
+        screenshot(app, "talk-shortcut-escuchando")
+    }
 }
+

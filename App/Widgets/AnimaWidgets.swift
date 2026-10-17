@@ -1,6 +1,6 @@
 // AnimaWidgets.swift — la extensión WidgetKit. Lee SOLO el snapshot JSON del
 // App Group (nunca GRDB): sin locks con la app. Hoy, Meta (configurable),
-// pantalla de bloqueo, el control "Hablar con Anima" y la Live Activity del sueño.
+// pantalla de bloqueo, "Hablar con Anima" (widget + control) y la Live Activity del sueño.
 
 import ActivityKit
 import AppIntents
@@ -14,6 +14,7 @@ struct AnimaWidgetBundle: WidgetBundle {
         TodayWidget()
         GoalWidget()
         LockScreenWidget()
+        TalkWidget()
         TalkControl()
         SleepLiveActivity()
     }
@@ -136,6 +137,35 @@ struct LockEntryView: View {
         case .accessoryInline: LockInlineView(day: entry.day, copy: WidgetCopy())
         case .accessoryCircular: LockCircularView(day: entry.day)
         default: LockRectangularView(day: entry.day, copy: WidgetCopy())
+        }
+    }
+}
+
+/// "Hablar con Anima" en la galería de widgets (inicio + bloqueo): el control
+/// solo vive en el Centro de control / botón de Acción.
+struct TalkWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "mind.anima.talkwidget", provider: SnapshotProvider()) { entry in
+            TalkEntryView(entry: entry)
+        }
+        .configurationDisplayName(WidgetCopy.talk)
+        .description(WidgetCopy.talkDescription)
+        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryInline])
+    }
+}
+
+struct TalkEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    let entry: SnapshotEntry
+
+    var body: some View {
+        switch family {
+        case .accessoryCircular:
+            TalkCircularView(day: entry.day).containerBackground(for: .widget) { Color.clear }
+        case .accessoryInline:
+            TalkInlineView(day: entry.day).containerBackground(for: .widget) { Color.clear }
+        default:
+            TalkSmallView(day: entry.day).animaWidgetBackground()
         }
     }
 }

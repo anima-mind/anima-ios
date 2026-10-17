@@ -1,0 +1,286 @@
+{
+  "sourceLanguage": "es",
+  "strings": {
+    "${applicationName}, tengo una pregunta": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "${applicationName}, I have a question"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "${applicationName}, tengo una pregunta"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "${applicationName}, tengo una pregunta"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "${applicationName}, tengo una pregunta"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "${applicationName}, tengo una pregunta"
+          }
+        }
+      }
+    },
+    "Abre ${applicationName} con el micrófono": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open ${applicationName} with the microphone"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre ${applicationName} con el micrófono"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre ${applicationName} con el micrófono"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre ${applicationName} con el micrófono"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre ${applicationName} con el micrófono"
+          }
+        }
+      }
+    },
+    "Abre el chat de ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the ${applicationName} chat"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el chat de ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el chat de ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el chat de ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el chat de ${applicationName}"
+          }
+        }
+      }
+    },
+    "Abre el micrófono de ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the ${applicationName} microphone"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el micrófono de ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el micrófono de ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el micrófono de ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre el micrófono de ${applicationName}"
+          }
+        }
+      }
+    },
+    "Consulta a ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check with ${applicationName}"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consulta a ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consulta a ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consulta a ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Consulta a ${applicationName}"
+          }
+        }
+      }
+    },
+    "Hazle una pregunta a ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask ${applicationName} a question"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hazle una pregunta a ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hazle una pregunta a ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hazle una pregunta a ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hazle una pregunta a ${applicationName}"
+          }
+        }
+      }
+    },
+    "Pregunta a ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask ${applicationName} something"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregunta a ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregunta a ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregunta a ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregunta a ${applicationName}"
+          }
+        }
+      }
+    },
+    "Pregúntale a ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask ${applicationName}"
+          }
+        },
+        "es-419": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregúntale a ${applicationName}"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregúntale a ${applicationName}"
+          }
+        },
+        "es-MX": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregúntale a ${applicationName}"
+          }
+        },
+        "es-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregúntale a ${applicationName}"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

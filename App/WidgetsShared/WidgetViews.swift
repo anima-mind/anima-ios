@@ -52,6 +52,33 @@ struct WidgetActionLabel: View {
     }
 }
 
+/// Micrófono en contorno de acento (nunca relleno): "Hablar con Anima".
+struct TalkMicGlyph: View {
+    var size: CGFloat = 26
+
+    var body: some View {
+        Image(systemName: "mic")
+            .font(.system(size: size * 0.48, weight: .medium))
+            .foregroundStyle(Theme.Colors.accentText)
+            .frame(width: size, height: size)
+            .overlay(Circle().stroke(Theme.Colors.accent.opacity(0.7), lineWidth: Theme.Stroke.hairline))
+            .contentShape(Circle())
+    }
+}
+
+/// El mic discreto de los widgets: abre el chat con el micrófono escuchando.
+struct TalkMicLink: View {
+    let selfName: String
+
+    var body: some View {
+        Link(destination: AnimaDeepLink.talk.url) {
+            TalkMicGlyph(size: 26)
+        }
+        .accessibilityLabel(WidgetCopy.talk(to: selfName))
+        .accessibilityIdentifier("widget.today.talk")
+    }
+}
+
 struct EmptyToday: View {
     var compact = false
 
@@ -90,7 +117,10 @@ struct TodaySmallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            WidgetHeader(day: day)
+            HStack(spacing: 4) {
+                WidgetHeader(day: day)
+                TalkMicLink(selfName: day.selfName)
+            }
             Spacer(minLength: 0)
             if let next = day.next {
                 Text(WidgetCopy.nextLabel)
@@ -133,8 +163,11 @@ struct TodayMediumView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Link(destination: AnimaDeepLink.chat(turn: nil).url) {
-                WidgetHeader(day: day, trailing: copy.nights(day.nights))
+            HStack(spacing: 8) {
+                Link(destination: AnimaDeepLink.chat(turn: nil).url) {
+                    WidgetHeader(day: day, trailing: copy.nights(day.nights))
+                }
+                TalkMicLink(selfName: day.selfName)
             }
             if day.isEmpty, day.next == nil {
                 Spacer(minLength: 0)
@@ -222,6 +255,69 @@ struct TodayMediumView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+}
+
+// MARK: - Hablar con Anima (small / circular / inline)
+
+/// Pantalla de inicio: la marca, el mic y "Hablar con <self>". Todo el widget
+/// es un solo tap: el chat con el micrófono escuchando.
+struct TalkSmallView: View {
+    let day: WidgetDay
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top) {
+                BreathMark(size: 34, p: day.plasticity)
+                Spacer(minLength: 0)
+                TalkMicGlyph(size: 44)
+            }
+            Spacer(minLength: 0)
+            Text(WidgetCopy.talk(to: day.selfName))
+                .font(Theme.Type_.cardTitle)
+                .foregroundStyle(Theme.Colors.text)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+            Text(WidgetCopy.talkHint)
+                .font(Theme.Type_.meta)
+                .foregroundStyle(Theme.Colors.textFaint)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(WidgetCopy.talk(to: day.selfName))
+        .accessibilityAddTraits(.isButton)
+        .widgetURL(AnimaDeepLink.talk.url)
+    }
+}
+
+/// Pantalla de bloqueo (circular): la marca con el mic debajo.
+struct TalkCircularView: View {
+    let day: WidgetDay
+
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            VStack(spacing: 0) {
+                BreathMark(size: 28, p: day.plasticity)
+                    .widgetAccentable()
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 14, weight: .semibold))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(WidgetCopy.talk(to: day.selfName))
+        .widgetURL(AnimaDeepLink.talk.url)
+    }
+}
+
+/// Pantalla de bloqueo (inline): "🎙 Hablar con Budosky".
+struct TalkInlineView: View {
+    let day: WidgetDay
+
+    var body: some View {
+        Label(WidgetCopy.talk(to: day.selfName), systemImage: "mic")
+            .widgetURL(AnimaDeepLink.talk.url)
     }
 }
 

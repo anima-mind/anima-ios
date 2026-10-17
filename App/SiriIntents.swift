@@ -1,5 +1,5 @@
 // SiriIntents.swift — hablar con Anima sin abrir el teléfono (batch 10 #2).
-// "Habla con Anima" / "Pregúntale a Anima": Siri pide el mensaje, el turno corre
+// "Pregúntale a Anima" / "Consulta a Anima": Siri pide el mensaje, el turno corre
 // EN el proceso de la app (lanzada en background, sin UI) sobre el mismo loop y
 // la misma sesión que el chat, y Siri dice la respuesta. Datos personales:
 // `.requiresLocalDeviceAuthentication` (con el teléfono bloqueado basta un
@@ -41,17 +41,22 @@ struct AskAnimaIntent: AppIntent {
 }
 
 /// Siri, Spotlight, Atajos y el botón de Acción. Frases en español (región de
-/// desarrollo `es`); toda frase lleva el nombre de la app.
+/// desarrollo `es`) y traducidas por locale en App/AppShortcuts.xcstrings (es,
+/// es-419, es-MX, es-US, es-ES, en): el iPhone del dueño tiene el asistente en
+/// una variante regional. Toda frase lleva el nombre de la app.
+/// Campo build 27: "Habla con …" y "Dile a …" son de los dominios del sistema
+/// (llamadas / mensajes: el asistente intentaba llamar o abrir WhatsApp) y
+/// "Oye …" es la palabra de activación: fuera.
 struct AnimaShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: AskAnimaIntent(),
             phrases: [
-                "Habla con \(.applicationName)",
                 "Pregúntale a \(.applicationName)",
-                "Dile a \(.applicationName)",
                 "Pregunta a \(.applicationName)",
-                "Oye \(.applicationName)",
+                "Consulta a \(.applicationName)",
+                "Hazle una pregunta a \(.applicationName)",
+                "\(.applicationName), tengo una pregunta",
             ],
             shortTitle: "Pregúntale a Anima",
             systemImageName: "waveform")
@@ -59,7 +64,7 @@ struct AnimaShortcuts: AppShortcutsProvider {
             intent: TalkToAnimaIntent(),
             phrases: [
                 "Abre \(.applicationName) con el micrófono",
-                "Háblale a \(.applicationName) en el chat",
+                "Abre el micrófono de \(.applicationName)",
                 "Abre el chat de \(.applicationName)",
             ],
             shortTitle: "Hablar con Anima",

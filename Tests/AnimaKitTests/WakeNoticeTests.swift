@@ -86,6 +86,20 @@ struct WakeNoticeTests {
         #expect(request.body == "Listo, ordené lo de hoy: 1 recuerdo nuevo. Ciclo #3.")
     }
 
+    /// Hora de dormir: un ciclo de fallback de madrugada se avisa a las 7:30 pero no dice "Dormí";
+    /// el del BGTask en la misma hora sí.
+    @Test func elFallbackNocturnoNoDiceDormi() async throws {
+        let fake = FakeNotificationScheduler(status: .granted)
+        let fallback = notifier(fake, clock: Locked(Self.at(2, 10)), wake: WakePreference(defaults: defaults()))
+        let request = try #require(await fallback.cycleCompleted(Self.report(added: 1), night: 5, slept: false))
+        #expect(request.trigger == .at(Self.at(7, 30)))
+        #expect(request.body == "Listo, ordené lo de ayer: 1 recuerdo nuevo. Ciclo #5.")
+        #expect(!request.body.contains("Dormí"))
+        let sleep = notifier(fake, clock: Locked(Self.at(2, 10)), wake: WakePreference(defaults: defaults()))
+        let slept = try #require(await sleep.cycleCompleted(Self.report(added: 1), night: 5, slept: true))
+        #expect(slept.body.hasPrefix("Buenos días."))
+    }
+
     /// Review #34: un ciclo a las 20:59 no dice "Buenas noches… Dormí".
     @Test func deTardeONocheNoDiceDormi() {
         let evening = Self.at(20, 59)
@@ -166,7 +180,7 @@ struct WakeNoticeTests {
         let holder = ConsolidatorHolder()
         let seen = Locked<[(Int, Bool)]>([])
         #expect(await holder.run(isExpired: { false }) == false)   // sin cablear
-        holder.set(consolidator, scheduler: SleepScheduler(), onCompleted: { report, night in
+        holder.set(consolidator, scheduler: SleepScheduler(), onCompleted: { report, night, _ in
             seen.mutate { $0.append((night, report.completed)) }
         })
         #expect(await holder.run(isExpired: { true }) == false)    // cortado: sin aviso

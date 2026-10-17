@@ -56,6 +56,8 @@ public final class SettingsViewModel: ObservableObject {
     public var approvals: ApprovalsInboxViewModel?
     /// Pila del hub: el shell la empuja (aviso del chat → Mente).
     @Published public var path: [SettingsRoute] = []
+    /// "Hora de dormir" en Mente (la inyecta el shell).
+    public var sleepWindow: SleepWindowSettingsModel?
     /// "Simular una noche": un ciclo del Consolidator en foreground (lo cablea el shell).
     public var nightSimulator: NightSimulator?
     /// Al terminar el ciclo: Memoria/Metas refrescan si están instanciadas.
@@ -769,7 +771,7 @@ struct ModelSettingsContent: View {
     }
 }
 
-/// Mente: Simular una noche, Repetir onboarding y sus footers.
+/// Mente: Por aprobar, Hora de dormir, Simular una noche, Repetir onboarding y sus footers.
 struct MindSettingsContent: View {
     @ObservedObject var model: SettingsViewModel
 
@@ -777,6 +779,9 @@ struct MindSettingsContent: View {
         VStack(alignment: .leading, spacing: Theme.Space.sectionGap) {
             if let approvals = model.approvals {
                 ApprovalsSection(model: approvals)
+            }
+            if let sleepWindow = model.sleepWindow {
+                SleepWindowSettingsSection(model: sleepWindow)
             }
             mindSection
         }

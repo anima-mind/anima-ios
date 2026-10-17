@@ -18,14 +18,16 @@ import GRDB
     // MARK: Política del fallback foreground (48h)
 
     @Test func foregroundFallbackPolicy() {
-        let scheduler = SleepScheduler()
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let scheduler = SleepScheduler(calendar: utc)
         let now = Date(timeIntervalSince1970: 1_000_000)
         #expect(scheduler.shouldRunForegroundFallback(lastCycleAt: nil, now: now))  // nunca soñó
         #expect(!scheduler.shouldRunForegroundFallback(lastCycleAt: now.addingTimeInterval(-47 * 3600), now: now))
         #expect(!scheduler.shouldRunForegroundFallback(lastCycleAt: now.addingTimeInterval(-48 * 3600), now: now))
         #expect(scheduler.shouldRunForegroundFallback(lastCycleAt: now.addingTimeInterval(-48 * 3600 - 1), now: now))
 
-        let short = SleepScheduler(foregroundFallbackInterval: 60)
+        let short = SleepScheduler(foregroundFallbackInterval: 60, calendar: utc)
         #expect(short.shouldRunForegroundFallback(lastCycleAt: now.addingTimeInterval(-61), now: now))
     }
 
@@ -65,6 +67,16 @@ import GRDB
 
     @Test func holderWithoutConsolidatorIsNoOp() async {
         #expect(await ConsolidatorHolder().run(isExpired: { false }) == false)
+    }
+
+    @Test func holderReportsCycleOrigin() async throws {
+        let (c, _) = try consolidator([Self.reflection, Self.reflection])
+        let holder = ConsolidatorHolder()
+        let origins = Locked<[CycleOrigin]>([])
+        holder.set(c, scheduler: SleepScheduler(), onCompleted: { _, _, origin in origins.mutate { $0.append(origin) } })
+        #expect(await holder.run(origin: .fallback, isExpired: { false }))
+        #expect(await holder.run(isExpired: { false }))
+        #expect(origins.value == [.fallback, .sleep])
     }
 
     @Test func holderRunsWiredConsolidator() async throws {

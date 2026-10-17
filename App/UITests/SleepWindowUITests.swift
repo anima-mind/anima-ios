@@ -5,10 +5,19 @@
 import XCTest
 
 final class SleepWindowUITests: AnimaUITestCase {
+    static let locale = ["-AppleLanguages", "(es-CO)", "-AppleLocale", "es_CO"]
+
+    @MainActor
+    private func launchInSpanish(reset: Bool) -> XCUIApplication {
+        let app = makeApp(reset: reset)
+        app.launchArguments += Self.locale
+        app.launch()
+        return app
+    }
 
     @MainActor
     func testSleepWindowChangesAndPersists() {
-        let app = launch()
+        let app = launchInSpanish(reset: true)
         onboard(app)
         openSettings(app, "mind")
 
@@ -41,7 +50,7 @@ final class SleepWindowUITests: AnimaUITestCase {
         XCTAssertEqual(pickerValue(app.datePickers["settings.sleepWindow.end"]), "6:00 a.m.")
 
         app.terminate()
-        let relaunched = launch(reset: false)
+        let relaunched = launchInSpanish(reset: false)
         waitForChat(relaunched)
         openSettings(relaunched, "mind")
         let persisted = relaunched.datePickers["settings.sleepWindow.start"]
@@ -59,7 +68,7 @@ final class SleepWindowUITests: AnimaUITestCase {
 
     @MainActor
     private func pickerValue(_ picker: XCUIElement) -> String? {
-        let inner = picker.descendants(matching: .any).matching(NSPredicate(format: "label == 'Selector de hora'")).firstMatch
+        let inner = picker.descendants(matching: .any).matching(NSPredicate(format: "value CONTAINS ':'")).firstMatch
         let value = (inner.exists ? inner.value : picker.value) as? String
         return value?.replacingOccurrences(of: "\u{202F}", with: " ")
     }

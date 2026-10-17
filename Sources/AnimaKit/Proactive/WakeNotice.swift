@@ -128,7 +128,7 @@ public actor WakeNotifier {
     private let isForeground: @Sendable () async -> Bool
 
     public init(scheduler: LocalNotificationScheduler, general: ProactivePreference?, preference: WakePreference,
-                selfName: @escaping @Sendable () async -> String = { "Anima" }, calendar: Calendar = .current,
+                selfName: @escaping @Sendable () async -> String = { "Anima" }, calendar: Calendar = .autoupdatingCurrent,
                 now: @escaping @Sendable () -> Date = { Date() },
                 isForeground: @escaping @Sendable () async -> Bool = { false }) {
         self.isForeground = isForeground
@@ -141,14 +141,17 @@ public actor WakeNotifier {
     }
 
     /// nil si no corresponde (ciclo incompleto, avisos apagados, sin permiso o
-    /// ya hubo aviso ese día).
+    /// ya hubo aviso ese día). `slept`: false si el ciclo fue el fallback
+    /// foreground (no durmió aunque sea de noche).
     @discardableResult
-    public func cycleCompleted(_ report: Consolidator.CycleReport, night: Int) async -> LocalNotificationRequest? {
+    public func cycleCompleted(_ report: Consolidator.CycleReport, night: Int,
+                               slept: Bool = true) async -> LocalNotificationRequest? {
         guard report.completed else { return nil }
         let completed = now()
         let fire = WakeNotice.fireDate(completedAt: completed, calendar: calendar)
         // fireDate solo difiere a las 7:30 si el ciclo corrió de noche.
-        let body = WakeNotice.body(report, night: night, at: fire, calendar: calendar, slept: fire > completed)
+        let body = WakeNotice.body(report, night: night, at: fire, calendar: calendar,
+                                   slept: slept && fire > completed)
         preference.lastSummary = body
         guard preference.isEnabled, general?.isEnabled ?? true, !(await isForeground()) else { return nil }
         guard await scheduler.authorizationStatus() == .granted else { return nil }

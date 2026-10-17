@@ -116,7 +116,11 @@ final class AppModel: ObservableObject {
     private var inbox: ConsolidationInbox?
     private var consolidator: Consolidator?
     /// Se re-crea por modo (§4.9): si el sueño es local, el BGTask no exige red.
-    private var sleepScheduler = SleepScheduler()
+    private var sleepScheduler = SleepScheduler(window: { AppModel.sleepWindowPreference.window })
+    /// "Hora de dormir" (Ajustes → Mente): la ventana en que el BGTask puede soñar.
+    nonisolated static let sleepWindowPreference = SleepWindowPreference(
+        defaults: UITestMode.isActive ? UITestMode.defaults : .standard)
+    private var fallbackRunning = false
     // Fase 3: la identidad viva y el registro de lo Real.
     private var selfModel: SelfModel?
     private var realRegister: RealRegister?
@@ -391,6 +395,9 @@ final class AppModel: ObservableObject {
             settings.selfModel = selfModel
             settings.glasses = glassesModel
             settings.notifications = notificationsModel
+            let sleepWindow = SleepWindowSettingsModel(preference: Self.sleepWindowPreference)
+            sleepWindow.onChanged = { _ in await MainActor.run { AppModel.live.scheduleConsolidation() } }
+            settings.sleepWindow = sleepWindow
             settings.approvals = approvals
             self.settingsModel = settings
             if let brain = self.brain {
@@ -509,7 +516,7 @@ final class AppModel: ObservableObject {
 
         let selector = ProviderSelector(mode: mode, remote: remote, local: local,
                                         availability: Self.availability)
-        sleepScheduler = SleepScheduler(selector: selector)
+        sleepScheduler = SleepScheduler(selector: selector, window: { AppModel.sleepWindowPreference.window })
 
         var bodyStatus: (@Sendable () async -> String?)?
         if let body = glassesBody {
@@ -558,10 +565,10 @@ final class AppModel: ObservableObject {
             self.consolidator = consolidator
             let wake = wakeNotifier
             let proactiveAfterSleep = proactiveScheduler
-            Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night in
+            Self.shared.set(consolidator, scheduler: sleepScheduler, onCompleted: { report, night, origin in
                 // El sueño pudo dejar o cambiar metas: sus seguimientos se cancelan ya.
                 await proactiveAfterSleep?.sync()
-                await wake?.cycleCompleted(report, night: night)
+                await wake?.cycleCompleted(report, night: night, slept: origin == .sleep)
             })
             // "Simular una noche" (Ajustes → Mente): el mismo ciclo, en foreground.
             let other = otherModel
@@ -594,8 +601,9 @@ final class AppModel: ObservableObject {
                     DatabaseSuspension.shared.end()
                 }
             }
-            // `--uitest`: sin sueño en foreground (turnos deterministas).
-            if !UITestMode.isActive { await runForegroundFallbackIfNeeded(consolidator) }
+            // `--uitest`: sin sueño en foreground (turnos deterministas). Un despertar
+            // en background no lo corre: ese ciclo es del BGTask.
+            if !UITestMode.isActive, !Self.launchedInBackground { await runForegroundFallbackIfNeeded(consolidator) }
         }
 
         // Taller de skills (FIX A): sesión EFÍMERA sobre el córtex activo — no
@@ -701,6 +709,7 @@ final class AppModel: ObservableObject {
     func didBecomeActive() {
         guard phase == .ready else { return }
         Task {
+            if !UITestMode.isActive, let consolidator { await runForegroundFallbackIfNeeded(consolidator) }
             await reconcileProactive()
             await approvalsModel?.refresh()
             await applyWidgetActions()
@@ -929,21 +938,32 @@ final class AppModel: ObservableObject {
         try? store.markCleanShutdown(activeSessionId)
     }
 
-    /// Fallback foreground (§5.4): si pasaron >48h sin ciclo completo, se corre al
-    /// abrir la app (best-effort, no bloqueante).
+    /// Fallback foreground (§5.4): al abrir la app, si esta noche (dentro de la
+    /// "Hora de dormir") aún no hubo ciclo, o si pasaron >48h sin ciclo completo
+    /// (best-effort, no bloqueante). Su aviso no dice "Dormí".
     private func runForegroundFallbackIfNeeded(_ consolidator: Consolidator) async {
+        guard !fallbackRunning else { return }
+        fallbackRunning = true
         let last = await consolidator.lastCycleAt()
-        guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else { return }
+        guard sleepScheduler.shouldRunForegroundFallback(lastCycleAt: last) else {
+            fallbackRunning = false
+            return
+        }
         let selfModel = self.selfModel
         await sleepActivity.start(selfName: await selfModel?.name() ?? "Anima")
-        // Por el holder: un ciclo completo también avisa que despertó (batch 8 #7).
         Task.detached { [sleepActivity] in
             await DatabaseSuspension.shared.awake {
-                let completed = await AppModel.shared.run(isExpired: { false })
+                let completed = await AppModel.shared.run(origin: .fallback, isExpired: { false })
                 await sleepActivity.finish(completed: completed, night: await selfModel?.cycles() ?? 0)
                 await AppModel.live.publishWidgets()
             }
+            await MainActor.run { AppModel.live.fallbackRunning = false }
         }
+    }
+
+    /// El runner del BGTask: ¿arrancó dentro de la "Hora de dormir"?
+    func sleepLaunchDecision() -> SleepScheduler.LaunchDecision {
+        sleepScheduler.launchDecision()
     }
 
     /// Registro del BGProcessingTask (§5.4). Se llama en app launch; el runner
@@ -963,7 +983,13 @@ final class AppModel: ObservableObject {
             Task {
                 // Lanzamiento en background: cablea el harness si la escena no lo hizo.
                 await AppModel.live.ensureBootstrapped()
-                let success = await AppModel.shared.run(isExpired: { expired.value })
+                if case .deferred = await AppModel.live.sleepLaunchDecision() {
+                    await AppModel.live.scheduleConsolidation()
+                    DatabaseSuspension.shared.end()
+                    task.setTaskCompleted(success: true)
+                    return
+                }
+                let success = await AppModel.shared.run(origin: .sleep, isExpired: { expired.value })
                 // Noche nueva: el widget muestra el número y la plasticidad al día.
                 await AppModel.live.publishWidgets()
                 DatabaseSuspension.shared.end()

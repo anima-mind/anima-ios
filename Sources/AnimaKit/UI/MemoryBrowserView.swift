@@ -3,7 +3,9 @@
 // destilado", "Chat"), tipo y confianza en español y la fecha; las invalidadas
 // se despliegan aparte ("Mostrar invalidadas (N)") y se pueden vaciar de la UI
 // (bi-temporal: quedan en la base marcadas). Detalle con origen, historial de
-// reconsolidaciones e "Invalidar" como botón real con razón opcional.
+// reconsolidaciones e "Invalidar" como botón real con razón opcional. Una
+// invalidada se restaura (o se restaura esa versión, si otra la reemplazó) o se
+// elimina sola, desde el detalle, el swipe o el menú contextual.
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -21,6 +23,8 @@ public final class MemoryBrowserViewModel: ObservableObject {
         public var createdAt: Date
         /// "Noche #3 · destilado" | "Chat" | "origen desconocido".
         public var origin: String
+        /// Invalidada con otra versión vigente en su cadena: restaurarla la reemplaza.
+        public var hasCurrentVersion = false
 
         var invalidatedKey: String { "invalidated-\(id)" }
     }
@@ -47,11 +51,16 @@ public final class MemoryBrowserViewModel: ObservableObject {
         var out: [Item] = []
         for record in records {
             let lastUsed = try? await brain.lastUsed(record.id)
-            out.append(Item(id: record.id, content: record.content, kind: record.kind,
+            var item = Item(id: record.id, content: record.content, kind: record.kind,
                             confidence: record.confidence, isValid: record.isValid,
                             invalidationReason: record.invalidationReason,
                             lastUsed: lastUsed ?? nil, createdAt: record.createdAt,
-                            origin: Self.origin(record)))
+                            origin: Self.origin(record))
+            if !record.isValid {
+                let chain = (try? await brain.revisionChain(record.id)) ?? []
+                item.hasCurrentVersion = Self.hasCurrentVersion(chain, besides: record.id)
+            }
+            out.append(item)
         }
         items = out
     }
@@ -63,7 +72,34 @@ public final class MemoryBrowserViewModel: ObservableObject {
             return
         }
         selected = MemoryDetail(id: id, chain: chain, content: item.content, origin: item.origin,
-                                date: dates.fullDate(item.createdAt, now: Date()), isValid: item.isValid)
+                                date: dates.fullDate(item.createdAt, now: Date()), isValid: item.isValid,
+                                hasCurrentVersion: Self.hasCurrentVersion(chain, besides: id))
+    }
+
+    static func hasCurrentVersion(_ chain: [MemoryRecord], besides id: MemoryID) -> Bool {
+        chain.contains { $0.id != id && $0.isValid }
+    }
+
+    /// Restaurar: vuelve a estar vigente (y la versión que la reemplazaba queda
+    /// "reemplazada por el dueño"). Con el detalle abierto, se refresca en sitio.
+    public func restore(_ id: MemoryID) async {
+        _ = try? await brain.restore(id: id)
+        let reopen = selected?.id
+        await load()
+        if let reopen { await openDetail(reopen) }
+    }
+
+    /// Eliminar UNA invalidada (lo mismo que "Vaciar invalidadas", solo esa).
+    public func delete(_ id: MemoryID) async {
+        _ = try? await brain.purge(id: id)
+        selected = nil
+        await load()
+    }
+
+    public func eventLine(_ event: MemoryEvent) -> String {
+        switch event.kind {
+        case .ownerRestored: return "restaurada por el dueño · \(dates.fullDate(event.at, now: Date()))"
+        }
     }
 
     /// Razón OPCIONAL: vacía ⇒ "invalidada por el dueño".
@@ -117,11 +153,13 @@ public struct MemoryDetail: Identifiable, Sendable {
     public var origin: String = ""
     public var date: String = ""
     public var isValid = true
+    public var hasCurrentVersion = false
 }
 
 public struct MemoryBrowserView: View {
     @ObservedObject private var model: MemoryBrowserViewModel
     @State private var confirmPurge = false
+    @State private var pendingDelete: MemoryID?
 
     public init(model: MemoryBrowserViewModel) {
         self.model = model
@@ -132,42 +170,74 @@ public struct MemoryBrowserView: View {
             Theme.Colors.bg.ignoresSafeArea()
             VStack(alignment: .leading, spacing: Theme.Space.stack) {
                 filterField
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: Theme.Space.stack) {
-                        if model.active.isEmpty {
-                            Text("Sin memorias activas todavía. Se forman de noche con lo que vivimos.")
-                                .font(Theme.Type_.secondary)
-                                .foregroundStyle(Theme.Colors.textFaint)
-                        }
-                        ForEach(model.active) { row($0) }
-                        if !model.invalidated.isEmpty {
-                            invalidatedHeader
-                            if model.showInvalidated {
-                                // Identidad propia: la misma memoria pudo pintarse antes como activa.
-                                ForEach(model.invalidated, id: \.invalidatedKey) { row($0) }
+                List {
+                    if model.active.isEmpty {
+                        Text("Sin memorias activas todavía. Se forman de noche con lo que vivimos.")
+                            .font(Theme.Type_.secondary)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                            .listRowStyle()
+                    }
+                    ForEach(model.active) { row($0).listRowStyle() }
+                    if !model.invalidated.isEmpty {
+                        invalidatedHeader.listRowStyle()
+                        if model.showInvalidated {
+                            // Identidad propia: la misma memoria pudo pintarse antes como activa.
+                            ForEach(model.invalidated, id: \.invalidatedKey) { item in
+                                row(item)
+                                    .listRowStyle()
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button { pendingDelete = item.id } label: {
+                                            Label("Eliminar", systemImage: "trash")
+                                        }
+                                        .tint(Theme.Colors.border)
+                                        .accessibilityIdentifier("memory.row.delete")
+                                        Button { Task { await model.restore(item.id) } } label: {
+                                            Label("Restaurar", systemImage: "arrow.uturn.backward")
+                                        }
+                                        .tint(Theme.Colors.surface)
+                                        .accessibilityIdentifier("memory.row.restore")
+                                    }
+                                    .contextMenu {
+                                        Button { Task { await model.restore(item.id) } } label: {
+                                            Label(item.hasCurrentVersion ? "Restaurar esta versión" : "Restaurar",
+                                                  systemImage: "arrow.uturn.backward")
+                                        }
+                                        Button(role: .destructive) { pendingDelete = item.id } label: {
+                                            Label("Eliminar", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }
                     }
-                    .padding(.horizontal, Theme.Space.screenInset)
-                    .padding(.bottom, Theme.Space.sectionGap)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .contentMargins(.bottom, Theme.Space.sectionGap, for: .scrollContent)
             }
             .padding(.top, Theme.Space.screenInset)
         }
         .task { await model.load() }
         .sheet(item: $model.selected) { detail in
-            MemoryDetailSheet(detail: detail) { id, reason in
-                Task { await model.invalidate(id, reason: reason) }
-            }
+            MemoryDetailSheet(detail: detail, eventLine: model.eventLine,
+                              onInvalidate: { id, reason in Task { await model.invalidate(id, reason: reason) } },
+                              onRestore: { id in Task { await model.restore(id) } },
+                              onDelete: { id in Task { await model.delete(id) } })
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Theme.Colors.surface)
+            .animaSheet()
         }
         .confirmationDialog("¿Vaciar las invalidadas?", isPresented: $confirmPurge, titleVisibility: .visible) {
             Button("Vaciar", role: .destructive) { Task { await model.purgeInvalidated() } }
             Button("Cancelar", role: .cancel) {}
         } message: {
             Text("Salen de esta lista. Tus memorias activas no se tocan.")
+        }
+        .confirmationDialog(MemoryDetailSheet.deleteTitle, isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+        ), titleVisibility: .visible, presenting: pendingDelete) { id in
+            Button("Eliminar", role: .destructive) { Task { await model.delete(id) } }
+            Button("Cancelar", role: .cancel) {}
+        } message: { _ in
+            Text(MemoryDetailSheet.deleteMessage)
         }
     }
 
@@ -184,14 +254,14 @@ public struct MemoryBrowserView: View {
                 }
                 .font(Theme.Type_.secondary)
                 .foregroundStyle(Theme.Colors.textMuted)
-                .frame(minHeight: Theme.minHitTarget)
+                .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("memory.toggleInvalidated")
-            Spacer()
             if model.showInvalidated {
                 Button("Vaciar invalidadas") { confirmPurge = true }
+                    .buttonStyle(.plain)
                     .font(Theme.Type_.secondary)
                     .foregroundStyle(Theme.Colors.accentText)
                     .frame(minHeight: Theme.minHitTarget)
@@ -262,14 +332,37 @@ public struct MemoryBrowserView: View {
     }
 }
 
+private extension View {
+    func listRowStyle() -> some View {
+        self
+            .listRowInsets(EdgeInsets(top: Theme.Space.stack / 2, leading: Theme.Space.screenInset,
+                                      bottom: Theme.Space.stack / 2, trailing: Theme.Space.screenInset))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+}
+
 /// Detalle: la memoria, su origen y fecha, el historial de reconsolidaciones y,
-/// abajo, "Invalidar" como botón real (razón opcional, confirmación ligera).
+/// abajo, "Invalidar" como botón real (razón opcional, confirmación ligera). Si
+/// está invalidada: "Restaurar" ("Restaurar esta versión" si otra la reemplazó)
+/// y "Eliminar" (confirmación: irreversible).
 struct MemoryDetailSheet: View {
+    static let deleteTitle = "¿Eliminar este recuerdo para siempre?"
+    static let deleteMessage = "No se puede deshacer."
+
     let detail: MemoryDetail
+    let eventLine: (MemoryEvent) -> String
     let onInvalidate: (MemoryID, String) -> Void
+    let onRestore: (MemoryID) -> Void
+    let onDelete: (MemoryID) -> Void
     @State private var reason: String = ""
     @State private var confirming = false
+    @State private var confirmingDelete = false
     @Environment(\.dismiss) private var dismiss
+
+    private var showsHistory: Bool {
+        detail.chain.count > 1 || detail.chain.contains { !$0.events.isEmpty }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -281,59 +374,20 @@ struct MemoryDetailSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Space.unit * 1.5) {
                     Text(detail.content)
                         .font(Theme.Type_.cardTitle)
-                        .foregroundStyle(Theme.Colors.text)
+                        .foregroundStyle(detail.isValid ? Theme.Colors.text : Theme.Colors.textMuted)
+                        .strikethrough(!detail.isValid, color: Theme.Colors.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
                     Text([detail.origin, detail.date].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(Theme.Type_.meta)
                         .foregroundStyle(Theme.Colors.textFaint)
                 }
-                if detail.chain.count > 1 {
-                    VStack(alignment: .leading, spacing: Theme.Space.stack) {
-                        Text("Historial de reconsolidaciones")
-                            .font(Theme.Type_.label)
-                            .textCase(.uppercase)
-                            .kerning(0.66)
-                            .foregroundStyle(Theme.Colors.textMuted)
-                        ForEach(detail.chain) { record in
-                            VStack(alignment: .leading, spacing: Theme.Space.unit) {
-                                Text(record.content)
-                                    .font(Theme.Type_.secondary)
-                                    .foregroundStyle(record.isValid ? Theme.Colors.text : Theme.Colors.textFaint)
-                                    .strikethrough(!record.isValid, color: Theme.Colors.textFaint)
-                                if let invReason = record.invalidationReason {
-                                    Text("invalidada: \(invReason)")
-                                        .font(Theme.Type_.meta)
-                                        .foregroundStyle(Theme.Colors.textFaint)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(Theme.Space.cardPad)
-                            .background(RoundedRectangle(cornerRadius: Theme.Radius.card)
-                                .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                        }
-                    }
-                }
                 if detail.isValid {
-                    VStack(alignment: .leading, spacing: Theme.Space.stack) {
-                        TextField("Razón (opcional)", text: $reason)
-                            .font(Theme.Type_.body)
-                            .foregroundStyle(Theme.Colors.text)
-                            .padding(Theme.Space.cardPad)
-                            .background(RoundedRectangle(cornerRadius: Theme.Radius.control)
-                                .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
-                            .accessibilityIdentifier("memory.reason")
-                        Button { confirming = true } label: {
-                            Label("Invalidar recuerdo", systemImage: "xmark.circle")
-                                .font(Theme.Type_.body)
-                                .foregroundStyle(Theme.Colors.accentText)
-                                .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
-                                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
-                                    .strokeBorder(Theme.Colors.accent, lineWidth: Theme.Stroke.hairline))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("memory.invalidate")
-                    }
+                    invalidateControls
+                } else {
+                    invalidatedControls
+                }
+                if showsHistory {
+                    history
                 }
             }
             .padding(.horizontal, Theme.Space.screenInset)
@@ -348,6 +402,109 @@ struct MemoryDetailSheet: View {
         } message: {
             Text("Ella deja de usarlo; queda en el historial.")
         }
+        .confirmationDialog(Self.deleteTitle, isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Eliminar", role: .destructive) { onDelete(detail.id) }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text(Self.deleteMessage)
+        }
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            Text(detail.chain.count > 1 ? "Historial de reconsolidaciones" : "Historial")
+                .font(Theme.Type_.label)
+                .textCase(.uppercase)
+                .kerning(0.66)
+                .foregroundStyle(Theme.Colors.textMuted)
+            ForEach(detail.chain) { record in
+                VStack(alignment: .leading, spacing: Theme.Space.unit) {
+                    Text(record.content)
+                        .font(Theme.Type_.secondary)
+                        .foregroundStyle(record.isValid ? Theme.Colors.text : Theme.Colors.textFaint)
+                        .strikethrough(!record.isValid, color: Theme.Colors.textFaint)
+                    ForEach(Array(record.events.enumerated()), id: \.offset) { _, event in
+                        Text(eventLine(event))
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textMuted)
+                            .accessibilityIdentifier("memory.history.event")
+                    }
+                    if let invReason = record.invalidationReason {
+                        Text("invalidada: \(invReason)")
+                            .font(Theme.Type_.meta)
+                            .foregroundStyle(Theme.Colors.textFaint)
+                    }
+                    if !record.isValid, record.id != detail.id {
+                        Button { onRestore(record.id) } label: {
+                            Text("Restaurar esta versión")
+                                .font(Theme.Type_.secondary)
+                                .foregroundStyle(Theme.Colors.accentText)
+                                .frame(minHeight: Theme.minHitTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("memory.history.restore")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Theme.Space.cardPad)
+                .background(RoundedRectangle(cornerRadius: Theme.Radius.card)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(record.isValid ? "memory.history.current" : "memory.history.invalidated")
+            }
+        }
+    }
+
+    private var invalidateControls: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            TextField("Razón (opcional)", text: $reason)
+                .font(Theme.Type_.body)
+                .foregroundStyle(Theme.Colors.text)
+                .padding(Theme.Space.cardPad)
+                .background(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .strokeBorder(Theme.Colors.border, lineWidth: Theme.Stroke.hairline))
+                .accessibilityIdentifier("memory.reason")
+            Button { confirming = true } label: {
+                outlined("Invalidar recuerdo", systemImage: "xmark.circle", stroke: Theme.Colors.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("memory.invalidate")
+        }
+    }
+
+    private var invalidatedControls: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.stack) {
+            if detail.hasCurrentVersion {
+                Text("Otra versión la reemplazó. Si restauras esta, la actual queda invalidada.")
+                    .font(Theme.Type_.meta)
+                    .foregroundStyle(Theme.Colors.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(spacing: Theme.Space.stack) {
+                Button { onRestore(detail.id) } label: {
+                    outlined(detail.hasCurrentVersion ? "Restaurar esta versión" : "Restaurar",
+                             systemImage: "arrow.uturn.backward", stroke: Theme.Colors.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("memory.restore")
+                Button { confirmingDelete = true } label: {
+                    outlined("Eliminar", systemImage: "trash", stroke: Theme.Colors.border)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("memory.delete")
+            }
+        }
+    }
+
+    private func outlined(_ title: String, systemImage: String, stroke: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(Theme.Type_.body)
+            .foregroundStyle(Theme.Colors.accentText)
+            .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget)
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control)
+                .strokeBorder(stroke, lineWidth: Theme.Stroke.hairline))
+            .contentShape(Rectangle())
     }
 }
 #endif

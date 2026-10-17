@@ -1,7 +1,8 @@
 // Brain.swift — memoria de largo plazo local (§5.3). Actor: el escritor único
 // (el gate del Consolidator) sale gratis. Invalidación bi-temporal: NUNCA se
 // borra una memoria, se marca invalidada con razón. La reconsolidación crea una
-// fila nueva enlazada por revises_id (la vieja queda como historia).
+// fila nueva enlazada por revises_id (la vieja queda como historia). El dueño
+// puede restaurar una invalidada (owner_restored_at): su decisión gana al sueño.
 
 import Foundation
 import GRDB
@@ -42,6 +43,16 @@ public enum WriteDirective: Sendable, Equatable {
     case update(MemoryID, MemoryCandidate, reason: String)   // refina/reemplaza: invalida vieja + añade
     case invalidate(MemoryID, reason: String)                // contradicha por corrección explícita
     case noop                                                // duplicado
+}
+
+extension WriteDirective {
+    /// La memoria existente que la directiva invalida (UPDATE o INVALIDATE).
+    var target: MemoryID? {
+        switch self {
+        case .update(let id, _, _), .invalidate(let id, _): return id
+        case .add, .noop: return nil
+        }
+    }
 }
 
 public enum WriteDecision: Sendable, Equatable {
@@ -97,8 +108,14 @@ public struct MemoryRecord: Sendable, Equatable, Identifiable {
     public var invalidationReason: String?
     public var revisesId: MemoryID?
     public var consolidationCycle: Int
+    public var purgedAt: Date?
+    /// Última vez que el dueño la restauró: el sueño no la vuelve a invalidar.
+    public var ownerRestoredAt: Date?
+    /// Decisiones del dueño sobre esta versión, de la más vieja a la más nueva.
+    public var events: [MemoryEvent] = []
 
     public var isValid: Bool { invalidatedAt == nil }
+    public var isPurged: Bool { purgedAt != nil }
     public var confidence: Double { Double(importance) / 10 }
 
     init(row: Row) {
@@ -113,7 +130,29 @@ public struct MemoryRecord: Sendable, Equatable, Identifiable {
         self.invalidationReason = row["invalidation_reason"]
         self.revisesId = row["revises_id"]
         self.consolidationCycle = row["consolidation_cycle"]
+        self.purgedAt = (row["purged_at"] as Double?).map { Date(timeIntervalSince1970: $0) }
+        self.ownerRestoredAt = (row["owner_restored_at"] as Double?).map { Date(timeIntervalSince1970: $0) }
     }
+}
+
+/// Evento del historial de una versión (memory_event).
+public struct MemoryEvent: Sendable, Equatable {
+    public enum Kind: String, Sendable, Equatable {
+        case ownerRestored = "owner_restored"
+    }
+    public var kind: Kind
+    public var detail: String?
+    public var at: Date
+}
+
+/// Resultado de restaurar una memoria invalidada.
+public enum RestoreOutcome: Sendable, Equatable {
+    /// Vuelve a estar vigente; no había otra versión vigente en su cadena.
+    case restored(MemoryID)
+    /// Vuelve a estar vigente y la versión que la reemplazaba quedó invalidada.
+    case replaced(restored: MemoryID, invalidated: [MemoryID])
+    /// No existe, ya está vigente o fue eliminada: nada cambia.
+    case unchanged
 }
 
 public actor Brain {
@@ -299,11 +338,55 @@ public actor Brain {
     /// jamás se tocan). Siguen en la base; desaparecen de la UI. Devuelve cuántas.
     @discardableResult
     public func purgeInvalidated(at date: Date = Date()) throws -> Int {
+        try queue.write { db in try Self.purge(db, id: nil, at: date) }
+    }
+
+    /// "Eliminar" UNA invalidada: lo mismo que "Vaciar invalidadas", solo para
+    /// esa fila. La fila queda (sus enlaces revises_id sostienen la cadena de la
+    /// versión vigente); sale de la lista y del historial. Una vigente no se toca.
+    @discardableResult
+    public func purge(id: MemoryID, at date: Date = Date()) throws -> Bool {
+        try queue.write { db in try Self.purge(db, id: id, at: date) > 0 }
+    }
+
+    private static func purge(_ db: Database, id: MemoryID?, at date: Date) throws -> Int {
+        var sql = "UPDATE memory SET purged_at=? WHERE invalidated_at IS NOT NULL AND purged_at IS NULL"
+        var arguments: StatementArguments = [date.timeIntervalSince1970]
+        if let id {
+            sql += " AND id=?"
+            arguments += [id]
+        }
+        try db.execute(sql: sql, arguments: arguments)
+        return db.changesCount
+    }
+
+    public static let ownerReplacedReason = "reemplazada por el dueño"
+
+    /// El dueño restaura una invalidada: vuelve a estar vigente (FTS y
+    /// embeddings siguen ahí, así que la recuperación la encuentra de nuevo) con
+    /// `owner_restored_at`. Si otra versión de su cadena estaba vigente, esa
+    /// queda invalidada con "reemplazada por el dueño": nunca dos vigentes.
+    @discardableResult
+    public func restore(id: MemoryID, at date: Date = Date()) throws -> RestoreOutcome {
         try queue.write { db in
+            guard let record = try Self.fetchRecord(db, id: id), !record.isValid, !record.isPurged else {
+                return .unchanged
+            }
+            let ts = date.timeIntervalSince1970
+            let others = try Self.chainRecords(db, id: id).filter { $0.id != id && $0.isValid }.map(\.id)
+            for other in others {
+                try db.execute(sql: """
+                    UPDATE memory SET invalidated_at=?, invalidation_reason=?
+                    WHERE id=? AND invalidated_at IS NULL
+                    """, arguments: [ts, Self.ownerReplacedReason, other])
+            }
             try db.execute(sql: """
-                UPDATE memory SET purged_at=? WHERE invalidated_at IS NOT NULL AND purged_at IS NULL
-                """, arguments: [date.timeIntervalSince1970])
-            return db.changesCount
+                UPDATE memory SET invalidated_at=NULL, invalidation_reason=NULL, owner_restored_at=?
+                WHERE id=?
+                """, arguments: [ts, id])
+            try db.execute(sql: "INSERT INTO memory_event (memory_id, kind, detail, ts) VALUES (?,?,?,?)",
+                           arguments: [id, MemoryEvent.Kind.ownerRestored.rawValue, record.invalidationReason, ts])
+            return others.isEmpty ? .restored(id) : .replaced(restored: id, invalidated: others)
         }
     }
 
@@ -314,31 +397,45 @@ public actor Brain {
         }
     }
 
-    /// Cadena de reconsolidación: la memoria, sus predecesoras (revises_id hacia
-    /// atrás) y sus sucesoras (quién la revisa), de la más vieja a la más nueva.
+    /// Cadena de reconsolidación: todas las versiones enlazadas por revises_id
+    /// (en ambos sentidos, también las ramas que deja restaurar una versión
+    /// vieja), de la más vieja a la más nueva, con sus eventos. Las eliminadas
+    /// sostienen la cadena pero no se muestran.
     public func revisionChain(_ id: MemoryID) throws -> [MemoryRecord] {
         try queue.read { db in
-            var chain: [MemoryRecord] = []
-            // Hacia atrás: predecesoras.
-            var cursor: MemoryID? = id
-            var backward: [MemoryRecord] = []
-            while let current = cursor, let record = try Self.fetchRecord(db, id: current) {
-                backward.append(record)
-                cursor = record.revisesId
-                if backward.count > 64 { break }
+            try Self.chainRecords(db, id: id).filter { !$0.isPurged }.map { record in
+                var record = record
+                record.events = try Self.events(db, id: record.id)
+                return record
             }
-            chain = backward.reversed()
-            // Hacia adelante: sucesoras.
-            var forwardCursor: MemoryID? = id
-            while let current = forwardCursor {
-                guard let next = try Row.fetchOne(db, sql: "SELECT * FROM memory WHERE revises_id=? ORDER BY created_at ASC LIMIT 1",
-                                                  arguments: [current]) else { break }
-                let record = MemoryRecord(row: next)
-                chain.append(record)
-                forwardCursor = record.id
-                if chain.count > 128 { break }
+        }
+    }
+
+    static func chainRecords(_ db: Database, id: MemoryID) throws -> [MemoryRecord] {
+        guard try Self.fetchRecord(db, id: id) != nil else { return [] }
+        var seen: Set<MemoryID> = [id]
+        var pending: [MemoryID] = [id]
+        while let current = pending.popLast(), seen.count <= 128 {
+            let neighbors = try String.fetchAll(db, sql: """
+                SELECT revises_id FROM memory WHERE id=? AND revises_id IS NOT NULL
+                UNION SELECT id FROM memory WHERE revises_id=?
+                """, arguments: [current, current])
+            for neighbor in neighbors where !seen.contains(neighbor) {
+                seen.insert(neighbor)
+                pending.append(neighbor)
             }
-            return chain
+        }
+        let placeholders = Array(repeating: "?", count: seen.count).joined(separator: ",")
+        return try Row.fetchAll(db, sql: "SELECT * FROM memory WHERE id IN (\(placeholders)) ORDER BY created_at, rowid",
+                                arguments: StatementArguments(Array(seen)))
+            .map(MemoryRecord.init(row:))
+    }
+
+    static func events(_ db: Database, id: MemoryID) throws -> [MemoryEvent] {
+        try Row.fetchAll(db, sql: "SELECT kind, detail, ts FROM memory_event WHERE memory_id=? ORDER BY ts, id",
+                         arguments: [id]).compactMap { row in
+            guard let kind = MemoryEvent.Kind(rawValue: row["kind"]) else { return nil }
+            return MemoryEvent(kind: kind, detail: row["detail"], at: Date(timeIntervalSince1970: row["ts"]))
         }
     }
 

@@ -210,7 +210,7 @@ struct AccountSettingsSection: View {
             AccountDeletionSheet(account: account) { showDeletion = false }
                 .presentationDetents([.medium, .large])
                 .presentationCornerRadius(Theme.Radius.sheet)
-                .presentationBackground(Theme.Colors.bg)
+                .animaSheet(background: Theme.Colors.bg)
         }
     }
 

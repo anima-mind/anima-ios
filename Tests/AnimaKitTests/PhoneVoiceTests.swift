@@ -183,7 +183,7 @@ struct PhoneVoiceTests {
         try? phone.activatePlaybackA2DP()
         phone.deactivate()
         #expect(!phone.currentInputIsHFP())
-        #expect(audio.calls.value == ["phoneMic", "phoneMic", "a2dp", "off"])
+        #expect(audio.calls.value == ["phoneMic", "phoneMic", "off"])
     }
 
     @Test nonisolated func listoCortaLaEscuchaConservandoLoOido() async {

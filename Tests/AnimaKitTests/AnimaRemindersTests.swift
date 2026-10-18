@@ -216,7 +216,7 @@ enum ProactiveFixtures {
                 == "Recordarte 'x' el mañana")
         #expect(t.confirmationSummary(for: ["action": "complete", "id": "r1"]) == "Marcar como hecho el recordatorio r1")
         #expect(t.confirmationSummary(for: ["action": "cancel", "id": "r1"]) == "Cancelar el recordatorio r1")
-        #expect(t.confirmationSummary(for: ["action": "snooze", "id": "r1", "minutes": 60]) == "Posponer 60 min el recordatorio r1")
+        #expect(t.confirmationSummary(for: ["action": "snooze", "id": "r1", "minutes": 60]) == "Posponer 1 hora el recordatorio r1")
         #expect(t.confirmationSummary(for: ["action": "list"]) == "anima_reminders: list")
     }
 

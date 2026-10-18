@@ -138,7 +138,10 @@ public actor DesireEngine {
     private func drive(_ lack: Lack, sessionId: SessionID?, origin: IntentionOrigin) async throws -> Intention {
         // Contexto barato para hacer la propuesta concreta (huecos del calendario).
         let slots = await environment.freeSlots(minMinutes: 45, withinDays: 7)
-        let slotHint = slots.first.map { Self.describeSlot($0) } ?? "sin un hueco claro; sugiere cómo abrirlo"
+        let calendar = Calendar.current
+        let session = ProposalSlot.pick(from: slots, now: now(), calendar: calendar)
+        let slotHint = session.map { "\($0.phrase(calendar: calendar)), una sesión de \(DurationText.long(minutes: $0.minutes))" }
+            ?? "sin un hueco claro; sugiere cómo abrirlo"
 
         let user = """
         Meta del dueño: "\(lack.goal.statement)"
@@ -147,12 +150,13 @@ public actor DesireEngine {
 
         Redacta UNA propuesta proactiva breve (1-2 frases, en español, tono cercano y directo)
         que ayude al dueño a avanzar hacia esa meta. Ofrece una acción concreta y termina
-        preguntando si la hace. Devuelve SOLO el texto de la propuesta, sin comillas.
+        preguntando si la hace. Si propones un momento, usa ese día, esa hora y esa duración
+        tal cual. Devuelve SOLO el texto de la propuesta, sin comillas.
         """
         let text = try await complete(system: Self.drivePrompt, user: user, maxOutputTokens: 400)
-        let proposed = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? fallbackText(lack)
-            : text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let proposed = ProposalText.validated(trimmed).flatMap { $0.isEmpty ? nil : $0 }
+            ?? fallbackText(lack, session: session, calendar: calendar)
 
         let intention = persist(lack: lack, proposedText: proposed, origin: origin)
         await appendTurn(intention, sessionId: sessionId)
@@ -193,8 +197,11 @@ public actor DesireEngine {
         return intention
     }
 
-    private func fallbackText(_ lack: Lack) -> String {
-        "Sobre '\(lack.goal.statement)': \(lack.reading.detail). ¿Quieres que te ayude a avanzar?"
+    private func fallbackText(_ lack: Lack, session: ProposalSlot?, calendar: Calendar) -> String {
+        if let session {
+            return "¿Te parece dedicar \(session.summary(calendar: calendar)) a avanzar en '\(lack.goal.statement)'?"
+        }
+        return "Sobre '\(lack.goal.statement)': \(lack.reading.detail). ¿Quieres que te ayude a avanzar?"
     }
 
     // MARK: - Log de Intentions (goal_id NOT NULL = eval #4)
@@ -292,14 +299,6 @@ public actor DesireEngine {
         return response.content.compactMap { block in
             if case .text(let t) = block { return t } else { return nil }
         }.joined()
-    }
-
-    static func describeSlot(_ interval: DateInterval) -> String {
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "es_CO")
-        df.dateFormat = "EEEE d 'a las' HH:mm"
-        let minutes = Int(interval.duration / 60)
-        return "\(df.string(from: interval.start)) (\(minutes)min)"
     }
 
     static func dayString(_ date: Date) -> String {

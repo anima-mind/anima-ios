@@ -141,6 +141,7 @@ public final class SpeechTranscriber: ObservableObject {
         request = nil
         task = nil
         isRecording = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 #endif

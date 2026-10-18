@@ -99,9 +99,9 @@ import GRDB
         _ = await other.ingestStated(statement: "entrenar", desiredState: .workoutsPerWeek(atLeast: 3), evidence: "e")
         let sid = try store.startSession()
         let produced = try await engine.pulse(sessionId: sid)
-        #expect(produced.first?.proposedText == "¿Agendo 45 min para entrenar?")
+        #expect(produced.first?.proposedText == "¿Agendo 45 minutos para entrenar?")
         let window = try store.window(sessionId: sid)
-        #expect(window.last == .assistant([.text("¿Agendo 45 min para entrenar?")]))
+        #expect(window.last == .assistant([.text("¿Agendo 45 minutos para entrenar?")]))
         #expect(try telemetry.summary().contains { $0.turnClass == TurnClass.desirePulse.rawValue })
     }
 

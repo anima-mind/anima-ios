@@ -240,6 +240,12 @@ public final class CarPlayApprovals: ConfirmationProvider, @unchecked Sendable {
 public protocol CarPlayAudioPort: Sendable {
     func activateConversation() throws
     func releaseConversation()
+    /// Suelta la sesión aunque la conversación no la tenga (background, desconexión).
+    func ensureReleased()
+}
+
+public extension CarPlayAudioPort {
+    func ensureReleased() { releaseConversation() }
 }
 
 /// La configuración que pide Apple para esta categoría (WWDC26 "Rev up your

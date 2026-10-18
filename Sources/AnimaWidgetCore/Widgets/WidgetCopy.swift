@@ -28,20 +28,19 @@ public struct WidgetCopy: Sendable {
         dates.time(date)
     }
 
-    /// "en 25 min", "en 2 h", "hace 10 min", "ahora", "mañana 9:00 a. m.".
+    /// "en 25 min", "en 1 h 30 min", "hace 10 min", "ahora", "mañana 9:00 a. m.".
     public func relative(_ date: Date, now: Date) -> String {
         let seconds = date.timeIntervalSince(now)
         let minutes = Int((abs(seconds) / 60).rounded())
         if minutes < 1 { return "ahora" }
         let sameDay = dates.calendar.isDate(date, inSameDayAs: now)
         if seconds < 0 {
-            if minutes < 60 { return "hace \(minutes) min" }
+            if minutes < 60 { return "hace \(DurationText.compact(minutes: minutes))" }
             return sameDay ? "a las \(dates.time(date))" : dates.moment(date, now: now)
         }
-        if minutes < 60 { return "en \(minutes) min" }
+        if minutes < 60 { return "en \(DurationText.compact(minutes: minutes))" }
         if sameDay {
-            let hours = minutes / 60
-            return hours < 3 ? "en \(hours) h" : "a las \(dates.time(date))"
+            return minutes < 180 ? "en \(DurationText.compact(minutes: minutes))" : "a las \(dates.time(date))"
         }
         return dates.moment(date, now: now)
     }

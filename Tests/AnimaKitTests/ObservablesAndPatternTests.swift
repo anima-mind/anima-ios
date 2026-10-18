@@ -22,9 +22,9 @@ import Testing
 
         let freeSlot = ObservablePredicate.calendarFreeSlot(minMinutes: 60, withinDays: 3)
         #expect(await freeSlot.evaluate(in: full)
-                == ObservableReading(satisfied: true, detail: "1 huecos de 60min disponibles"))
+                == ObservableReading(satisfied: true, detail: "1 huecos de 1 hora disponibles"))
         #expect(await freeSlot.evaluate(in: empty)
-                == ObservableReading(satisfied: false, detail: "sin huecos de 60min en 3 días"))
+                == ObservableReading(satisfied: false, detail: "sin huecos de 1 hora en 3 días"))
 
         let mention = ObservablePredicate.daysSinceLastMention(topic: "inglés", atMost: 2)
         #expect(await mention.evaluate(in: full)
@@ -38,7 +38,7 @@ import Testing
         #expect(ObservablePredicate.remindersOverdue(atMost: 0).label == "no más de 0 recordatorios vencidos")
         #expect(ObservablePredicate.sleepHours(atLeast: 7.5, lastDays: 5).label == "dormir al menos 7.5h (últimos 5 días)")
         #expect(ObservablePredicate.calendarFreeSlot(minMinutes: 30, withinDays: 2).label
-                == "reservar un hueco de 30min en 2 días")
+                == "reservar un hueco de 30 minutos en 2 días")
         #expect(ObservablePredicate.daysSinceLastMention(topic: "guitarra", atMost: 4).label
                 == "retomar 'guitarra' cada 4 días")
     }

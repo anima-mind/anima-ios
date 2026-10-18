@@ -103,7 +103,7 @@ public enum SiriTurn {
         }
         let words = String(kept).split(whereSeparator: \.isWhitespace).joined(separator: " ")
         // Lo que quedó suelto al quitar un emoji: " ." → ".".
-        return looseSpaceBeforePunctuation.replacing(in: words, template: "$1")
+        return SpokenDurations.apply(looseSpaceBeforePunctuation.replacing(in: words, template: "$1"))
     }
 
     static let looseSpaceBeforePunctuation = ICURegex(#" +([.,;:!?…])"#)

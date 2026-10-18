@@ -45,7 +45,8 @@ public struct SystemAudioSession: AudioSessionPort {
     }
 
     public func deactivate() {
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        guard (try? session.setActive(false, options: .notifyOthersOnDeactivation)) != nil else { return }
+        SystemAudioSessionControl.restoreMixableCategory()
     }
 }
 
@@ -220,6 +221,7 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     public init(audio: any AudioSessionPort = SystemAudioSession()) {
         self.audio = audio
         super.init()
+        synthesizer.usesApplicationAudioSession = true
         synthesizer.delegate = self
     }
 
@@ -273,6 +275,10 @@ public final class GlassesSpeaker: NSObject, SpeechOutputPort, AVSpeechSynthesiz
     public func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         finish()
+    }
+
+    public func relinquishAudio() {
+        audio.deactivate()
     }
 
     private func finish() {

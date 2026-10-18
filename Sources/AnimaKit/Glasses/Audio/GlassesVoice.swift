@@ -386,7 +386,9 @@ public struct PhoneMicAudioSession: AudioSessionPort {
     public func activateHFP() throws { try base.activatePhoneMic() }
     public func currentInputIsHFP() -> Bool { false }
     public func activatePhoneMic() throws { try base.activatePhoneMic() }
-    public func activatePlaybackA2DP() throws { try base.activatePlaybackA2DP() }
+    /// El composer no habla después de dictar: la sesión queda suelta, no en
+    /// .playback activa (cortaba la música del teléfono o del carro sin devolverla).
+    public func activatePlaybackA2DP() throws {}
     public func deactivate() { base.deactivate() }
 }
 
@@ -403,9 +405,13 @@ public protocol SpeechOutputPort: Sendable {
     /// arrancando DENTRO de `line.perform`.
     func speak(_ text: String, line: SpeechLine, ticket: SpeechLine.Ticket) async
     func stop()
+    /// Ya no hay nada que decir: suelta la sesión de audio (la música vuelve).
+    func relinquishAudio()
 }
 
 public extension SpeechOutputPort {
+    func relinquishAudio() {}
+
     /// Salidas sin progreso (silenciosas, dobles): hablan sin reportar rangos.
     func speak(_ text: String, onRange: @escaping @Sendable (NSRange) -> Void) async {
         await speak(text)

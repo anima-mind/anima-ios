@@ -851,7 +851,7 @@ final class AppModel: ObservableObject {
             return (UITestScriptedVoice(), UITestScriptedVoice(), SilentVoice(), SilentCarPlayAudio())
         }
         #if os(iOS)
-        let audio = CarPlayAudioSessionOwner.system()
+        let audio = CarPlayAudioSessionOwner.system(log: { GlassesDiagnostics.shared.record(.audio, "CarPlay: \($0)") })
         return (GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.requestDetector, diagnostics: .shared),
                 GlassesVoiceCapture(audio: audio, detector: CarPlayTurn.answerDetector, diagnostics: .shared),
                 GlassesSpeaker(audio: audio), audio)

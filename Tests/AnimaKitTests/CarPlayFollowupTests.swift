@@ -9,14 +9,35 @@ import Testing
 // MARK: - Dobles
 
 /// Doble de AVAudioSession: registra cada llamada y el estado REAL de la sesión.
+/// Como AVAudioSession: `setActive(false)` falla (`isBusy`) mientras haya I/O
+/// en curso (`io` > 0: un engine o un sintetizador corriendo), y
+/// `busyDeactivations` fuerza los siguientes N fallos. La sesión sigue activa.
 final class FakeAudioControl: AudioSessionControl, @unchecked Sendable {
+    struct Busy: Error {}
     let ops = Locked<[String]>([])
     let active = Locked(false)
-    func configure(_ spec: CarPlayAudioSpec) throws { ops.mutate { $0.append("category") } }
+    let nonMixable = Locked(false)
+    let notified = Locked(0)
+    let busyDeactivations = Locked(0)
+    let io = Locked(0)
+    func configure(_ spec: CarPlayAudioSpec) throws {
+        nonMixable.mutate { $0 = !spec.mixesWithOthers }
+        ops.mutate { $0.append("category") }
+    }
     func setActive(_ value: Bool, notifyOthers: Bool) throws {
+        if !value, io.value > 0 || busyDeactivations.mutate({ n -> Bool in
+            guard n > 0 else { return false }
+            n -= 1
+            return true
+        }) {
+            ops.mutate { $0.append("busy") }
+            throw Busy()
+        }
         active.mutate { $0 = value }
+        if !value, notifyOthers { notified.mutate { $0 += 1 } }
         ops.mutate { $0.append(value ? "on" : (notifyOthers ? "off+notify" : "off")) }
     }
+    func restoreMixable() { nonMixable.mutate { $0 = false } }
 }
 
 /// El adaptador de #41 (el bug): captura y TTS re-activaban la sesión siempre.

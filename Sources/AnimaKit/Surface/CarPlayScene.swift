@@ -152,6 +152,7 @@ public final class CarPlaySceneLifecycle {
         guard connected else { return }
         reopened = true
         stopVoice { $0.cancel() }
+        conversation.releaseAudioSession()
         setHold(false)
     }
 
@@ -159,6 +160,7 @@ public final class CarPlaySceneLifecycle {
         connected = false
         reopened = false
         stopVoice { $0.disconnect() }
+        conversation.releaseAudioSession()
         setHold(false)
     }
 

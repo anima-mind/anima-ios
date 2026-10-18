@@ -26,7 +26,10 @@ public final class CarPlayConversation: Surface {
     private let sink: AsyncStream<SurfaceEvent>.Continuation
 
     public private(set) var phase: CarPlayPhase = .idle {
-        didSet { if phase != oldValue { onPhase(phase) } }
+        didSet {
+            if phase == .idle { releaseAudio() }
+            if phase != oldValue { onPhase(phase) }
+        }
     }
     /// ¿Hay una interacción en curso (aunque se haya callado)?
     public var isBusy: Bool { interaction != nil }
@@ -176,6 +179,16 @@ public final class CarPlayConversation: Surface {
         stopSpeech()
         releaseAudio()
         phase = .idle
+    }
+
+    /// La escena dejó de verse o el carro se fue: la sesión de audio se suelta
+    /// SIEMPRE (aunque la conversación no la tuviera tomada), salvo que sean las
+    /// gafas las que la usan para su turno.
+    public func releaseAudioSession() {
+        line.invalidate()
+        audioActive = false
+        guard Self.mayTouchAudio(whileHeldBy: gate.current) else { return }
+        audio.ensureReleased()
     }
 
     /// Vuelve cuando no hay interacción (ni una cerrándose).

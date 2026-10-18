@@ -312,6 +312,7 @@ public final class GlassesHUDSurface: Surface, GlassesToolHost {
     private func speechDrained(_ generation: Int) async {
         guard generation == speechGeneration else { return }
         speechSession = nil
+        speech.relinquishAudio()
         await handle(.speechFinished)
     }
 

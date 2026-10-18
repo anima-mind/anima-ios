@@ -19,12 +19,22 @@ public struct SystemAudioSessionControl: AudioSessionControl {
     public func setActive(_ active: Bool, notifyOthers: Bool) throws {
         try AVAudioSession.sharedInstance().setActive(active, options: notifyOthers ? .notifyOthersOnDeactivation : [])
     }
+
+    public func restoreMixable() {
+        Self.restoreMixableCategory()
+    }
+
+    public static func restoreMixableCategory() {
+        let session = AVAudioSession.sharedInstance()
+        guard session.category != .ambient, !session.categoryOptions.contains(.mixWithOthers) else { return }
+        try? session.setCategory(.ambient, mode: .default, options: [])
+    }
 }
 
 extension CarPlayAudioSessionOwner {
     /// La sesión real del proceso.
-    public static func system() -> CarPlayAudioSessionOwner {
-        CarPlayAudioSessionOwner(control: SystemAudioSessionControl())
+    public static func system(log: @escaping @Sendable (String) -> Void = { _ in }) -> CarPlayAudioSessionOwner {
+        CarPlayAudioSessionOwner(control: SystemAudioSessionControl(), log: log)
     }
 }
 #endif

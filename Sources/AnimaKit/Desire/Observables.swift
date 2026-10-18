@@ -48,7 +48,7 @@ public enum ObservablePredicate: Sendable, Equatable {
         case .workoutsPerWeek(let n): return "entrenar al menos \(n)x por semana"
         case .remindersOverdue(let n): return "no más de \(n) recordatorios vencidos"
         case .sleepHours(let h, let d): return "dormir al menos \(h)h (últimos \(d) días)"
-        case .calendarFreeSlot(let m, let d): return "reservar un hueco de \(m)min en \(d) días"
+        case .calendarFreeSlot(let m, let d): return "reservar un hueco de \(DurationText.long(minutes: m)) en \(d) días"
         case .daysSinceLastMention(let t, let n): return "retomar '\(t)' cada \(n) días"
         case .progressCheckIn(let n): return "reportar avance al menos cada \(n) días"
         }
@@ -73,8 +73,8 @@ public enum ObservablePredicate: Sendable, Equatable {
         case .calendarFreeSlot(let m, let d):
             let slots = await env.freeSlots(minMinutes: m, withinDays: d)
             return ObservableReading(satisfied: !slots.isEmpty,
-                                     detail: slots.isEmpty ? "sin huecos de \(m)min en \(d) días"
-                                                           : "\(slots.count) huecos de \(m)min disponibles")
+                                     detail: slots.isEmpty ? "sin huecos de \(DurationText.long(minutes: m)) en \(d) días"
+                                                           : "\(slots.count) huecos de \(DurationText.long(minutes: m)) disponibles")
         case .daysSinceLastMention(let t, let n):
             // Sin dato no hay gap falso (como el sueño): una meta nueva no es una brecha.
             guard let days = await env.daysSinceLastMention(topic: t) else {

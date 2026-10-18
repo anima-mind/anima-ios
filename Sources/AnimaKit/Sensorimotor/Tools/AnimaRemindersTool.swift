@@ -104,7 +104,7 @@ public struct AnimaRemindersTool: SensorimotorTool {
         case "cancel":
             return "Cancelar el recordatorio \(id)"
         case "snooze":
-            return "Posponer \(Self.minutes(input) ?? 0) min el recordatorio \(id)"
+            return "Posponer \(DurationText.long(minutes: Self.minutes(input) ?? 0)) el recordatorio \(id)"
         case "reopen":
             return "Deshacer el 'hecho' del recordatorio \(id)"
         case "reschedule":
